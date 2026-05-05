@@ -60,13 +60,17 @@ public sealed class ScopeHost : IAsyncDisposable
     {
         // Stop the embeddings drain first so any in-flight upserts complete before the underlying
         // SQLite store is disposed. Best-effort with a short bound — losing a few queued requests
-        // on shutdown is preferable to hanging the process.
+        // on shutdown is preferable to hanging the process. BackgroundService implements
+        // IDisposable (it owns a stop CancellationTokenSource) so dispose it after stop.
         if (EmbeddingsService is not null)
         {
             EmbeddingsSink?.Complete();
             using var stopCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
             try { await EmbeddingsService.StopAsync(stopCts.Token).ConfigureAwait(false); }
             catch { /* best-effort drain */ }
+            EmbeddingsService.Dispose();
+            EmbeddingsService = null;
+            EmbeddingsSink = null;
         }
         if (Watcher is not null) await Watcher.DisposeAsync().ConfigureAwait(false);
         await Indexer.DisposeAsync().ConfigureAwait(false);

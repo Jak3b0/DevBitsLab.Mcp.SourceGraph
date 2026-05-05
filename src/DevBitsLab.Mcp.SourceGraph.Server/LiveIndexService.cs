@@ -121,8 +121,12 @@ public sealed class LiveIndexService : BackgroundService
             // (each id is local to a per-scope DB). When either the generator or the vec0-backed
             // store is unavailable we wire a no-op sink so the indexer's enqueue site stays
             // unconditional.
+            //
+            // Probe the cheap store flag first: ICodeEmbeddingGenerator.IsAvailable lazy-loads
+            // the ~280 MB ONNX session on first access, so checking it is only worthwhile when
+            // we actually have a vec0-backed store to write into.
             IEmbeddingsRequestSink indexerSink;
-            if (_embeddingGenerator.IsAvailable && embeddingsStore.IsAvailable)
+            if (embeddingsStore.IsAvailable && _embeddingGenerator.IsAvailable)
             {
                 scopeSink = new ChannelEmbeddingsRequestSink();
                 scopeEmbeddings = new EmbeddingsHostedService(
@@ -199,13 +203,14 @@ public sealed class LiveIndexService : BackgroundService
             _logger.LogError(ex, "Scope `{Id}` failed to open", scope.Id);
             // Best-effort cleanup; the registry still reflects the degraded state for visibility.
             // Stop the embeddings drain first so its in-flight upsert isn't racing against the
-            // store disposal below.
+            // store disposal below; then dispose so the BackgroundService stop CTS is released.
             if (scopeEmbeddings is not null)
             {
                 scopeSink?.Complete();
                 using var stopCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
                 try { await scopeEmbeddings.StopAsync(stopCts.Token).ConfigureAwait(false); }
                 catch { /* best-effort */ }
+                scopeEmbeddings.Dispose();
             }
             if (indexer is not null) await indexer.DisposeAsync().ConfigureAwait(false);
             if (store is not null) await store.DisposeAsync().ConfigureAwait(false);

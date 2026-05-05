@@ -896,10 +896,14 @@ public sealed class SqliteGraphStore : IGraphStore
 
     public async Task<IReadOnlyList<GeneratedFileRow>> ListGeneratedFilesAsync(int limit = 100, CancellationToken ct = default)
     {
+        // CAST(... AS INTEGER) on the COUNT subquery: when the WHERE filter excludes every row,
+        // Microsoft.Data.Sqlite's column-type inference for an undeclared expression falls back
+        // to BLOB, which makes Dapper materialize SymbolCount as byte[] and reject the
+        // (long FileId, string FilePath, long SymbolCount) record signature.
         const string sql = """
             SELECT f.id        AS FileId,
                    f.path      AS FilePath,
-                   COALESCE((SELECT COUNT(*) FROM symbols s WHERE s.file_id = f.id), 0) AS SymbolCount
+                   CAST(COALESCE((SELECT COUNT(*) FROM symbols s WHERE s.file_id = f.id), 0) AS INTEGER) AS SymbolCount
             FROM files f
             WHERE f.is_generated = 1
             ORDER BY SymbolCount DESC, f.path

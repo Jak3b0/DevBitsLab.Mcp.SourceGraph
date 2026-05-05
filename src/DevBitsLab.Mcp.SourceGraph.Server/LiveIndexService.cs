@@ -28,7 +28,7 @@ public sealed class LiveIndexService : BackgroundService
     private readonly IScopeRegistry _registry;
     private readonly HistoryQueue _historyQueue;
     private readonly HistoryOptions _historyOptions;
-    private readonly IEmbeddingsRequestSink _embeddingsSink;
+    private readonly ICodeEmbeddingGenerator _embeddingGenerator;
     private readonly EmbeddingModelInfo _modelInfo;
     private readonly AnalyzerPipeline _analyzerPipeline;
     private readonly ILogger<LiveIndexService> _logger;
@@ -40,7 +40,7 @@ public sealed class LiveIndexService : BackgroundService
         IScopeRegistry registry,
         HistoryQueue historyQueue,
         HistoryOptions historyOptions,
-        IEmbeddingsRequestSink embeddingsSink,
+        ICodeEmbeddingGenerator embeddingGenerator,
         EmbeddingModelInfo modelInfo,
         AnalyzerPipeline analyzerPipeline,
         ILogger<LiveIndexService> logger,
@@ -51,7 +51,7 @@ public sealed class LiveIndexService : BackgroundService
         _registry = registry;
         _historyQueue = historyQueue;
         _historyOptions = historyOptions;
-        _embeddingsSink = embeddingsSink;
+        _embeddingGenerator = embeddingGenerator;
         _modelInfo = modelInfo;
         _analyzerPipeline = analyzerPipeline;
         _logger = logger;
@@ -107,20 +107,49 @@ public sealed class LiveIndexService : BackgroundService
 
         SqliteGraphStore? store = null;
         RoslynIndexer? indexer = null;
+        ChannelEmbeddingsRequestSink? scopeSink = null;
+        EmbeddingsHostedService? scopeEmbeddings = null;
         try
         {
             store = new SqliteGraphStore(dbPath, _loggerFactory.CreateLogger<SqliteGraphStore>());
             store.TryLoadVectorExtension(_modelInfo.Dimension);
             await store.EnsureSchemaAsync(ct).ConfigureAwait(false);
             var embeddingsStore = store.CreateEmbeddingsStore(_modelInfo.Dimension, _loggerFactory.CreateLogger<SqliteEmbeddingsStore>());
-            indexer = new RoslynIndexer(store, _loggerFactory.CreateLogger<RoslynIndexer>(), _embeddingsSink);
+
+            // Per-scope embeddings drain. The ONNX generator is shared (singleton) but every
+            // scope owns its own channel + drain task so EmbedRequest.SymbolId stays unambiguous
+            // (each id is local to a per-scope DB). When either the generator or the vec0-backed
+            // store is unavailable we wire a no-op sink so the indexer's enqueue site stays
+            // unconditional.
+            IEmbeddingsRequestSink indexerSink;
+            if (_embeddingGenerator.IsAvailable && embeddingsStore.IsAvailable)
+            {
+                scopeSink = new ChannelEmbeddingsRequestSink();
+                scopeEmbeddings = new EmbeddingsHostedService(
+                    scopeSink,
+                    _embeddingGenerator,
+                    embeddingsStore,
+                    _loggerFactory.CreateLogger<EmbeddingsHostedService>());
+                await scopeEmbeddings.StartAsync(ct).ConfigureAwait(false);
+                indexerSink = scopeSink;
+            }
+            else
+            {
+                indexerSink = new NoOpEmbeddingsRequestSink();
+            }
+
+            indexer = new RoslynIndexer(store, _loggerFactory.CreateLogger<RoslynIndexer>(), indexerSink);
             if (!_historyOptions.Disabled)
             {
                 indexer.OnFileIndexed = (fileId, path, sha) =>
                     _historyQueue.Writer.WriteAsync(new HistoryRequest(fileId, path, sha, scope.Id)).AsTask();
             }
 
-            var host = new ScopeHost(scope, store, embeddingsStore, indexer, solutionPath ?? "");
+            var host = new ScopeHost(scope, store, embeddingsStore, indexer, solutionPath ?? "")
+            {
+                EmbeddingsSink = scopeSink,
+                EmbeddingsService = scopeEmbeddings,
+            };
             // Register with status=indexing first so list_scopes can show progress.
             host.Status = "indexing";
             await _registry.UpsertAsync(ToRow(scope, host.Status, null), ct).ConfigureAwait(false);
@@ -169,6 +198,15 @@ public sealed class LiveIndexService : BackgroundService
         {
             _logger.LogError(ex, "Scope `{Id}` failed to open", scope.Id);
             // Best-effort cleanup; the registry still reflects the degraded state for visibility.
+            // Stop the embeddings drain first so its in-flight upsert isn't racing against the
+            // store disposal below.
+            if (scopeEmbeddings is not null)
+            {
+                scopeSink?.Complete();
+                using var stopCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                try { await scopeEmbeddings.StopAsync(stopCts.Token).ConfigureAwait(false); }
+                catch { /* best-effort */ }
+            }
             if (indexer is not null) await indexer.DisposeAsync().ConfigureAwait(false);
             if (store is not null) await store.DisposeAsync().ConfigureAwait(false);
             await _registry.UpsertAsync(ToRow(scope, "degraded", ex.Message), ct).ConfigureAwait(false);

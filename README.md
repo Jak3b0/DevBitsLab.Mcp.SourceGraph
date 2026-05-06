@@ -153,7 +153,7 @@ to the client at handshake time.
 | `list_symbols_in_file` | What's in this file? (kind, accessibility, modifiers, XML summary) |
 | `list_members` | Direct members of a class / struct / interface / namespace by FQN, optionally filtered by accessibility |
 | `find_implementations` | Concrete members satisfying an interface member |
-| `neighborhood` | Callers + callees + inheritance/implements edges around X in one call |
+| `neighborhood` | Inbound + outbound edges around X for one `kind` layer at a time (default `calls`; pass `kind=uses_type`, `overrides`, `implements_member`, `instantiates`, `throws`, or `all` to inspect other layers) |
 | `module_summary` | Top symbols in a namespace or directory by inbound call count |
 | `impact_of_change` | Transitive upstream callers of X up to `maxDepth` |
 
@@ -188,33 +188,33 @@ to the client at handshake time.
 
 ```jsonc
 // Where is OrderService.PublishAsync defined?
-{ "tool": "find_definition", "args": { "name": "OrderService.PublishAsync" } }
+{ "tool": "find_definition", "args": { "symbol": "OrderService.PublishAsync" } }
 
 // Who would I break if I changed it?
 { "tool": "impact_of_change",
-  "args": { "name": "OrderService.PublishAsync", "maxDepth": 4 } }
+  "args": { "symbol": "OrderService.PublishAsync", "maxDepth": 4 } }
 
 // Every POST controller action whose route contains "/v2/"
 { "tool": "find_by_attribute",
-  "args": { "attribute": "HttpPost", "argValue": "/v2/" } }
+  "args": { "name": "HttpPost", "argValue": "/v2/" } }
 
 // "Find the retry/back-off code"
 { "tool": "semantic_search",
-  "args": { "query": "exponential backoff retry policy", "topK": 10 } }
+  "args": { "query": "exponential backoff retry policy", "k": 10 } }
 
 // Compiler/analyzer warnings on a specific symbol
 { "tool": "find_diagnostics",
   "args": { "severity": "warning", "symbol": "Legacy.Helpers.OldShim" } }
 
 // What tests cover this before I refactor it?
-{ "tool": "list_tests_for", "args": { "name": "OrderService.PublishAsync" } }
+{ "tool": "list_tests_for", "args": { "symbol": "OrderService.PublishAsync" } }
 
 // Who last touched it, and when?
-{ "tool": "who_authored", "args": { "name": "OrderService.PublishAsync" } }
+{ "tool": "who_authored", "args": { "symbol": "OrderService.PublishAsync" } }
 
 // Fan a query out across every non-isolated scope in a monorepo
 { "tool": "find_references",
-  "args": { "name": "ILogger.LogError", "scope": "*" } }
+  "args": { "symbol": "ILogger.LogError", "scope": "*" } }
 ```
 
 ## Resource templates
@@ -235,8 +235,7 @@ A `.sourcegraph.json` at the repo root opts a project into multi-scope mode:
 {
   "scopes": [
     { "name": "frontend", "solutions": ["src/frontend.slnx"] },
-    { "name": "backend",  "solutions": ["src/backend.slnx"], "exclude": ["**/Generated/**"] },
-    { "name": "vendor",   "paths": ["third_party/**/*.csproj"], "isolated": true }
+    { "name": "backend",  "solutions": ["src/backend.slnx"], "exclude": ["**/Generated/**"] }
   ],
   "default_scope": "backend"
 }
@@ -252,6 +251,10 @@ A `.sourcegraph.json` at the repo root opts a project into multi-scope mode:
   `default` scope keeps single-solution users working unchanged.
 - The legacy single-database layout (`.sourcegraph/graph.db`) is migrated to
   `scopes/default.db` automatically on first start.
+- Live indexing currently resolves a Roslyn workspace per scope only for
+  `solutions`-based scopes. Scopes declared via `projects` or `paths` are
+  accepted by the config loader but are not indexed by the live server yet —
+  prefer `solutions` for now.
 
 Every tool accepts an optional `scope` parameter — pass an id, a
 comma-separated list, or `"*"` to fan out.
@@ -269,16 +272,18 @@ sourcegraph-mcp <subcommand> [options]
 | `stats` | Print counts of files / symbols / references / edges in the database. |
 | `clear` | Delete all rows from the database (schema preserved). |
 | `init-scopes` | Discover `.slnx`/`.sln` files at `--root` (default: CWD) and write a starter `.sourcegraph.json`. |
-| `scopes list` | List the scopes declared in `.sourcegraph.json`. |
-| `scopes add <name> --solution <path> [--isolated]` | Add a scope. The file is created on first use. |
-| `scopes remove <name>` | Remove a scope. |
+| `scopes list [--root <path>]` | List the scopes declared in `.sourcegraph.json`. |
+| `scopes add <name> --solution <path> [--root <path>] [--isolated]` | Add a scope. The file is created on first use. |
+| `scopes remove <name> [--root <path>]` | Remove a scope. |
+| `plugins list [--root <path>]` | List plugins declared in `.sourcegraph.json` with their version, status, registered contracts, and source path. |
+| `plugins info <name> [--root <path>]` | Show the full record for one plugin: status reason, declared interfaces, registered tool names. |
 
 Common flags:
 
 | Flag | Effect |
 |---|---|
 | `--solution <path>`, `-s` | Path to a `.sln` / `.slnx`. |
-| `--db <path>` | Override the database path. Defaults to `<solution-dir>/.sourcegraph/scopes/default.db`, falling back to a per-user cache directory when no solution is given. |
+| `--db <path>` | Override the database path for the **one-shot** commands (`index`, `stats`, `clear`). Ignored by `serve`, which always uses the per-scope layout under `<root>/.sourcegraph/scopes/<id>.db`. |
 | `--root <path>` | Repository root used for `.sourcegraph.json` discovery and scope databases. Defaults to the directory holding `--solution`, then CWD. |
 | `--model <id>` | Override the embedding model identity (default `jinaai/jina-embeddings-v2-base-code`). Applies to `serve` and `index`. |
 | `--no-embeddings` | Skip the embedding pipeline entirely (no model download, no `vec0` writes). `semantic_search` returns a disabled message; every other tool works as before. |

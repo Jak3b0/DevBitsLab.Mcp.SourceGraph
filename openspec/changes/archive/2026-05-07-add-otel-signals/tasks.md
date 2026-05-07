@@ -8,7 +8,7 @@
 
 - [x] 2.1 In `ToolMetrics.TrackAsync`, open an `Activity` via `Telemetry.ActivitySource.StartActivity($"mcp.tool {toolName}", ActivityKind.Server)` before invoking the body. Attach tags `mcp.tool.name` and `mcp.tool.scope` (the latter resolved through the existing `ExtractScope(args)` reflection path).
 - [x] 2.2 On exception, set `Activity.Status` to `ActivityStatusCode.Error` with the exception message and record `exception.type` as a tag, then rethrow.
-- [x] 2.3 On completion, record `mcp.tool.response_chars` as a tag.
+- [x] 2.3 On completion, record `mcp.tool.response_bytes` as a tag (UTF-8 byte count of the response — matches the `sourcegraph.tool.response_size` histogram's `By` unit). The tag was originally drafted as `response_chars`; renamed during PR review to align unit and value.
 - [x] 2.4 Mirror the same wiring in `ToolMetrics.TrackSync`.
 - [x] 2.5 Inside `ToolMetrics.Record`, after the existing in-memory aggregation + JSONL append, emit one sample on each instrument with tags `{ mcp.tool, mcp.tool.ok, mcp.tool.scope (optional) }`. Use `TagList` to avoid intermediate allocations.
 

@@ -52,8 +52,9 @@ public static class ToolMetrics
         finally
         {
             sw.Stop();
-            activity?.SetTag("mcp.tool.response_chars", result.Length);
-            Record(toolName, args, result.Length, sw.Elapsed, ok);
+            var responseBytes = System.Text.Encoding.UTF8.GetByteCount(result);
+            activity?.SetTag("mcp.tool.response_bytes", responseBytes);
+            Record(toolName, args, result.Length, responseBytes, sw.Elapsed, ok);
         }
     }
 
@@ -82,12 +83,13 @@ public static class ToolMetrics
         finally
         {
             sw.Stop();
-            activity?.SetTag("mcp.tool.response_chars", result.Length);
-            Record(toolName, args, result.Length, sw.Elapsed, ok);
+            var responseBytes = System.Text.Encoding.UTF8.GetByteCount(result);
+            activity?.SetTag("mcp.tool.response_bytes", responseBytes);
+            Record(toolName, args, result.Length, responseBytes, sw.Elapsed, ok);
         }
     }
 
-    private static void Record(string toolName, object? args, int responseLen, TimeSpan elapsed, bool ok)
+    private static void Record(string toolName, object? args, int responseLen, int responseBytes, TimeSpan elapsed, bool ok)
     {
         var stats = _stats.GetOrAdd(toolName, _ => new ToolStats());
         stats.Add(elapsed, responseLen, ok);
@@ -113,7 +115,7 @@ public static class ToolMetrics
             Telemetry.ToolErrors.Add(1, tags);
         }
         Telemetry.ToolDurationMs.Record(elapsed.TotalMilliseconds, tags);
-        Telemetry.ToolResponseBytes.Record(responseLen, tags);
+        Telemetry.ToolResponseBytes.Record(responseBytes, tags);
     }
 
     private static string? ExtractScope(object? args)

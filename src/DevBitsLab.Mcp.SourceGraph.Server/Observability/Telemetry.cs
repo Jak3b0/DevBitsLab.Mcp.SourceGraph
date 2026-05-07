@@ -52,5 +52,5 @@ public static class Telemetry
         Meter.CreateHistogram<long>(
             name: "sourcegraph.tool.response_size",
             unit: "By",
-            description: "Serialised response size of one MCP tool invocation, in bytes (UTF-16 chars treated as bytes).");
+            description: "Serialised response size of one MCP tool invocation, in UTF-8 bytes — the wire-format size of the JSON payload returned to the MCP client.");
 }

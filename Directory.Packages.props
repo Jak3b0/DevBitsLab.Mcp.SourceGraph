@@ -50,10 +50,6 @@
     <!-- Build / packaging -->
     <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="8.0.0" />
 
-    <!-- Telemetry: System.Diagnostics types are in the BCL; we add OTel listeners
-         for the API extensions used by the metrics pipeline. -->
-    <PackageVersion Include="System.Diagnostics.DiagnosticSource" Version="10.0.7" />
-
     <!-- Benchmarks -->
     <PackageVersion Include="BenchmarkDotNet" Version="0.14.0" />
   </ItemGroup>

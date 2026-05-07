@@ -84,8 +84,11 @@ The architecture overview lives in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 1. Implement the tool in `src/DevBitsLab.Mcp.SourceGraph.Server/Tools/`,
    following the existing `[McpServerTool]` shape and decorating with
-   `[ToolTrigger("Use when: …")]` so model-side guidance is published at
-   handshake.
+   `[ToolTrigger("\"natural-language question?\"")]` (just the trigger
+   phrase — the host appends the literal `Use when: ` prefix at
+   registration). See `Tools/GraphTools.cs` for examples like
+   `[ToolTrigger("\"where is X defined?\"")]`. The trigger is published
+   at handshake as model-side guidance.
 2. Wrap the body in `ToolMetrics.TrackAsync(...)` so calls flow through
    structured logging, the JSONL log, and OpenTelemetry signals.
 3. Add a row to the tool reference table in [README.md](README.md).

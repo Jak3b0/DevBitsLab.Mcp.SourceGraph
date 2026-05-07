@@ -27,6 +27,13 @@ public static class ToolMetrics
 
     public static async Task<string> TrackAsync(string toolName, object? args, Func<Task<string>> body)
     {
+        // StartActivity returns null when no OTel listener is attached, so the using-block is a
+        // no-op outside an instrumented host. Activity name follows OTel semconv "rpc-like" shape.
+        using var activity = Telemetry.ActivitySource.StartActivity(
+            $"mcp.tool {toolName}", ActivityKind.Server);
+        activity?.SetTag("mcp.tool.name", toolName);
+        activity?.SetTag("mcp.tool.scope", ExtractScope(args));
+
         var sw = Stopwatch.StartNew();
         var ok = true;
         var result = string.Empty;
@@ -35,20 +42,28 @@ public static class ToolMetrics
             result = await body().ConfigureAwait(false);
             return result;
         }
-        catch
+        catch (Exception ex)
         {
             ok = false;
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.SetTag("exception.type", ex.GetType().FullName);
             throw;
         }
         finally
         {
             sw.Stop();
+            activity?.SetTag("mcp.tool.response_chars", result.Length);
             Record(toolName, args, result.Length, sw.Elapsed, ok);
         }
     }
 
     public static string TrackSync(string toolName, object? args, Func<string> body)
     {
+        using var activity = Telemetry.ActivitySource.StartActivity(
+            $"mcp.tool {toolName}", ActivityKind.Server);
+        activity?.SetTag("mcp.tool.name", toolName);
+        activity?.SetTag("mcp.tool.scope", ExtractScope(args));
+
         var sw = Stopwatch.StartNew();
         var ok = true;
         var result = string.Empty;
@@ -57,14 +72,17 @@ public static class ToolMetrics
             result = body();
             return result;
         }
-        catch
+        catch (Exception ex)
         {
             ok = false;
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.SetTag("exception.type", ex.GetType().FullName);
             throw;
         }
         finally
         {
             sw.Stop();
+            activity?.SetTag("mcp.tool.response_chars", result.Length);
             Record(toolName, args, result.Length, sw.Elapsed, ok);
         }
     }
@@ -82,6 +100,20 @@ public static class ToolMetrics
             _scopeCounts.AddOrUpdate(scopeName, 1, (_, c) => c + 1);
         }
         AppendJsonl(toolName, args, responseLen, elapsed, ok, scopeName);
+
+        // OpenTelemetry signals — emitted unconditionally; the underlying instruments are no-ops
+        // when no MeterListener is attached. Tags use OTel semconv-flavoured naming so the data
+        // lights up in standard dashboards without a custom processor.
+        var tags = scopeName is null
+            ? new TagList { { "mcp.tool", toolName }, { "mcp.tool.ok", ok } }
+            : new TagList { { "mcp.tool", toolName }, { "mcp.tool.ok", ok }, { "mcp.tool.scope", scopeName } };
+        Telemetry.ToolCalls.Add(1, tags);
+        if (!ok)
+        {
+            Telemetry.ToolErrors.Add(1, tags);
+        }
+        Telemetry.ToolDurationMs.Record(elapsed.TotalMilliseconds, tags);
+        Telemetry.ToolResponseBytes.Record(responseLen, tags);
     }
 
     private static string? ExtractScope(object? args)

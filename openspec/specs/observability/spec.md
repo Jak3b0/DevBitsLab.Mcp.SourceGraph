@@ -78,19 +78,19 @@ The server SHALL declare a `Meter` named `DevBitsLab.Mcp.SourceGraph` exposing f
 - `sourcegraph.tool.calls` — `Counter<long>`, unit `{call}` — incremented once per successful or failed tool call.
 - `sourcegraph.tool.errors` — `Counter<long>`, unit `{call}` — incremented once per failed tool call (in addition to `.calls`).
 - `sourcegraph.tool.duration` — `Histogram<double>`, unit `ms` — recorded once per call with the elapsed wall-clock milliseconds.
-- `sourcegraph.tool.response_size` — `Histogram<long>`, unit `By` — recorded once per call with the response payload size in characters (treated as bytes for the unit).
+- `sourcegraph.tool.response_size` — `Histogram<long>`, unit `By` — recorded once per call with the UTF-8 byte count of the serialised response (the wire-format size of the JSON payload returned to the MCP client). The byte-count computation is skipped on the cold path when no listener is attached, so the histogram stays zero-cost in the no-listener case.
 
 Every sample SHALL carry tags `mcp.tool` (string, tool name), `mcp.tool.ok` (boolean, `true` when the call returned, `false` when it threw), and `mcp.tool.scope` (string, present only when the tool's args carry a non-empty `scope` field).
 
 The meter / instrument names are public surface. They SHALL match the names listed above byte-for-byte; a rename is a breaking change.
 
 #### Scenario: MeterListener captures a successful call
-- **WHEN** a `MeterListener` configured to record measurements on `DevBitsLab.Mcp.SourceGraph` instruments is started, and a wrapped tool returns successfully in 12 ms with a 480-character response
+- **WHEN** a `MeterListener` configured to record measurements on `DevBitsLab.Mcp.SourceGraph` instruments is started, and a wrapped tool returns successfully in 12 ms with a response whose UTF-8 encoding is 480 bytes
 - **THEN** the listener receives:
   - one sample of `1` on `sourcegraph.tool.calls` with tag `mcp.tool.ok=true`,
   - zero samples on `sourcegraph.tool.errors`,
   - one sample of `12` (±jitter) on `sourcegraph.tool.duration`,
-  - one sample of `480` on `sourcegraph.tool.response_size`.
+  - one sample of `480` on `sourcegraph.tool.response_size` — i.e. the UTF-8 byte count, **not** `string.Length` (the two diverge for non-ASCII responses).
 
 #### Scenario: MeterListener captures a failed call
 - **WHEN** a wrapped tool throws after 8 ms

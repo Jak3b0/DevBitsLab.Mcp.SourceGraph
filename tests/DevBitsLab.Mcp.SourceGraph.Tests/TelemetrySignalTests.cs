@@ -70,6 +70,26 @@ public sealed class TelemetrySignalTests
     }
 
     [Fact]
+    public async Task TrackAsync_responseSize_recordsUtf8ByteCount_notCharCount()
+    {
+        // Regression guard: response_size is in UTF-8 bytes (matching the `By` unit), not chars.
+        // The two diverge for any non-ASCII payload — here "πα" is 2 chars but 4 UTF-8 bytes
+        // (each Greek letter encodes to 2 bytes in UTF-8). If anyone accidentally switches the
+        // implementation back to `result.Length` this assertion fails.
+        const string toolName = "test_otel_meter_utf8_bytes";
+        const string nonAsciiPayload = "πα"; // 2 chars, 4 UTF-8 bytes
+        var samples = new List<MeasurementSample>();
+
+        using var listener = SubscribeMeter(samples, toolName);
+
+        await ToolMetrics.TrackAsync(toolName, args: null, () => Task.FromResult(nonAsciiPayload));
+
+        samples.Should().Contain(s => s.Instrument == "sourcegraph.tool.response_size" && s.Value == 4);
+        // string.Length == 2; if the histogram recorded 2 the implementation regressed to chars.
+        samples.Should().NotContain(s => s.Instrument == "sourcegraph.tool.response_size" && s.Value == nonAsciiPayload.Length);
+    }
+
+    [Fact]
     public async Task TrackAsync_withMeterListener_emitsBothCallsAndErrorsOnFailure()
     {
         const string toolName = "test_otel_meter_failure";

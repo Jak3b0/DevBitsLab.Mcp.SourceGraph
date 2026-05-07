@@ -52,7 +52,14 @@ public static class ToolMetrics
         finally
         {
             sw.Stop();
-            var responseBytes = System.Text.Encoding.UTF8.GetByteCount(result);
+            // UTF-8 byte counting is O(n) — skip it when nobody's listening so the wrapper
+            // stays cheap on the cold path. Activity.IsAllDataRequested is true exactly when
+            // an ActivityListener wants tags; Histogram<>.Enabled is true exactly when a
+            // MeterListener is recording measurements. If neither is set we record 0, which
+            // the unsubscribed instruments discard anyway.
+            var responseBytes = (activity?.IsAllDataRequested == true || Telemetry.ToolResponseBytes.Enabled)
+                ? System.Text.Encoding.UTF8.GetByteCount(result)
+                : 0;
             activity?.SetTag("mcp.tool.response_bytes", responseBytes);
             Record(toolName, args, result.Length, responseBytes, sw.Elapsed, ok);
         }
@@ -83,7 +90,10 @@ public static class ToolMetrics
         finally
         {
             sw.Stop();
-            var responseBytes = System.Text.Encoding.UTF8.GetByteCount(result);
+            // See TrackAsync: gate the O(n) UTF-8 byte count behind listener presence.
+            var responseBytes = (activity?.IsAllDataRequested == true || Telemetry.ToolResponseBytes.Enabled)
+                ? System.Text.Encoding.UTF8.GetByteCount(result)
+                : 0;
             activity?.SetTag("mcp.tool.response_bytes", responseBytes);
             Record(toolName, args, result.Length, responseBytes, sw.Elapsed, ok);
         }

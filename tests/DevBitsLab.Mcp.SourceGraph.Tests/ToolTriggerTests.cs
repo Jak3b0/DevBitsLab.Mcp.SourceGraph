@@ -82,7 +82,7 @@ public sealed class ToolTriggerTests
     }
 
     [Fact]
-    public void ToolRegistry_appendsTrigger_whenProvided()
+    public void ToolRegistry_appendsTrigger_whenTriggerOverloadIsCalled()
     {
         var record = new PluginRecord("plugin", "1.0", "/path/to.dll", false);
         var registry = new ToolRegistry("mine", new HashSet<string>(StringComparer.Ordinal), record);
@@ -95,13 +95,25 @@ public sealed class ToolTriggerTests
     }
 
     [Fact]
-    public void ToolRegistry_omitsTrigger_whenNotProvided()
+    public void ToolRegistry_omitsTrigger_whenThreeArgOverloadIsCalled()
     {
+        // The 3-arg overload is the original SDK 1.0.0 signature, kept on the interface so
+        // plugins compiled against 1.0.0 keep linking and running.
         var record = new PluginRecord("plugin", "1.0", "/path/to.dll", false);
         var registry = new ToolRegistry("mine", new HashSet<string>(StringComparer.Ordinal), record);
         registry.AddTool("find_handlers", "Find handlers.", new Func<string>(() => "ok"));
 
         registry.RegisteredTools[0].ProtocolTool.Description.Should().Be("Find handlers.");
+    }
+
+    [Fact]
+    public void ToolRegistry_triggerOverload_rejectsEmptyTrigger()
+    {
+        var record = new PluginRecord("plugin", "1.0", "/path/to.dll", false);
+        var registry = new ToolRegistry("mine", new HashSet<string>(StringComparer.Ordinal), record);
+
+        var act = () => registry.AddTool("find_handlers", "Find handlers.", new Func<string>(() => "ok"), trigger: "  ");
+        act.Should().Throw<ArgumentException>().WithMessage("*non-empty*");
     }
 
     [Fact]

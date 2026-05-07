@@ -33,7 +33,20 @@ public sealed class ToolRegistry : IToolRegistry
     public IReadOnlyList<McpServerTool> RegisteredTools => _registered;
 
     /// <inheritdoc />
-    public void AddTool(string toolName, string description, Delegate handler, string? trigger = null)
+    public void AddTool(string toolName, string description, Delegate handler)
+        => AddToolCore(toolName, description, handler, trigger: null);
+
+    /// <inheritdoc />
+    public void AddTool(string toolName, string description, Delegate handler, string trigger)
+    {
+        if (string.IsNullOrWhiteSpace(trigger))
+        {
+            throw new ArgumentException("Trigger must be non-empty when calling the trigger-bearing overload.", nameof(trigger));
+        }
+        AddToolCore(toolName, description, handler, trigger);
+    }
+
+    private void AddToolCore(string toolName, string description, Delegate handler, string? trigger)
     {
         if (string.IsNullOrEmpty(toolName))
         {

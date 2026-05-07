@@ -36,7 +36,7 @@
          The vector store native binding ships native vec0.{dylib,dll,so} via a runtimes/
          payload that flows into bin/.../runtimes/{rid}/native via the SDK. -->
     <PackageVersion Include="Microsoft.ML.OnnxRuntime" Version="1.25.1" />
-    <PackageVersion Include="Microsoft.Extensions.AI.Abstractions" Version="10.5.1" />
+    <PackageVersion Include="Microsoft.Extensions.AI.Abstractions" Version="10.5.2" />
     <PackageVersion Include="FastBertTokenizer" Version="1.0.28" />
     <PackageVersion Include="sqlite-vec" Version="0.1.7-alpha.2.1" />
 

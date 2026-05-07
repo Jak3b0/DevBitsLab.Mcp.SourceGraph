@@ -1,4 +1,5 @@
 using DevBitsLab.Mcp.SourceGraph.Sdk;
+using DevBitsLab.Mcp.SourceGraph.Server.Tools;
 using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol.Server;
 
@@ -32,7 +33,7 @@ public sealed class ToolRegistry : IToolRegistry
     public IReadOnlyList<McpServerTool> RegisteredTools => _registered;
 
     /// <inheritdoc />
-    public void AddTool(string toolName, string description, Delegate handler)
+    public void AddTool(string toolName, string description, Delegate handler, string? trigger = null)
     {
         if (string.IsNullOrEmpty(toolName))
         {
@@ -53,7 +54,7 @@ public sealed class ToolRegistry : IToolRegistry
         var tool = McpServerTool.Create(handler, new McpServerToolCreateOptions
         {
             Name = fullName,
-            Description = description,
+            Description = ToolDescriptionFormatter.AppendTrigger(description, trigger),
         });
         _registered.Add(tool);
         _ownerRecord.RegisteredToolNames.Add(fullName);

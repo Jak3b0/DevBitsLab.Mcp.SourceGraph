@@ -42,7 +42,14 @@ public interface IToolRegistry
     /// </param>
     /// <param name="description">Human-readable description used by the MCP client to render the tool.</param>
     /// <param name="handler">Delegate implementing the tool body. Standard MCP SDK rules apply for parameter binding.</param>
-    void AddTool(string toolName, string description, Delegate handler);
+    /// <param name="trigger">
+    ///     Optional natural-language question phrase the tool answers (e.g.
+    ///     <c>"\"who handles MediatR request X?\""</c>). When supplied, the host appends a
+    ///     <c>Use when: &lt;trigger&gt;</c> line to the tool's description before registering it
+    ///     with the underlying MCP server. Pass <see langword="null"/> to skip — the tool still
+    ///     registers, it's just not advertised by trigger.
+    /// </param>
+    void AddTool(string toolName, string description, Delegate handler, string? trigger = null);
 }
 
 /// <summary>

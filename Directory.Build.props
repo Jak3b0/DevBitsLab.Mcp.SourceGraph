@@ -33,4 +33,10 @@
     <!-- Embeds source-control metadata into the PDB; required by SourceLink to resolve `https://github.com/...`. -->
     <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="all" />
   </ItemGroup>
+
+  <ItemGroup>
+    <!-- Pack the repo-root LICENSE as ordinary content alongside <PackageLicenseExpression>;
+         do NOT also set <PackageLicenseFile>, that would conflict and fail the pack. -->
+    <None Include="$(MSBuildThisFileDirectory)LICENSE" Pack="true" PackagePath="\" Visible="false" />
+  </ItemGroup>
 </Project>

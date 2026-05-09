@@ -218,7 +218,7 @@ Every existing query tool (`find_definition`, `find_references`, `list_symbols_i
 
 #### Scenario: Default behaviour
 - **WHEN** any tool is invoked without a `scope` argument
-- **THEN** the query runs against the configured `default_scope` (or the single registered scope when none is configured), and the response notes the implicit scope it queried
+- **THEN** the query runs against the configured `default_scope` (or the single registered scope when none is configured), and the response carries no in-band scope annotation — the agent can call `list_scopes` if it needs to know which scope answered
 
 #### Scenario: Explicit single scope
 - **WHEN** a tool is invoked with `scope = "backend"`

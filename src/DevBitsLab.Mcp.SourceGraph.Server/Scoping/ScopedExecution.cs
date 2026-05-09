@@ -32,7 +32,12 @@ public static class ScopedExecution
             return "No scopes matched.";
         }
 
-        // Common shortcut for single-host: no header dance, no merging.
+        // Common shortcut for single-host: no header dance, no merging. Implicit-scope
+        // annotation removed — it landed on response line 1 and competed with the leaf brand
+        // mark for visual real estate in chat clients (italic markdown chrome adjacent to the
+        // glyph). Agents that want to know which scope answered can call list_scopes / inspect
+        // graph_stats. ScopeResolution.IsImplicit is preserved on the record for future use
+        // (e.g. footer placement, telemetry tag).
         if (hosts.Count == 1)
         {
             var host = hosts[0];
@@ -40,10 +45,7 @@ public static class ScopedExecution
             {
                 return $"scope `{host.Scope.Id}` is degraded: {host.StatusMessage ?? "(no message)"}";
             }
-            var body = await onResolved(host).ConfigureAwait(false);
-            return resolution.IsImplicit
-                ? $"_(scope: `{host.Scope.Id}`)_\n\n{body}"
-                : body;
+            return await onResolved(host).ConfigureAwait(false);
         }
 
         // Multi-host: render each scope's response in turn, prefixed with the scope id. Tools that

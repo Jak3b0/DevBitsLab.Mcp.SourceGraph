@@ -252,10 +252,12 @@ public sealed class ResourceLinkInvariantTests : IAsyncLifetime, IDisposable
     /// </summary>
     private async Task AssertEveryLinkResolves(CallToolResult result)
     {
-        var links = result.Content?.OfType<ResourceLinkBlock>().ToList() ?? new List<ResourceLinkBlock>();
-        foreach (var link in links)
+        // Map up-front to URIs — the loop body uses each link only via its Uri, so projecting
+        // first keeps the loop variable focused on the value it actually inspects.
+        var uris = result.Content?.OfType<ResourceLinkBlock>().Select(b => b.Uri).ToList()
+            ?? new List<string>();
+        foreach (var uri in uris)
         {
-            var uri = link.Uri;
             uri.Should().StartWith("graph://", $"every emitted link must use the project's graph:// scheme; got: {uri}");
 
             string? card;

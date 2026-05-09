@@ -204,11 +204,15 @@ public sealed class StructuredContentInvariantTests : IAsyncLifetime, IDisposabl
         // Probe FindDefinitionHit (nested) — carries both `file_path` and `xml_summary`, the two
         // snake_case names that motivated the fix.
         var schema = JsonSchemaExporter.GetJsonSchemaAsNode(options, typeof(FindDefinitionResult));
-        schema.Should().NotBeNull();
-        var hitProps = schema!["properties"]?["hits"]?["items"]?["properties"];
-        hitProps.Should().NotBeNull(
-            "FindDefinitionResult.Hits[<n>] should expose its element schema under .items.properties; actual schema was: " + schema.ToJsonString());
-        var hitPropertyNames = hitProps!.AsObject().Select(kv => kv.Key).ToList();
+        Assert.NotNull(schema);
+        // Drill through { properties: { hits: { items: { properties: {…} } } } }. Use xUnit's
+        // Assert.NotNull so its [NotNull] annotation propagates through nullable flow analysis —
+        // FluentAssertions' Should().NotBeNull() doesn't, so the subsequent .AsObject() access
+        // would otherwise be flagged as a potential null dereference.
+        var hitProps = schema["properties"]?["hits"]?["items"]?["properties"]
+            ?? throw new Xunit.Sdk.XunitException(
+                "FindDefinitionResult.Hits[<n>] should expose its element schema under .items.properties; actual schema was: " + schema.ToJsonString());
+        var hitPropertyNames = hitProps.AsObject().Select(kv => kv.Key).ToList();
         hitPropertyNames.Should().Contain("file_path",
             "FindDefinitionHit.FilePath has [JsonPropertyName(\"file_path\")] so the schema must publish the snake_case name");
         hitPropertyNames.Should().Contain("xml_summary",
@@ -221,7 +225,10 @@ public sealed class StructuredContentInvariantTests : IAsyncLifetime, IDisposabl
         // Spot-check a top-level (non-nested) DTO too: ListCallersResult has TargetSymbolId,
         // TargetFqn, TargetKind, EdgeKind that all carry snake_case overrides.
         var callersSchema = JsonSchemaExporter.GetJsonSchemaAsNode(options, typeof(ListCallersResult));
-        var callersProps = callersSchema!["properties"]?.AsObject().Select(kv => kv.Key).ToList();
+        Assert.NotNull(callersSchema);
+        var callersPropertiesNode = callersSchema["properties"]
+            ?? throw new Xunit.Sdk.XunitException("ListCallersResult schema is missing top-level .properties");
+        var callersProps = callersPropertiesNode.AsObject().Select(kv => kv.Key).ToList();
         callersProps.Should().Contain(new[] { "target_symbol_id", "target_fqn", "target_kind", "edge_kind" },
             "ListCallersResult's top-level fields must publish snake_case names matching the structuredContent payload");
         callersProps.Should().NotContain("targetSymbolId");

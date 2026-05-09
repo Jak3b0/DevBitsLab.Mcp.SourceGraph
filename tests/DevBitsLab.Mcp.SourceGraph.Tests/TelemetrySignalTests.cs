@@ -140,6 +140,77 @@ public sealed class TelemetrySignalTests
         result.Should().Be("\U0001F33F result-from-body");
     }
 
+    // ── Multi-content overloads (tool-output-content-blocks) ─────────────────────────────
+
+    [Fact]
+    public async Task TrackAsync_contentList_brandsFirstTextBlock_andReturnsList()
+    {
+        // The IReadOnlyList<ContentBlock> overload routes the body's content list through the leaf
+        // chokepoint, which prefixes the first user-visible text block. Audience-restricted blocks
+        // are skipped. Other items (resource links etc.) flow through unchanged.
+        var content = new ModelContextProtocol.Protocol.ContentBlock[]
+        {
+            new ModelContextProtocol.Protocol.TextContentBlock { Text = "found 3 things" },
+            new ModelContextProtocol.Protocol.ResourceLinkBlock { Uri = "graph://symbol/1", Name = "X" },
+        };
+        var result = await ToolMetrics.TrackAsync(
+            "test_content_overload",
+            args: null,
+            () => Task.FromResult<IReadOnlyList<ModelContextProtocol.Protocol.ContentBlock>>(content));
+
+        result.Count.Should().Be(2);
+        ((ModelContextProtocol.Protocol.TextContentBlock)result[0]).Text.Should().StartWith("\U0001F33F ");
+        result[1].Should().BeOfType<ModelContextProtocol.Protocol.ResourceLinkBlock>();
+    }
+
+    [Fact]
+    public async Task TrackAsync_callToolResult_brandsAndReturns_withStructuredContentIntact()
+    {
+        var dto = new TestStructuredDto("ok", 42);
+        var result = await ToolMetrics.TrackAsync(
+            "test_calltoolresult_overload",
+            args: null,
+            () => Task.FromResult(new ModelContextProtocol.Protocol.CallToolResult
+            {
+                Content = new List<ModelContextProtocol.Protocol.ContentBlock>
+                {
+                    new ModelContextProtocol.Protocol.TextContentBlock { Text = "1 hit" },
+                },
+                StructuredContent = System.Text.Json.JsonSerializer.SerializeToElement(dto),
+            }));
+
+        ((ModelContextProtocol.Protocol.TextContentBlock)result.Content![0]).Text.Should().StartWith("\U0001F33F ");
+        result.StructuredContent.Should().NotBeNull();
+    }
+
+    // Note: the change's design called for a runtime anonymous-type guard on
+    // CallToolResult.StructuredContent and Meta. On implementation the SDK was found to type
+    // those properties as JsonElement? and JsonObject? respectively — anonymous types fail at
+    // *compile* time, not runtime, so the guard would be unreachable. Test removed; the typed
+    // DTO discipline still applies (the JsonElement boxes only accept pre-serialized payloads).
+
+    [Fact]
+    public async Task TrackAsync_callToolResult_isErrorTrue_recordsAsErrorInTelemetry()
+    {
+        const string toolName = "test_calltoolresult_iserror";
+        var samples = new List<MeasurementSample>();
+        using var listener = SubscribeMeter(samples, toolName);
+
+        await ToolMetrics.TrackAsync(toolName, args: null, () => Task.FromResult(new ModelContextProtocol.Protocol.CallToolResult
+        {
+            Content = new List<ModelContextProtocol.Protocol.ContentBlock>
+            {
+                new ModelContextProtocol.Protocol.TextContentBlock { Text = "tool reported failure" },
+            },
+            IsError = true,
+        }));
+
+        samples.Should().Contain(s => s.Instrument == "sourcegraph.tool.calls" && s.Value == 1d);
+        samples.Should().Contain(s => s.Instrument == "sourcegraph.tool.errors" && s.Value == 1d);
+    }
+
+    private sealed record TestStructuredDto(string Status, int Value);
+
     [Fact]
     public void Telemetry_exposesPublicNameMatchingTheSpec()
     {

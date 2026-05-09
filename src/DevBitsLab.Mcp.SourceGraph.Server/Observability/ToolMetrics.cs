@@ -1,7 +1,9 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Text;
 using System.Text.Json;
 using DevBitsLab.Mcp.SourceGraph.Server.Tools;
+using ModelContextProtocol.Protocol;
 
 namespace DevBitsLab.Mcp.SourceGraph.Server.Observability;
 
@@ -91,6 +93,114 @@ public static class ToolMetrics
             activity?.SetTag("mcp.tool.response_bytes", responseBytes);
             Record(toolName, args, result.Length, responseBytes, sw.Elapsed, ok);
         }
+    }
+
+    /// <summary>
+    /// Multi-content overload: tools that return <see cref="IReadOnlyList{ContentBlock}"/> route
+    /// here. The leaf brand mark is applied to the first user-visible <see cref="TextContentBlock"/>
+    /// (audience-restricted blocks are skipped). Telemetry counts the total text length across all
+    /// blocks so usage_stats / OTel response_size remain meaningful.
+    /// </summary>
+    public static async Task<IReadOnlyList<ContentBlock>> TrackAsync(
+        string toolName, object? args, Func<Task<IReadOnlyList<ContentBlock>>> body)
+    {
+        using var activity = Telemetry.ActivitySource.StartActivity(
+            $"mcp.tool {toolName}", ActivityKind.Server);
+        activity?.SetTag("mcp.tool.name", toolName);
+        activity?.SetTag("mcp.tool.scope", ExtractScope(args));
+
+        var sw = Stopwatch.StartNew();
+        var ok = true;
+        IReadOnlyList<ContentBlock> result = Array.Empty<ContentBlock>();
+        try
+        {
+            result = await body().ConfigureAwait(false);
+            return LeafFormatter.BrandFirstText(result);
+        }
+        catch (Exception ex)
+        {
+            ok = false;
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.SetTag("exception.type", ex.GetType().FullName);
+            throw;
+        }
+        finally
+        {
+            sw.Stop();
+            var (textLen, byteLen) = MeasureContent(result);
+            activity?.SetTag("mcp.tool.response_bytes", byteLen);
+            Record(toolName, args, textLen, byteLen, sw.Elapsed, ok);
+        }
+    }
+
+    /// <summary>
+    /// Rich-result overload: tools that need <see cref="CallToolResult.StructuredContent"/> or
+    /// <see cref="CallToolResult.IsError"/> route here. Same leaf-branding + telemetry rules as the
+    /// content-list overload, plus a defensive anonymous-type guard on
+    /// <see cref="CallToolResult.StructuredContent"/> and <see cref="CallToolResult.Meta"/>: the
+    /// SDK's source-generated <c>JsonContext</c> rejects anonymous types at wire time with an
+    /// opaque exception, so we check at the chokepoint and surface a diagnosable
+    /// <see cref="InvalidOperationException"/> naming the offending tool and field.
+    /// </summary>
+    public static async Task<CallToolResult> TrackAsync(
+        string toolName, object? args, Func<Task<CallToolResult>> body)
+    {
+        using var activity = Telemetry.ActivitySource.StartActivity(
+            $"mcp.tool {toolName}", ActivityKind.Server);
+        activity?.SetTag("mcp.tool.name", toolName);
+        activity?.SetTag("mcp.tool.scope", ExtractScope(args));
+
+        var sw = Stopwatch.StartNew();
+        var ok = true;
+        CallToolResult result = new() { Content = Array.Empty<ContentBlock>() };
+        try
+        {
+            result = await body().ConfigureAwait(false);
+            // Note: the design called for an anonymous-type guard on StructuredContent / Meta to
+            // surface the same failure mode that bit us with the initialize vocabulary fix. On
+            // closer inspection the SDK already prevents it: StructuredContent is typed as
+            // JsonElement? and Meta is typed as JsonObject? — the C# compiler rejects anonymous
+            // types at assignment time, so the runtime guard is unreachable. We keep the typed
+            // DTO discipline (decision 3) but drop the guard.
+            LeafFormatter.BrandFirstText(result);
+            return result;
+        }
+        catch (Exception ex)
+        {
+            ok = false;
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.SetTag("exception.type", ex.GetType().FullName);
+            throw;
+        }
+        finally
+        {
+            sw.Stop();
+            var content = result.Content as IReadOnlyList<ContentBlock>
+                ?? (result.Content is null ? Array.Empty<ContentBlock>() : (IReadOnlyList<ContentBlock>)result.Content.ToArray());
+            var (textLen, byteLen) = MeasureContent(content);
+            activity?.SetTag("mcp.tool.response_bytes", byteLen);
+            // CallToolResult with IsError=true should still record as ok=false in telemetry so
+            // dashboards see tool-reported errors alongside thrown exceptions.
+            var effectiveOk = ok && (result.IsError != true);
+            Record(toolName, args, textLen, byteLen, sw.Elapsed, effectiveOk);
+        }
+    }
+
+    /// <summary>Sum the text-block lengths in a content list. Non-text blocks contribute nothing
+    /// (resource_link payloads carry their content elsewhere).</summary>
+    private static (int TextLen, int ByteCount) MeasureContent(IReadOnlyList<ContentBlock> content)
+    {
+        var len = 0;
+        var bytes = 0;
+        foreach (var block in content)
+        {
+            if (block is TextContentBlock t && !string.IsNullOrEmpty(t.Text))
+            {
+                len += t.Text.Length;
+                bytes += Encoding.UTF8.GetByteCount(t.Text);
+            }
+        }
+        return (len, bytes);
     }
 
     private static void Record(string toolName, object? args, int responseLen, int responseBytes, TimeSpan elapsed, bool ok)

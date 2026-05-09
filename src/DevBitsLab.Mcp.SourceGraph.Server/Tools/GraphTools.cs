@@ -84,12 +84,37 @@ public static class GraphTools
                 var multipleFlavors = await HasMultipleAnnotationFlavorsAsync(host.Store, ct).ConfigureAwait(false);
                 var sb = new StringBuilder();
                 sb.AppendLine($"{hits.Count} symbols carry [{name}]:");
-                foreach (var h in hits)
+                if (hits.Count >= 2)
                 {
-                    sb.AppendLine($"- **{h.Fqn}** ({Format.KindWithAttrs(h)}) at {Format.Location(h.FilePath, h.StartLine, h.StartCol)}");
-                    var anns = await host.Store.GetAnnotationsForSymbolAsync(h.Id, ct).ConfigureAwait(false);
-                    var line = AnnotationFormat.OneLine(anns, multipleFlavors);
-                    if (line is not null) sb.AppendLine($"  - {line}");
+                    var rows = new List<IReadOnlyList<string>>(hits.Count);
+                    foreach (var h in hits)
+                    {
+                        rows.Add(new[]
+                        {
+                            $"**{h.Fqn}**",
+                            Format.KindWithAttrs(h),
+                            Format.Location(h.FilePath, h.StartLine, h.StartCol),
+                        });
+                    }
+                    Format.AppendTable(sb, new[] { "Symbol", "Kind", "Location" }, rows);
+                    // Annotation detail still rendered as a follow-on bullet so the agent can read
+                    // each match's args without a per-cell wall-of-text in the table.
+                    foreach (var h in hits)
+                    {
+                        var anns = await host.Store.GetAnnotationsForSymbolAsync(h.Id, ct).ConfigureAwait(false);
+                        var line = AnnotationFormat.OneLine(anns, multipleFlavors);
+                        if (line is not null) sb.AppendLine($"- **{h.Fqn}**: {line}");
+                    }
+                }
+                else
+                {
+                    foreach (var h in hits)
+                    {
+                        sb.AppendLine($"- **{h.Fqn}** ({Format.KindWithAttrs(h)}) at {Format.Location(h.FilePath, h.StartLine, h.StartCol)}");
+                        var anns = await host.Store.GetAnnotationsForSymbolAsync(h.Id, ct).ConfigureAwait(false);
+                        var line = AnnotationFormat.OneLine(anns, multipleFlavors);
+                        if (line is not null) sb.AppendLine($"  - {line}");
+                    }
                 }
                 return sb.ToString();
             }, ct));
@@ -129,9 +154,25 @@ public static class GraphTools
                 }
                 sb.AppendLine();
                 sb.AppendLine($"{refs.Count} references:");
-                foreach (var r in refs)
+                if (refs.Count >= 2)
                 {
-                    sb.AppendLine($"- {RefKindLabel(r.Kind)} at {Format.Location(r.FilePath, r.Line, r.Col)}{GeneratedSuffix(r.IsGenerated)}");
+                    var rows = new List<IReadOnlyList<string>>(refs.Count);
+                    foreach (var r in refs)
+                    {
+                        rows.Add(new[]
+                        {
+                            RefKindLabel(r.Kind),
+                            Format.Location(r.FilePath, r.Line, r.Col) + GeneratedSuffix(r.IsGenerated),
+                        });
+                    }
+                    Format.AppendTable(sb, new[] { "Kind", "Location" }, rows);
+                }
+                else
+                {
+                    foreach (var r in refs)
+                    {
+                        sb.AppendLine($"- {RefKindLabel(r.Kind)} at {Format.Location(r.FilePath, r.Line, r.Col)}{GeneratedSuffix(r.IsGenerated)}");
+                    }
                 }
                 return sb.ToString();
             }, ct));
@@ -200,9 +241,26 @@ public static class GraphTools
                 var sb = new StringBuilder();
                 sb.AppendLine($"Inbound `{label}` to **{top.Fqn}** ({KindLabel(top.Kind)}):");
                 if (callers.Count == 0) { sb.AppendLine("- (none)"); return sb.ToString(); }
-                foreach (var c in callers)
+                if (callers.Count >= 2)
                 {
-                    sb.AppendLine($"- **{c.Fqn}** ({KindLabel(c.Kind)}) at {Format.Location(c.FilePath, c.StartLine, c.StartCol)}");
+                    var rows = new List<IReadOnlyList<string>>(callers.Count);
+                    foreach (var c in callers)
+                    {
+                        rows.Add(new[]
+                        {
+                            $"**{c.Fqn}**",
+                            KindLabel(c.Kind),
+                            Format.Location(c.FilePath, c.StartLine, c.StartCol),
+                        });
+                    }
+                    Format.AppendTable(sb, new[] { "Symbol", "Kind", "Location" }, rows);
+                }
+                else
+                {
+                    foreach (var c in callers)
+                    {
+                        sb.AppendLine($"- **{c.Fqn}** ({KindLabel(c.Kind)}) at {Format.Location(c.FilePath, c.StartLine, c.StartCol)}");
+                    }
                 }
                 return sb.ToString();
             }, ct));
@@ -234,9 +292,26 @@ public static class GraphTools
                 var sb = new StringBuilder();
                 sb.AppendLine($"Outbound `{label}` from **{top.Fqn}** ({KindLabel(top.Kind)}):");
                 if (callees.Count == 0) { sb.AppendLine("- (none)"); return sb.ToString(); }
-                foreach (var c in callees)
+                if (callees.Count >= 2)
                 {
-                    sb.AppendLine($"- **{c.Fqn}** ({KindLabel(c.Kind)}) at {Format.Location(c.FilePath, c.StartLine, c.StartCol)}");
+                    var rows = new List<IReadOnlyList<string>>(callees.Count);
+                    foreach (var c in callees)
+                    {
+                        rows.Add(new[]
+                        {
+                            $"**{c.Fqn}**",
+                            KindLabel(c.Kind),
+                            Format.Location(c.FilePath, c.StartLine, c.StartCol),
+                        });
+                    }
+                    Format.AppendTable(sb, new[] { "Symbol", "Kind", "Location" }, rows);
+                }
+                else
+                {
+                    foreach (var c in callees)
+                    {
+                        sb.AppendLine($"- **{c.Fqn}** ({KindLabel(c.Kind)}) at {Format.Location(c.FilePath, c.StartLine, c.StartCol)}");
+                    }
                 }
                 return sb.ToString();
             }, ct));
@@ -264,9 +339,26 @@ public static class GraphTools
                 var sb = new StringBuilder();
                 sb.AppendLine($"Implementations of **{top.Fqn}** ({KindLabel(top.Kind)}):");
                 if (filtered.Count == 0) { sb.AppendLine("- (none)"); return sb.ToString(); }
-                foreach (var c in filtered)
+                if (filtered.Count >= 2)
                 {
-                    sb.AppendLine($"- **{c.Fqn}** ({KindLabel(c.Kind)}) at {Format.Location(c.FilePath, c.StartLine, c.StartCol)}");
+                    var rows = new List<IReadOnlyList<string>>(filtered.Count);
+                    foreach (var c in filtered)
+                    {
+                        rows.Add(new[]
+                        {
+                            $"**{c.Fqn}**",
+                            KindLabel(c.Kind),
+                            Format.Location(c.FilePath, c.StartLine, c.StartCol),
+                        });
+                    }
+                    Format.AppendTable(sb, new[] { "Symbol", "Kind", "Location" }, rows);
+                }
+                else
+                {
+                    foreach (var c in filtered)
+                    {
+                        sb.AppendLine($"- **{c.Fqn}** ({KindLabel(c.Kind)}) at {Format.Location(c.FilePath, c.StartLine, c.StartCol)}");
+                    }
                 }
                 return sb.ToString();
             }, ct));
@@ -290,9 +382,26 @@ public static class GraphTools
                 if (hits.Count == 0) return $"No symbols match '{query}'.";
                 var sb = new StringBuilder();
                 sb.AppendLine($"{hits.Count} hits for '{query}':");
-                foreach (var h in hits)
+                if (hits.Count >= 2)
                 {
-                    sb.AppendLine($"- **{h.Fqn}** ({KindLabel(h.Kind)}) at {Format.Location(h.FilePath, h.StartLine, h.StartCol)}");
+                    var rows = new List<IReadOnlyList<string>>(hits.Count);
+                    foreach (var h in hits)
+                    {
+                        rows.Add(new[]
+                        {
+                            $"**{h.Fqn}**",
+                            KindLabel(h.Kind),
+                            Format.Location(h.FilePath, h.StartLine, h.StartCol),
+                        });
+                    }
+                    Format.AppendTable(sb, new[] { "Symbol", "Kind", "Location" }, rows);
+                }
+                else
+                {
+                    foreach (var h in hits)
+                    {
+                        sb.AppendLine($"- **{h.Fqn}** ({KindLabel(h.Kind)}) at {Format.Location(h.FilePath, h.StartLine, h.StartCol)}");
+                    }
                 }
                 return sb.ToString();
             }, ct));
@@ -334,32 +443,73 @@ public static class GraphTools
                 if (topAnnLine is not null) sb.AppendLine(topAnnLine);
                 sb.AppendLine();
                 sb.AppendLine($"### Inbound ({callers.Count})");
-                foreach (var c in callers)
-                {
-                    sb.Append($"- {c.Fqn} ({Format.KindWithAttrs(c)}) — {Format.Location(c.FilePath, c.StartLine, c.StartCol)}");
-                    var s = Format.OneLineSummary(c.XmlSummary);
-                    if (!string.IsNullOrEmpty(s)) sb.Append(" — _" + s + "_");
-                    sb.AppendLine();
-                    var ca = await host.Store.GetAnnotationsForSymbolAsync(c.Id, ct).ConfigureAwait(false);
-                    var caLine = AnnotationFormat.OneLine(ca, multipleFlavors);
-                    if (caLine is not null) sb.AppendLine($"  {caLine}");
-                }
-                if (callers.Count == 0) sb.AppendLine("- (none)");
+                await AppendNeighborhoodSectionAsync(sb, callers, host.Store, multipleFlavors, ct).ConfigureAwait(false);
                 sb.AppendLine();
                 sb.AppendLine($"### Outbound ({callees.Count})");
-                foreach (var c in callees)
-                {
-                    sb.Append($"- {c.Fqn} ({Format.KindWithAttrs(c)}) — {Format.Location(c.FilePath, c.StartLine, c.StartCol)}");
-                    var s = Format.OneLineSummary(c.XmlSummary);
-                    if (!string.IsNullOrEmpty(s)) sb.Append(" — _" + s + "_");
-                    sb.AppendLine();
-                    var ca = await host.Store.GetAnnotationsForSymbolAsync(c.Id, ct).ConfigureAwait(false);
-                    var caLine = AnnotationFormat.OneLine(ca, multipleFlavors);
-                    if (caLine is not null) sb.AppendLine($"  {caLine}");
-                }
-                if (callees.Count == 0) sb.AppendLine("- (none)");
+                await AppendNeighborhoodSectionAsync(sb, callees, host.Store, multipleFlavors, ct).ConfigureAwait(false);
                 return sb.ToString();
             }, ct));
+
+    /// <summary>
+    /// Render one of <c>neighborhood</c>'s Inbound / Outbound sections. When the row count is
+    /// at least two, the rows go into a `| Symbol | Kind | Location |` table — matching
+    /// `list_callers` / `list_callees` so the same edge data renders the same way across tools.
+    /// Per-row summary + annotation detail follows as bullets so it stays discoverable without
+    /// inflating the table cells. Empty / single-row sections retain the bulleted shape.
+    /// </summary>
+    private static async Task AppendNeighborhoodSectionAsync(
+        StringBuilder sb,
+        IReadOnlyList<SymbolHit> rows,
+        IGraphStore store,
+        bool multipleFlavors,
+        CancellationToken ct)
+    {
+        if (rows.Count == 0)
+        {
+            sb.AppendLine("- (none)");
+            return;
+        }
+        if (rows.Count >= 2)
+        {
+            var tableRows = new List<IReadOnlyList<string>>(rows.Count);
+            foreach (var c in rows)
+            {
+                tableRows.Add(new[]
+                {
+                    $"**{c.Fqn}**",
+                    Format.KindWithAttrs(c),
+                    Format.Location(c.FilePath, c.StartLine, c.StartCol),
+                });
+            }
+            Format.AppendTable(sb, new[] { "Symbol", "Kind", "Location" }, tableRows);
+            // Per-row detail (one-line summary + annotations) trails the table as a bulleted
+            // section so the agent can still read prose-shaped per-row context.
+            foreach (var c in rows)
+            {
+                var summary = Format.OneLineSummary(c.XmlSummary);
+                var anns = await store.GetAnnotationsForSymbolAsync(c.Id, ct).ConfigureAwait(false);
+                var annLine = AnnotationFormat.OneLine(anns, multipleFlavors);
+                if (string.IsNullOrEmpty(summary) && annLine is null) continue;
+                sb.Append($"- **{c.Fqn}**");
+                if (!string.IsNullOrEmpty(summary)) sb.Append(" — _" + summary + "_");
+                sb.AppendLine();
+                if (annLine is not null) sb.AppendLine($"  - {annLine}");
+            }
+        }
+        else
+        {
+            foreach (var c in rows)
+            {
+                sb.Append($"- {c.Fqn} ({Format.KindWithAttrs(c)}) — {Format.Location(c.FilePath, c.StartLine, c.StartCol)}");
+                var s = Format.OneLineSummary(c.XmlSummary);
+                if (!string.IsNullOrEmpty(s)) sb.Append(" — _" + s + "_");
+                sb.AppendLine();
+                var ca = await store.GetAnnotationsForSymbolAsync(c.Id, ct).ConfigureAwait(false);
+                var caLine = AnnotationFormat.OneLine(ca, multipleFlavors);
+                if (caLine is not null) sb.AppendLine($"  {caLine}");
+            }
+        }
+    }
 
     [McpServerTool]
     [ToolTrigger("\"what's important in this namespace?\" or \"what's the entrypoint to module Y?\"")]
@@ -378,15 +528,50 @@ public static class GraphTools
                 var multipleFlavors = await HasMultipleAnnotationFlavorsAsync(host.Store, ct).ConfigureAwait(false);
                 var sb = new StringBuilder();
                 sb.AppendLine($"Top {rows.Count} symbols in '{namespaceOrPath}' (by inbound calls):");
-                foreach (var row in rows)
+                if (rows.Count >= 2)
                 {
-                    sb.Append($"- in-deg {row.InDegree,3} — **{row.Symbol.Fqn}** ({Format.KindWithAttrs(row.Symbol)}) at {Format.Location(row.Symbol.FilePath, row.Symbol.StartLine, row.Symbol.StartCol)}");
-                    var s = Format.OneLineSummary(row.Symbol.XmlSummary);
-                    if (!string.IsNullOrEmpty(s)) sb.Append(" — _" + s + "_");
-                    sb.AppendLine();
-                    var anns = await host.Store.GetAnnotationsForSymbolAsync(row.Symbol.Id, ct).ConfigureAwait(false);
-                    var line = AnnotationFormat.OneLine(anns, multipleFlavors);
-                    if (line is not null) sb.AppendLine($"  - {line}");
+                    var tableRows = new List<IReadOnlyList<string>>(rows.Count);
+                    foreach (var row in rows)
+                    {
+                        tableRows.Add(new[]
+                        {
+                            row.InDegree.ToString(),
+                            $"**{row.Symbol.Fqn}**",
+                            Format.KindWithAttrs(row.Symbol),
+                            Format.Location(row.Symbol.FilePath, row.Symbol.StartLine, row.Symbol.StartCol),
+                        });
+                    }
+                    Format.AppendTable(
+                        sb,
+                        new[] { "In-deg", "Symbol", "Kind", "Location" },
+                        tableRows,
+                        new[] { TableAlignment.Right, TableAlignment.Left, TableAlignment.Left, TableAlignment.Left });
+                    // Summary + annotation rendering kept as follow-on bullets so each per-row detail
+                    // remains discoverable without flooding the table cells.
+                    foreach (var row in rows)
+                    {
+                        var s = Format.OneLineSummary(row.Symbol.XmlSummary);
+                        var anns = await host.Store.GetAnnotationsForSymbolAsync(row.Symbol.Id, ct).ConfigureAwait(false);
+                        var annLine = AnnotationFormat.OneLine(anns, multipleFlavors);
+                        if (string.IsNullOrEmpty(s) && annLine is null) continue;
+                        sb.Append($"- **{row.Symbol.Fqn}**");
+                        if (!string.IsNullOrEmpty(s)) sb.Append(" — _" + s + "_");
+                        sb.AppendLine();
+                        if (annLine is not null) sb.AppendLine($"  - {annLine}");
+                    }
+                }
+                else
+                {
+                    foreach (var row in rows)
+                    {
+                        sb.Append($"- in-deg {row.InDegree,3} — **{row.Symbol.Fqn}** ({Format.KindWithAttrs(row.Symbol)}) at {Format.Location(row.Symbol.FilePath, row.Symbol.StartLine, row.Symbol.StartCol)}");
+                        var s = Format.OneLineSummary(row.Symbol.XmlSummary);
+                        if (!string.IsNullOrEmpty(s)) sb.Append(" — _" + s + "_");
+                        sb.AppendLine();
+                        var anns = await host.Store.GetAnnotationsForSymbolAsync(row.Symbol.Id, ct).ConfigureAwait(false);
+                        var line = AnnotationFormat.OneLine(anns, multipleFlavors);
+                        if (line is not null) sb.AppendLine($"  - {line}");
+                    }
                 }
                 return sb.ToString();
             }, ct));
@@ -419,9 +604,31 @@ public static class GraphTools
                 var sb = new StringBuilder();
                 sb.AppendLine($"Upstream impact of **{top.Fqn}** ({KindLabel(top.Kind)}) [kind={label}] up to depth {maxDepth}:");
                 if (rows.Count == 0) { sb.AppendLine("- (no upstream callers found in graph)"); return sb.ToString(); }
-                foreach (var r in rows)
+                if (rows.Count >= 2)
                 {
-                    sb.AppendLine($"- d{r.Depth}: **{r.Symbol.Fqn}** ({KindLabel(r.Symbol.Kind)}) at {Format.Location(r.Symbol.FilePath, r.Symbol.StartLine, r.Symbol.StartCol)}");
+                    var tableRows = new List<IReadOnlyList<string>>(rows.Count);
+                    foreach (var r in rows)
+                    {
+                        tableRows.Add(new[]
+                        {
+                            r.Depth.ToString(),
+                            $"**{r.Symbol.Fqn}**",
+                            KindLabel(r.Symbol.Kind),
+                            Format.Location(r.Symbol.FilePath, r.Symbol.StartLine, r.Symbol.StartCol),
+                        });
+                    }
+                    Format.AppendTable(
+                        sb,
+                        new[] { "Depth", "Symbol", "Kind", "Location" },
+                        tableRows,
+                        new[] { TableAlignment.Right, TableAlignment.Left, TableAlignment.Left, TableAlignment.Left });
+                }
+                else
+                {
+                    foreach (var r in rows)
+                    {
+                        sb.AppendLine($"- d{r.Depth}: **{r.Symbol.Fqn}** ({KindLabel(r.Symbol.Kind)}) at {Format.Location(r.Symbol.FilePath, r.Symbol.StartLine, r.Symbol.StartCol)}");
+                    }
                 }
                 return sb.ToString();
             }, ct));
@@ -459,12 +666,29 @@ public static class GraphTools
                     sb.AppendLine("_(includeInherited is reserved for a future change; only direct members are returned.)_");
                 }
                 if (members.Count == 0) { sb.AppendLine("- (none)"); return sb.ToString(); }
-                foreach (var m in members)
+                if (members.Count >= 2)
                 {
-                    sb.Append($"- L{m.StartLine}: **{m.Name}** ({Format.KindWithAttrs(m)}) — `{m.Signature ?? m.Fqn}`");
-                    var s = Format.OneLineSummary(m.XmlSummary);
-                    if (!string.IsNullOrEmpty(s)) sb.Append(" — _" + s + "_");
-                    sb.AppendLine();
+                    var rows = new List<IReadOnlyList<string>>(members.Count);
+                    foreach (var m in members)
+                    {
+                        rows.Add(new[]
+                        {
+                            $"L{m.StartLine}: **{m.Name}**",
+                            Format.KindWithAttrs(m),
+                            $"`{m.Signature ?? m.Fqn}`",
+                        });
+                    }
+                    Format.AppendTable(sb, new[] { "Member", "Kind", "Signature" }, rows);
+                }
+                else
+                {
+                    foreach (var m in members)
+                    {
+                        sb.Append($"- L{m.StartLine}: **{m.Name}** ({Format.KindWithAttrs(m)}) — `{m.Signature ?? m.Fqn}`");
+                        var s = Format.OneLineSummary(m.XmlSummary);
+                        if (!string.IsNullOrEmpty(s)) sb.Append(" — _" + s + "_");
+                        sb.AppendLine();
+                    }
                 }
                 return sb.ToString();
             }, ct));
@@ -508,14 +732,38 @@ public static class GraphTools
 
                 var sb = new StringBuilder();
                 sb.AppendLine($"{hits.Count} semantic hits for '{query}':");
-                foreach (var h in hits)
+                if (hits.Count >= 2)
                 {
-                    var sym = await host.Store.GetSymbolByIdAsync(h.SymbolId, ct).ConfigureAwait(false);
-                    if (sym is null) continue;
-                    sb.Append($"- score {h.Score:F3} — **{sym.Fqn}** ({Format.KindWithAttrs(sym)}) at {Format.Location(sym.FilePath, sym.StartLine, sym.StartCol)}");
-                    var s = Format.OneLineSummary(sym.XmlSummary);
-                    if (!string.IsNullOrEmpty(s)) sb.Append(" — _" + s + "_");
-                    sb.AppendLine();
+                    var rows = new List<IReadOnlyList<string>>(hits.Count);
+                    foreach (var h in hits)
+                    {
+                        var sym = await host.Store.GetSymbolByIdAsync(h.SymbolId, ct).ConfigureAwait(false);
+                        if (sym is null) continue;
+                        rows.Add(new[]
+                        {
+                            h.Score.ToString("F3"),
+                            $"**{sym.Fqn}**",
+                            Format.KindWithAttrs(sym),
+                            Format.Location(sym.FilePath, sym.StartLine, sym.StartCol),
+                        });
+                    }
+                    Format.AppendTable(
+                        sb,
+                        new[] { "Score", "Symbol", "Kind", "Location" },
+                        rows,
+                        new[] { TableAlignment.Right, TableAlignment.Left, TableAlignment.Left, TableAlignment.Left });
+                }
+                else
+                {
+                    foreach (var h in hits)
+                    {
+                        var sym = await host.Store.GetSymbolByIdAsync(h.SymbolId, ct).ConfigureAwait(false);
+                        if (sym is null) continue;
+                        sb.Append($"- score {h.Score:F3} — **{sym.Fqn}** ({Format.KindWithAttrs(sym)}) at {Format.Location(sym.FilePath, sym.StartLine, sym.StartCol)}");
+                        var s = Format.OneLineSummary(sym.XmlSummary);
+                        if (!string.IsNullOrEmpty(s)) sb.Append(" — _" + s + "_");
+                        sb.AppendLine();
+                    }
                 }
                 return sb.ToString();
             }, ct));
@@ -570,9 +818,27 @@ public static class GraphTools
                 var symClause = symbolFqn is null ? "" : $", symbol={symbolFqn}";
                 sb.AppendLine($"Diagnostics (severity {sevLabel}{codeClause}{symClause}): {rows.Count}");
                 if (rows.Count == 0) return sb.ToString();
-                foreach (var d in rows)
+                if (rows.Count >= 2)
                 {
-                    sb.AppendLine($"- **{SeverityLabel(d.Severity)} {d.Code}** at {Format.Location(d.FilePath, d.Line, d.Col)} — {d.Message}");
+                    var tableRows = new List<IReadOnlyList<string>>(rows.Count);
+                    foreach (var d in rows)
+                    {
+                        tableRows.Add(new[]
+                        {
+                            SeverityLabel(d.Severity),
+                            d.Code,
+                            Format.Location(d.FilePath, d.Line, d.Col),
+                            d.Message,
+                        });
+                    }
+                    Format.AppendTable(sb, new[] { "Severity", "Code", "Location", "Message" }, tableRows);
+                }
+                else
+                {
+                    foreach (var d in rows)
+                    {
+                        sb.AppendLine($"- **{SeverityLabel(d.Severity)} {d.Code}** at {Format.Location(d.FilePath, d.Line, d.Col)} — {d.Message}");
+                    }
                 }
                 return sb.ToString();
             }, ct));
@@ -878,6 +1144,89 @@ internal static class Format
         var time = history.LastAuthoredAt is { } t ? t.ToString("yyyy-MM-dd") : "?";
         return $"last touched {time} by {author} ({sha})";
     }
+
+    /// <summary>
+    /// Append a GitHub-Flavored-Markdown (GFM) table to <paramref name="sb"/>: a header row, an
+    /// alignment-cued separator row, and one data row per entry in <paramref name="rows"/>.
+    /// Cells are pipe-escaped (<c>|</c> → <c>\|</c>) so literal pipes in symbols / paths don't
+    /// split table cells in the consuming client. Throws when any row's column count differs from
+    /// the header's. Used by tools that emit list-shaped results once their row count reaches the
+    /// table threshold (>= 2).
+    /// </summary>
+    public static void AppendTable(
+        StringBuilder sb,
+        IReadOnlyList<string> headers,
+        IReadOnlyList<IReadOnlyList<string>> rows,
+        IReadOnlyList<TableAlignment>? alignments = null)
+    {
+        if (headers.Count == 0) throw new ArgumentException("Table requires at least one column.", nameof(headers));
+        if (alignments is not null && alignments.Count != headers.Count)
+        {
+            throw new ArgumentException(
+                $"Alignments length ({alignments.Count}) must match headers length ({headers.Count}).",
+                nameof(alignments));
+        }
+
+        // Header row.
+        sb.Append('|');
+        foreach (var h in headers)
+        {
+            sb.Append(' ');
+            sb.Append(EscapeCell(h));
+            sb.Append(" |");
+        }
+        sb.AppendLine();
+
+        // Separator row with optional alignment cues.
+        sb.Append('|');
+        for (var i = 0; i < headers.Count; i++)
+        {
+            var align = alignments is null ? TableAlignment.Left : alignments[i];
+            sb.Append(align switch
+            {
+                TableAlignment.Right => "---:",
+                TableAlignment.Center => ":---:",
+                _ => "---",
+            });
+            sb.Append('|');
+        }
+        sb.AppendLine();
+
+        // Data rows.
+        foreach (var row in rows)
+        {
+            if (row.Count != headers.Count)
+            {
+                throw new ArgumentException(
+                    $"Row column count ({row.Count}) must match headers length ({headers.Count}).",
+                    nameof(rows));
+            }
+            sb.Append('|');
+            foreach (var cell in row)
+            {
+                sb.Append(' ');
+                sb.Append(EscapeCell(cell));
+                sb.Append(" |");
+            }
+            sb.AppendLine();
+        }
+    }
+
+    /// <summary>Escape a literal <c>|</c> in cell content so it doesn't break GFM table parsing.</summary>
+    private static string EscapeCell(string s) =>
+        string.IsNullOrEmpty(s) ? string.Empty : s.Replace("|", "\\|", StringComparison.Ordinal);
+}
+
+/// <summary>
+/// Column alignment cue for <see cref="Format.AppendTable"/>. <see cref="Left"/> emits
+/// <c>---</c> (the GFM default), <see cref="Right"/> emits <c>---:</c> (used by numeric columns
+/// like <c>In-deg</c>, <c>Depth</c>, <c>Score</c>), and <see cref="Center"/> emits <c>:---:</c>.
+/// </summary>
+public enum TableAlignment
+{
+    Left,
+    Right,
+    Center,
 }
 
 internal static class AnnotationFormat

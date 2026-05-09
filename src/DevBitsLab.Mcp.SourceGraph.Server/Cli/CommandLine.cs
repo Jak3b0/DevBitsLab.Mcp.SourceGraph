@@ -19,6 +19,12 @@ internal sealed class CommandLine
     /// <summary>True when <c>--no-leaf</c> was passed; suppresses the green-leaf brand mark on
     /// every built-in tool response and on the published <c>ServerInstructions</c> string.</summary>
     public bool NoLeaf { get; private init; }
+    /// <summary>True when <c>--strict</c> was passed; consumed by <c>vocabulary list</c> to exit
+    /// non-zero when drift candidates are reported.</summary>
+    public bool Strict { get; private init; }
+    /// <summary>The scope id passed via <c>--scope &lt;id&gt;</c>; consumed by <c>vocabulary list</c>
+    /// to filter the output to a single scope. Null means every scope.</summary>
+    public string? ScopeId { get; private init; }
     /// <summary>Positional rest args (used by `scopes add`, `scopes remove`, etc.).</summary>
     public IReadOnlyList<string> Positional { get; private init; } = Array.Empty<string>();
 
@@ -36,6 +42,8 @@ internal sealed class CommandLine
         var noHistory = false;
         var noInstructions = false;
         var noLeaf = false;
+        var strict = false;
+        string? scopeId = null;
         var positional = new List<string>();
 
         for (var i = 1; i < args.Length; i++)
@@ -69,6 +77,12 @@ internal sealed class CommandLine
                 case "--no-leaf":
                     noLeaf = true;
                     break;
+                case "--strict":
+                    strict = true;
+                    break;
+                case "--scope":
+                    scopeId = RequireArg(args, ref i, a);
+                    break;
                 default:
                     if (subcommand == "index" && solution is null && !a.StartsWith('-'))
                     {
@@ -101,6 +115,8 @@ internal sealed class CommandLine
             NoHistory = noHistory,
             NoInstructions = noInstructions,
             NoLeaf = noLeaf,
+            Strict = strict,
+            ScopeId = scopeId,
             Positional = positional,
         };
     }
@@ -178,6 +194,14 @@ internal sealed class CommandLine
           sourcegraph-mcp scopes remove <name> [--root <path>]
               Remove a scope from .sourcegraph.json.
 
+          sourcegraph-mcp vocabulary list [--scope <id>] [--strict] [--root <path>]
+              Diagnostic dump of the active kind vocabulary per scope: every distinct edge_kind,
+              symbol_kind, and annotation_flavor in storage, attributed to `[sdk]`, `[plugin: ...]`,
+              or `[unknown]`, with live emission counts. Each kind list is followed by a "Drift
+              candidates" section: pairs within Levenshtein distance ≤ 2 that may indicate two
+              indexers emitting near-duplicate identifiers (e.g. `bind-path` vs `binds-path`).
+              Exits 0 by default; with --strict, exits 2 when any drift candidate is reported.
+
         Common flags:
           --root <path>     Repository root used for `.sourcegraph.json` discovery and scope DBs.
                             Defaults to the directory holding `--solution`, then CWD.
@@ -192,6 +216,10 @@ internal sealed class CommandLine
           --no-leaf         Don't prefix tool responses (or the published `ServerInstructions`
                             string) with the green-leaf brand mark. Equivalent to setting
                             SOURCEGRAPH_NO_LEAF=1.
+          --scope <id>      Restrict the operation to a single scope. Currently consumed by
+                            `vocabulary list`; ignored elsewhere.
+          --strict          Treat warnings as errors. Currently consumed by `vocabulary list`,
+                            which exits 2 on drift candidates when set.
 
         Defaults:
           --db   ./.sourcegraph/scopes/default.db   (created if missing; legacy graph.db is migrated)

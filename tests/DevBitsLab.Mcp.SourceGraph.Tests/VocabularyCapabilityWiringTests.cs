@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using DevBitsLab.Mcp.SourceGraph.Server;
 using FluentAssertions;
 using ModelContextProtocol;
@@ -21,13 +22,17 @@ namespace DevBitsLab.Mcp.SourceGraph.Tests;
 /// The bug only surfaced when a real MCP client called <c>initialize</c>; idle stdio boots never
 /// triggered serialization, which is why the change shipped.
 ///
-/// The fix in <c>Program.cs</c> pre-serialises the vocabulary payload into a
-/// <see cref="JsonElement"/> via reflection-based serialization before storing it. JsonElement is
-/// a System.Text.Json built-in every JsonContext can write natively.
+/// The fix in <c>Program.cs</c> builds the payload as a <see cref="JsonObject"/> graph instead.
+/// <see cref="JsonObject"/> derives from <see cref="JsonNode"/>, which the SDK's source-gen
+/// context handles natively as opaque JSON — so the writer emits it through unchanged. The
+/// emitted JSON is byte-for-byte identical to what the anonymous-type path produced.
 ///
 /// These tests replay the exact wiring shape against the SDK's own
-/// <see cref="McpJsonUtilities.DefaultOptions"/> so a regression — e.g. somebody dropping the
-/// <c>SerializeToElement</c> wrap — fails CI instead of breaking the live <c>initialize</c>.
+/// <see cref="McpJsonUtilities.DefaultOptions"/> so a regression — e.g. somebody reintroducing
+/// the anonymous type — fails CI instead of breaking the live <c>initialize</c>. (Note: a
+/// stricter contract — that the value must be a <see cref="JsonNode"/> subtype the SDK
+/// recognises — is also covered by the out-of-process integration test under
+/// <c>tests/DevBitsLab.Mcp.SourceGraph.IntegrationTests/</c>, which exercises a live MCP client.)
 /// </summary>
 public sealed class VocabularyCapabilityWiringTests
 {
@@ -47,27 +52,30 @@ public sealed class VocabularyCapabilityWiringTests
     private static ServerCapabilities BuildCapabilitiesAsProgramDoes(VocabularyResult vocabulary)
     {
         // Mirror the exact wiring in src/.../Server/Program.cs RunServeAsync — keep this in sync
-        // with the live wiring or this test stops covering the live path.
+        // with the live wiring or this test stops covering the live path. Program.cs builds the
+        // value as a JsonObject graph, not an anonymous type or pre-serialised JsonElement.
         var caps = new ServerCapabilities
         {
             Experimental = new Dictionary<string, object>(StringComparer.Ordinal),
         };
-        caps.Experimental[ServerVocabulary.CapabilityKey] =
-            JsonSerializer.SerializeToElement(new
+
+        var perScope = new JsonObject();
+        foreach (var kv in vocabulary.Scopes)
+        {
+            perScope[kv.Key] = new JsonObject
             {
-                edge_kinds = vocabulary.EdgeKinds,
-                symbol_kinds = vocabulary.SymbolKinds,
-                annotation_flavors = vocabulary.AnnotationFlavors,
-                scopes = vocabulary.Scopes.ToDictionary(
-                    kv => kv.Key,
-                    kv => (object)new
-                    {
-                        edge_kinds = kv.Value.EdgeKinds,
-                        symbol_kinds = kv.Value.SymbolKinds,
-                        annotation_flavors = kv.Value.AnnotationFlavors,
-                    },
-                    StringComparer.Ordinal),
-            });
+                ["edge_kinds"] = JsonSerializer.SerializeToNode(kv.Value.EdgeKinds),
+                ["symbol_kinds"] = JsonSerializer.SerializeToNode(kv.Value.SymbolKinds),
+                ["annotation_flavors"] = JsonSerializer.SerializeToNode(kv.Value.AnnotationFlavors),
+            };
+        }
+        caps.Experimental[ServerVocabulary.CapabilityKey] = new JsonObject
+        {
+            ["edge_kinds"] = JsonSerializer.SerializeToNode(vocabulary.EdgeKinds),
+            ["symbol_kinds"] = JsonSerializer.SerializeToNode(vocabulary.SymbolKinds),
+            ["annotation_flavors"] = JsonSerializer.SerializeToNode(vocabulary.AnnotationFlavors),
+            ["scopes"] = perScope,
+        };
         return caps;
     }
 
@@ -75,12 +83,12 @@ public sealed class VocabularyCapabilityWiringTests
     public void Capabilities_serializeUnderMcpJsonContext_withoutThrowing()
     {
         // The exact path that broke: ServerCapabilities → through SDK's source-gen JsonContext.
-        // If somebody unwraps the JsonElement back to an anonymous type, this will throw the
-        // same NotSupportedException the live initialize handler did.
+        // If somebody reintroduces an anonymous type into the Experimental dictionary, this fails
+        // the same way the live initialize handler did.
         var caps = BuildCapabilitiesAsProgramDoes(SampleVocabulary());
 
         Action act = () => JsonSerializer.Serialize(caps, McpJsonUtilities.DefaultOptions);
-        act.Should().NotThrow("the SDK's source-generated JsonContext must be able to serialize ServerCapabilities.Experimental, and the JsonElement wrap is what makes that possible");
+        act.Should().NotThrow("the SDK's source-generated JsonContext must be able to serialize ServerCapabilities.Experimental, and a JsonNode-rooted graph is what makes that possible");
     }
 
     [Fact]
@@ -113,12 +121,13 @@ public sealed class VocabularyCapabilityWiringTests
     }
 
     [Fact]
-    public void Capabilities_storeJsonElement_notAnonymousType()
+    public void Capabilities_storeJsonNode_notAnonymousType()
     {
-        // Structural regression: the value MUST be a JsonElement so the SDK's source-generated
-        // JsonContext can write it as a built-in System.Text.Json type. If somebody reverts the
-        // wiring to a raw anonymous type, this assertion fires in CI — before the production
-        // initialize handler would crash with "JsonTypeInfo metadata for type ...was not provided".
+        // Structural regression: the value MUST be a JsonNode subtype (JsonObject in the live
+        // wiring, but the SDK's context handles JsonNode/JsonValue/JsonArray uniformly). If
+        // somebody reverts the wiring to a raw anonymous type, this assertion fires in CI before
+        // the production initialize handler would crash with "JsonTypeInfo metadata for type
+        // ...was not provided".
         //
         // We can't faithfully reproduce the runtime crash from outside the SDK because
         // McpJsonUtilities.DefaultOptions appears to chain a reflection fallback that the SDK's
@@ -130,7 +139,7 @@ public sealed class VocabularyCapabilityWiringTests
         var caps = BuildCapabilitiesAsProgramDoes(SampleVocabulary());
         var value = caps.Experimental![ServerVocabulary.CapabilityKey];
 
-        value.Should().BeOfType<JsonElement>(
+        value.Should().BeAssignableTo<JsonNode>(
             "anything else risks NotSupportedException at MCP initialize time when the SDK ships ServerCapabilities through its source-gen JsonContext");
     }
 }

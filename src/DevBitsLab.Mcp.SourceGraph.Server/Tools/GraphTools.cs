@@ -347,12 +347,25 @@ public static class GraphTools
                         });
                     }
                     Format.AppendTable(sb, new[] { "Symbol", "Kind", "Location" }, rows);
+                    // Per-edge payload (XAML binds-path, etc.) trails the table as bulleted sub-lines
+                    // for any rows that carry one. Most C# call edges have no payload and produce
+                    // nothing here; future edge kinds with metadata surface their detail without
+                    // bloating the table cells.
+                    foreach (var c in callers)
+                    {
+                        var payloadLine = Format.PayloadSubLine(c.PayloadJson);
+                        if (payloadLine is null) continue;
+                        sb.AppendLine($"- **{c.Fqn}**");
+                        sb.AppendLine(payloadLine);
+                    }
                 }
                 else
                 {
                     foreach (var c in callers)
                     {
                         sb.AppendLine($"- **{c.Fqn}** ({KindLabel(c.Kind)}) at {Format.Location(c.FilePath, c.StartLine, c.StartCol)}");
+                        var payloadLine = Format.PayloadSubLine(c.PayloadJson);
+                        if (payloadLine is not null) sb.AppendLine(payloadLine);
                     }
                 }
                 return sb.ToString();
@@ -398,12 +411,21 @@ public static class GraphTools
                         });
                     }
                     Format.AppendTable(sb, new[] { "Symbol", "Kind", "Location" }, rows);
+                    foreach (var c in callees)
+                    {
+                        var payloadLine = Format.PayloadSubLine(c.PayloadJson);
+                        if (payloadLine is null) continue;
+                        sb.AppendLine($"- **{c.Fqn}**");
+                        sb.AppendLine(payloadLine);
+                    }
                 }
                 else
                 {
                     foreach (var c in callees)
                     {
                         sb.AppendLine($"- **{c.Fqn}** ({KindLabel(c.Kind)}) at {Format.Location(c.FilePath, c.StartLine, c.StartCol)}");
+                        var payloadLine = Format.PayloadSubLine(c.PayloadJson);
+                        if (payloadLine is not null) sb.AppendLine(payloadLine);
                     }
                 }
                 return sb.ToString();
@@ -575,18 +597,21 @@ public static class GraphTools
                 });
             }
             Format.AppendTable(sb, new[] { "Symbol", "Kind", "Location" }, tableRows);
-            // Per-row detail (one-line summary + annotations) trails the table as a bulleted
-            // section so the agent can still read prose-shaped per-row context.
+            // Per-row detail (one-line summary + annotations + edge payload) trails the table as
+            // a bulleted section so each row's prose-shaped context stays discoverable without
+            // bloating the table cells.
             foreach (var c in rows)
             {
                 var summary = Format.OneLineSummary(c.XmlSummary);
                 var anns = await store.GetAnnotationsForSymbolAsync(c.Id, ct).ConfigureAwait(false);
                 var annLine = AnnotationFormat.OneLine(anns, multipleFlavors);
-                if (string.IsNullOrEmpty(summary) && annLine is null) continue;
+                var payloadLine = Format.PayloadSubLine(c.PayloadJson);
+                if (string.IsNullOrEmpty(summary) && annLine is null && payloadLine is null) continue;
                 sb.Append($"- **{c.Fqn}**");
                 if (!string.IsNullOrEmpty(summary)) sb.Append(" — _" + summary + "_");
                 sb.AppendLine();
                 if (annLine is not null) sb.AppendLine($"  - {annLine}");
+                if (payloadLine is not null) sb.AppendLine(payloadLine);
             }
         }
         else
@@ -600,6 +625,8 @@ public static class GraphTools
                 var ca = await store.GetAnnotationsForSymbolAsync(c.Id, ct).ConfigureAwait(false);
                 var caLine = AnnotationFormat.OneLine(ca, multipleFlavors);
                 if (caLine is not null) sb.AppendLine($"  {caLine}");
+                var payloadLine = Format.PayloadSubLine(c.PayloadJson);
+                if (payloadLine is not null) sb.AppendLine(payloadLine);
             }
         }
     }
@@ -623,6 +650,11 @@ public static class GraphTools
                 var multipleFlavors = await HasMultipleAnnotationFlavorsAsync(host.Store, ct).ConfigureAwait(false);
                 var sb = new StringBuilder();
                 sb.AppendLine($"Top {rows.Count} symbols in '{namespaceOrPath}' (by inbound calls):");
+                // module_summary deliberately omits payload sub-lines per harden-sdk-pre-xaml
+                // design.md decision (renderer dense by design — top-K rows already carry FQN +
+                // kind + location + summary + annotations, plus an in-degree prefix; per-edge
+                // payload would push the row past readable). The dedicated edge-walking tools
+                // (list_callers, list_callees, neighborhood) surface payload instead.
                 if (rows.Count >= 2)
                 {
                     var tableRows = new List<IReadOnlyList<string>>(rows.Count);
@@ -1329,6 +1361,62 @@ internal static class Format
     /// </summary>
     public static ProgressNotificationValue Progress(double fraction, string message) =>
         new() { Progress = (float)fraction, Total = 1f, Message = message };
+
+    /// <summary>
+    /// Render an indented <c>    payload: { key: "value", ... }</c> sub-line for an edge whose
+    /// originating <c>edges.payload</c> column was non-null. Returns <c>null</c> when
+    /// <paramref name="payloadJson"/> is null, empty, blank, or fails to deserialise as a JSON
+    /// object (defensive: storage stores opaque JSON, so a malformed string never crashes the
+    /// renderer — it just gets dropped). Caps the output to <see cref="PayloadKeyLimit"/> keys;
+    /// when more keys are present, appends <c> (N more)</c> at the end so the agent knows the
+    /// rendered slice is partial. String values are rendered with surrounding double quotes;
+    /// non-string JSON values (numbers, booleans, nulls, objects, arrays) round-trip through
+    /// <see cref="JsonElement.GetRawText"/>.
+    /// </summary>
+    public static string? PayloadSubLine(string? payloadJson)
+    {
+        if (string.IsNullOrWhiteSpace(payloadJson)) return null;
+        Dictionary<string, JsonElement>? parsed;
+        try
+        {
+            parsed = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(payloadJson);
+        }
+        catch (JsonException)
+        {
+            // Defensive: payload column is opaque JSON; any non-object shape (array literal, bare
+            // string, etc.) gets dropped so a malformed row never breaks tool output.
+            return null;
+        }
+        if (parsed is null || parsed.Count == 0) return null;
+
+        var sb = new StringBuilder();
+        sb.Append("    payload: { ");
+        var rendered = 0;
+        foreach (var kv in parsed)
+        {
+            if (rendered >= PayloadKeyLimit) break;
+            if (rendered > 0) sb.Append(", ");
+            sb.Append(kv.Key);
+            sb.Append(": ");
+            // Use GetRawText() for every JSON value kind: for strings it returns the JSON-encoded
+            // form (already wrapped in double quotes, with embedded quotes / backslashes / control
+            // characters escaped per RFC 8259), so a binding path containing a quote or newline
+            // can't break the markdown line. Numbers, bools, nulls, and nested object/array shapes
+            // also round-trip verbatim through GetRawText.
+            sb.Append(kv.Value.GetRawText());
+            rendered++;
+        }
+        if (parsed.Count > PayloadKeyLimit)
+        {
+            sb.Append(" (");
+            sb.Append(parsed.Count - PayloadKeyLimit);
+            sb.Append(" more)");
+        }
+        sb.Append(" }");
+        return sb.ToString();
+    }
+
+    private const int PayloadKeyLimit = 5;
 }
 
 /// <summary>

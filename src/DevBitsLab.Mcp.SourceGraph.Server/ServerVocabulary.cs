@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Threading.Tasks;
 using DevBitsLab.Mcp.SourceGraph.Core;
 using DevBitsLab.Mcp.SourceGraph.Sdk;
 using DevBitsLab.Mcp.SourceGraph.Storage;
@@ -72,8 +73,16 @@ internal static class ServerVocabulary
             {
                 await ProbeScopeAsync(dbPath, edgeKinds, symbolKinds, annotationFlavors, ct).ConfigureAwait(false);
             }
-            catch (Exception ex)
+            catch (OperationCanceledException)
             {
+                // Caller cancelled — propagate cleanly rather than swallowing.
+                throw;
+            }
+            catch (Exception ex) when (
+                ex is IOException or SqliteException or InvalidOperationException or UnauthorizedAccessException)
+            {
+                // File missing/locked, schema older than the columns we query, ambient state weird.
+                // Probe is best-effort; the SDK constants already cover the common case.
                 logger.LogDebug(ex, "Vocabulary probe failed for scope `{Id}` at {Path}", scope.Id, dbPath);
             }
         }
@@ -127,9 +136,12 @@ internal static class ServerVocabulary
         await using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
         while (await reader.ReadAsync(ct).ConfigureAwait(false))
         {
+            // Filter+map inline rather than via Where() — async stream readers don't compose with
+            // System.Linq cleanly without an extra IAsyncEnumerable adapter dependency.
             if (reader.IsDBNull(0)) continue;
             var v = reader.GetString(0);
-            if (v.Length > 0) sink.Add(v.ToLowerInvariant());
+            if (v.Length == 0) continue;
+            sink.Add(v.ToLowerInvariant());
         }
     }
 
@@ -138,18 +150,13 @@ internal static class ServerVocabulary
     /// Used to pick up the SDK's well-known kind / flavor identifiers without a hand-maintained
     /// echo of the same list here.
     /// </summary>
-    private static IEnumerable<string> EnumerateConstantStrings(Type constantsType)
-    {
-        foreach (var field in constantsType.GetFields(BindingFlags.Public | BindingFlags.Static | BindingFlags.FlattenHierarchy))
-        {
-            if (!field.IsLiteral || field.IsInitOnly) continue;
-            if (field.FieldType != typeof(string)) continue;
-            if (field.GetRawConstantValue() is string s && !string.IsNullOrEmpty(s))
-            {
-                yield return s.ToLowerInvariant();
-            }
-        }
-    }
+    private static IEnumerable<string> EnumerateConstantStrings(Type constantsType) =>
+        constantsType
+            .GetFields(BindingFlags.Public | BindingFlags.Static | BindingFlags.FlattenHierarchy)
+            .Where(f => f.IsLiteral && !f.IsInitOnly && f.FieldType == typeof(string))
+            .Select(f => f.GetRawConstantValue() as string)
+            .Where(s => !string.IsNullOrEmpty(s))
+            .Select(s => s!.ToLowerInvariant());
 }
 
 /// <summary>

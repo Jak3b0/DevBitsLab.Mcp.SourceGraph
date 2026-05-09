@@ -22,9 +22,11 @@ public sealed class SchemaVersionRebuildTest
     [Fact]
     public async Task EnsureSchema_dropsV10Data_andRebuildsV11()
     {
-        var tmp = Path.Combine(Path.GetTempPath(), "sourcegraph-schemarebuild-tests-" + Guid.NewGuid().ToString("N"));
+        // Path.Join over Path.Combine — Combine silently drops earlier args when a later one
+        // looks absolute; Join always concatenates with a separator regardless.
+        var tmp = Path.Join(Path.GetTempPath(), "sourcegraph-schemarebuild-tests-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tmp);
-        var dbPath = Path.Combine(tmp, "graph.db");
+        var dbPath = Path.Join(tmp, "graph.db");
         try
         {
             // 1) Manually scaffold a v10-flavoured DB. We don't need the entire prior schema —
@@ -91,7 +93,9 @@ public sealed class SchemaVersionRebuildTest
         }
         finally
         {
-            try { Directory.Delete(tmp, recursive: true); } catch { /* best-effort */ }
+            try { Directory.Delete(tmp, recursive: true); }
+            catch (IOException) { /* best-effort cleanup; another handle may still hold the file */ }
+            catch (UnauthorizedAccessException) { /* best-effort cleanup; readonly bit or ACL drift */ }
         }
     }
 }

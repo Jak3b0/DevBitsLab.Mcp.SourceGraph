@@ -552,7 +552,7 @@ public sealed class SqliteGraphStore : IGraphStore
                 Id: (long)r.id,
                 Name: (string)r.name,
                 Fqn: (string)r.fqn,
-                Kind: (string)r.kind_name,
+                Kind: r.kind_name,
                 FilePath: (string)r.FilePath,
                 StartLine: Convert.ToInt32(r.StartLine),
                 StartCol: Convert.ToInt32(r.StartCol),

@@ -28,9 +28,11 @@ public sealed class EdgeMetadataRoundTripTests : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        var tmp = Path.Combine(Path.GetTempPath(), "sourcegraph-edge-meta-tests-" + Guid.NewGuid().ToString("N"));
+        // Path.Join over Path.Combine — Combine silently drops earlier args when a later one
+        // looks absolute; Join always concatenates with a separator regardless.
+        var tmp = Path.Join(Path.GetTempPath(), "sourcegraph-edge-meta-tests-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tmp);
-        _dbPath = Path.Combine(tmp, "graph.db");
+        _dbPath = Path.Join(tmp, "graph.db");
         _store = new SqliteGraphStore(_dbPath);
         await _store.EnsureSchemaAsync();
     }
@@ -42,7 +44,8 @@ public sealed class EdgeMetadataRoundTripTests : IAsyncLifetime
         {
             if (File.Exists(_dbPath)) File.Delete(_dbPath);
         }
-        catch { /* best-effort */ }
+        catch (IOException) { /* best-effort cleanup; another handle may still hold the file */ }
+        catch (UnauthorizedAccessException) { /* best-effort cleanup; readonly bit or ACL drift */ }
     }
 
     private async Task<long> SeedSymbolAsync(string canonicalKey, string name)

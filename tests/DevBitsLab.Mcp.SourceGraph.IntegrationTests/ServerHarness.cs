@@ -1,0 +1,205 @@
+using System.Collections.Concurrent;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+using ModelContextProtocol.Client;
+
+namespace DevBitsLab.Mcp.SourceGraph.IntegrationTests;
+
+/// <summary>
+/// Spawns the SourceGraph MCP server as a real child process and connects an
+/// <see cref="McpClient"/> to it over stdio, returning the connected client and an
+/// <see cref="IAsyncDisposable"/> handle that tears the process down on dispose. This is the
+/// out-of-process equivalent of the in-process <c>ServerInstructionsWiringTests</c>: the wire
+/// shape on the <c>initialize</c> response — including <c>Capabilities.Experimental</c> —
+/// flows through the official MCP SDK exactly as it does for a real consumer (Claude Code,
+/// Cursor, etc.), so a regression that affects only serialisation (e.g. an SDK upgrade
+/// renaming a key, or System.Text.Json mishandling an anonymous type) is caught here where
+/// the in-process tests would miss it.
+///
+/// <para>Lifetime contract:</para>
+/// <list type="bullet">
+///   <item>The child is launched via <c>dotnet run --no-build --no-launch-profile --project &lt;Server.csproj&gt; -- serve …</c>.
+///         The IntegrationTests project's MSBuild graph lists the Server as a build-time dependency
+///         (with <c>ReferenceOutputAssembly=false</c>), so by the time tests run the Server's
+///         output is already on disk and the <c>--no-build</c> path is fast.</item>
+///   <item>Every disposal path (graceful or aborted) waits up to <see cref="ProcessExitTimeout"/>
+///         for the child to exit, then <c>Kill(entireProcessTree)</c>'s the dotnet host.
+///         This keeps a stuck server from hanging CI: a deadlocked child fails the test fast.</item>
+///   <item>Stderr lines from the child are captured into <see cref="StderrLines"/> via the
+///         transport's <c>StandardErrorLines</c> callback, so tests can assert "the handshake
+///         emitted no stderr".</item>
+/// </list>
+/// </summary>
+internal sealed class ServerHarness : IAsyncDisposable
+{
+    /// <summary>
+    /// Hard cap on how long we wait for the spawned dotnet host to exit on dispose. A stuck
+    /// child shouldn't hang the test run; if the graceful close-stdin path doesn't release
+    /// the process within this window the harness escalates to <c>Kill(entireProcessTree=true)</c>.
+    /// </summary>
+    public static readonly TimeSpan ProcessExitTimeout = TimeSpan.FromSeconds(10);
+
+    private readonly McpClient _client;
+    private readonly ConcurrentQueue<string> _stderrLines;
+    private bool _disposed;
+
+    private ServerHarness(McpClient client, ConcurrentQueue<string> stderrLines)
+    {
+        _client = client;
+        _stderrLines = stderrLines;
+    }
+
+    /// <summary>The connected MCP client. Already initialised — <c>ServerCapabilities</c> /
+    /// <c>ServerInfo</c> / <c>ServerInstructions</c> are populated.</summary>
+    public McpClient Client => _client;
+
+    /// <summary>
+    /// Snapshot of stderr lines the child has emitted so far. The MCP SDK's stdio transport
+    /// invokes the <c>StandardErrorLines</c> callback on every stderr line; we accumulate them
+    /// here. Tests call this after <see cref="StartAsync"/> returns to assert no stderr was
+    /// produced during the handshake (the server logs only via <c>LogToStandardErrorThreshold =
+    /// Trace</c> which is silent by default).
+    /// </summary>
+    public IReadOnlyCollection<string> StderrLines => _stderrLines.ToArray();
+
+    /// <summary>
+    /// Spawn the server and connect a client to it. <paramref name="serveArgs"/> is the rest
+    /// of the command line after the implicit <c>serve</c> verb: e.g.
+    /// <c>new[] { "--solution", "/abs/path/Sample.sln", "--no-history", "--no-embeddings" }</c>.
+    /// We always force <c>--no-history</c> + <c>--no-embeddings</c> at the call site so the
+    /// integration suite never touches git or downloads ONNX models in CI; this method takes
+    /// the caller's flags as-is.
+    ///
+    /// <para>Cancellation: <paramref name="cancellationToken"/> cancels the
+    /// <c>McpClient.CreateAsync</c> handshake. The harness uses an outer timeout of
+    /// <see cref="ProcessExitTimeout"/> derived from this token via
+    /// <c>CancellationTokenSource.CreateLinkedTokenSource</c> so a server that never sends an
+    /// <c>InitializeResult</c> doesn't hang the test runner.</para>
+    /// </summary>
+    public static async Task<ServerHarness> StartAsync(
+        string[] serveArgs,
+        IDictionary<string, string?>? environmentVariables = null,
+        CancellationToken cancellationToken = default)
+    {
+        var serverProject = LocateServerProject();
+        var stderrLines = new ConcurrentQueue<string>();
+
+        // Build the full argument list. `dotnet run` arguments come before the `--`, then the
+        // server's CLI args after. `--no-launch-profile` skips the launchSettings.json lookup
+        // that would otherwise log a warning to stderr on every spawn. `--no-build` keeps the
+        // spawn fast — the IntegrationTests csproj already lists Server as a build-time dep so
+        // the binaries exist by the time tests run.
+        var args = new List<string>
+        {
+            "run",
+            "--project", serverProject,
+            "--no-build",
+            "--no-launch-profile",
+            "--",
+            "serve",
+        };
+        args.AddRange(serveArgs);
+
+        // The transport owns the child process: it spawns it, wires its stdin/stdout to the
+        // JSON-RPC channel, and disposes it when the McpClient is disposed. We just need to
+        // hand it the spawn parameters. ShutdownTimeout limits how long the SDK waits for a
+        // graceful close-stdin shutdown before forcing a kill on dispose.
+        var transportOptions = new StdioClientTransportOptions
+        {
+            Command = "dotnet",
+            Arguments = args,
+            Name = "sourcegraph-mcp-integration-test",
+            ShutdownTimeout = ProcessExitTimeout,
+            StandardErrorLines = line =>
+            {
+                if (!string.IsNullOrEmpty(line)) stderrLines.Enqueue(line);
+            },
+        };
+        if (environmentVariables is not null)
+        {
+            transportOptions.EnvironmentVariables = environmentVariables;
+        }
+
+        var transport = new StdioClientTransport(transportOptions, NullLoggerFactory.Instance);
+
+        // Cap the handshake at ProcessExitTimeout. A server that never replies to `initialize`
+        // (deadlock, missing fixture, ungraceful crash) fails the test fast instead of hanging.
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        cts.CancelAfter(ProcessExitTimeout);
+
+        try
+        {
+            var client = await McpClient
+                .CreateAsync(transport, clientOptions: null, NullLoggerFactory.Instance, cts.Token)
+                .ConfigureAwait(false);
+            return new ServerHarness(client, stderrLines);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            // Internal handshake timeout fired (caller didn't cancel). Surface a clearer error so
+            // the failing test points at the actual cause instead of a generic OCE.
+            throw new TimeoutException(
+                $"sourcegraph-mcp server did not complete the MCP `initialize` handshake within {ProcessExitTimeout}. " +
+                $"Captured stderr: {string.Join(Environment.NewLine, stderrLines)}");
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_disposed) return;
+        _disposed = true;
+
+        // Disposing the client closes the transport, which closes the child's stdin and gives
+        // it the configured ShutdownTimeout to exit gracefully before being killed. We don't
+        // need to layer another timeout on top — the transport already enforces one.
+        try
+        {
+            await _client.DisposeAsync().ConfigureAwait(false);
+        }
+        catch
+        {
+            // Tests will already have signalled failure via assertion if the disposal path was
+            // misbehaving; swallow here so a flaky teardown doesn't mask the real test failure.
+        }
+    }
+
+    /// <summary>
+    /// Walk upward from <see cref="AppContext.BaseDirectory"/> to find the repo root and return
+    /// the absolute path to <c>src/DevBitsLab.Mcp.SourceGraph.Server/DevBitsLab.Mcp.SourceGraph.Server.csproj</c>.
+    /// Mirrors the fixture-discovery dance the in-process Tests project uses for
+    /// <c>tests/fixtures/Sample.sln</c>.
+    /// </summary>
+    private static string LocateServerProject()
+    {
+        for (var d = new DirectoryInfo(AppContext.BaseDirectory); d is not null; d = d.Parent)
+        {
+            var candidate = Path.Combine(
+                d.FullName,
+                "src",
+                "DevBitsLab.Mcp.SourceGraph.Server",
+                "DevBitsLab.Mcp.SourceGraph.Server.csproj");
+            if (File.Exists(candidate)) return candidate;
+        }
+        throw new FileNotFoundException(
+            "Could not locate src/DevBitsLab.Mcp.SourceGraph.Server/DevBitsLab.Mcp.SourceGraph.Server.csproj " +
+            $"from {AppContext.BaseDirectory}. The IntegrationTests project must run from the repo it lives in.");
+    }
+
+    /// <summary>
+    /// Walk upward from <see cref="AppContext.BaseDirectory"/> to find the absolute path of a
+    /// fixture under <c>tests/fixtures/</c>. <paramref name="relativeFromFixtures"/> is the
+    /// trailing path segment, e.g. <c>"Sample.sln"</c> or <c>"MultiScope"</c>. Throws if no
+    /// matching path exists; the caller's `FileNotFoundException` / `DirectoryNotFoundException`
+    /// surfaces with a concrete pointer to the missing fixture.
+    /// </summary>
+    public static string LocateFixture(string relativeFromFixtures)
+    {
+        for (var d = new DirectoryInfo(AppContext.BaseDirectory); d is not null; d = d.Parent)
+        {
+            var candidate = Path.Combine(d.FullName, "tests", "fixtures", relativeFromFixtures);
+            if (File.Exists(candidate) || Directory.Exists(candidate)) return candidate;
+        }
+        throw new FileNotFoundException(
+            $"Could not locate tests/fixtures/{relativeFromFixtures} from {AppContext.BaseDirectory}.");
+    }
+}

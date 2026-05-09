@@ -66,6 +66,14 @@ public sealed class RoslynIndexer : IAsyncDisposable, ILanguageIndexer
 
     public string? SolutionPath => _solutionPath;
 
+    /// <summary>
+    /// The underlying <see cref="MSBuildWorkspace"/> after <see cref="OpenAsync"/> completes.
+    /// Exposed so the server can construct a <see cref="MSBuildLanguageProjectFactory"/> that
+    /// surfaces every loaded project's file paths to the per-scope project lookup map without
+    /// re-opening the solution.
+    /// </summary>
+    public MSBuildWorkspace? Workspace => _workspace;
+
     public async Task OpenAsync(string solutionPath, CancellationToken ct = default)
     {
         MSBuildHost.EnsureRegistered();

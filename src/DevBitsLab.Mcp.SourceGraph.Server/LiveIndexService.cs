@@ -31,6 +31,8 @@ public sealed class LiveIndexService : BackgroundService
     private readonly ICodeEmbeddingGenerator _embeddingGenerator;
     private readonly EmbeddingModelInfo _modelInfo;
     private readonly AnalyzerPipeline _analyzerPipeline;
+    private readonly LanguageIndexerDispatcher _languageDispatcher;
+    private readonly LanguageProjectFactoryRegistry _projectFactories;
     private readonly ILogger<LiveIndexService> _logger;
     private readonly ILoggerFactory _loggerFactory;
 
@@ -43,6 +45,8 @@ public sealed class LiveIndexService : BackgroundService
         ICodeEmbeddingGenerator embeddingGenerator,
         EmbeddingModelInfo modelInfo,
         AnalyzerPipeline analyzerPipeline,
+        LanguageIndexerDispatcher languageDispatcher,
+        LanguageProjectFactoryRegistry projectFactories,
         ILogger<LiveIndexService> logger,
         ILoggerFactory loggerFactory)
     {
@@ -54,6 +58,8 @@ public sealed class LiveIndexService : BackgroundService
         _embeddingGenerator = embeddingGenerator;
         _modelInfo = modelInfo;
         _analyzerPipeline = analyzerPipeline;
+        _languageDispatcher = languageDispatcher;
+        _projectFactories = projectFactories;
         _logger = logger;
         _loggerFactory = loggerFactory;
     }
@@ -172,6 +178,43 @@ public sealed class LiveIndexService : BackgroundService
                 var initial = await indexer.IndexAllAsync(ct).ConfigureAwait(false);
                 _logger.LogInformation("Scope `{Id}` initial index complete in {Elapsed}: {Files} files re-processed",
                     scope.Id, initial.Elapsed, initial.FilesIndexed);
+
+                // Carryover from open-language-contract task 5.3 / 6.1 / 6.2: build the per-scope
+                // file → project lookup so IndexContext.Project is populated for every dispatched
+                // document. The MSBuild factory needs the open workspace; register it here on a
+                // per-scope basis (it isn't useful before the workspace is alive). The XAML
+                // factory is already in the global registry and runs as part of BuildProjectMapAsync.
+                if (indexer.Workspace is { } workspace)
+                {
+                    var perScopeFactories = new LanguageProjectFactoryRegistry();
+                    foreach (var f in _projectFactories.All()) perScopeFactories.Register(f);
+                    perScopeFactories.Register(new MSBuildLanguageProjectFactory(workspace));
+                    var perScopeDispatcher = new LanguageIndexerDispatcher(
+                        _languageDispatcher.Indexers,
+                        perScopeFactories,
+                        _loggerFactory.CreateLogger<LanguageIndexerDispatcher>());
+                    await perScopeDispatcher.BuildProjectMapAsync(host, ct).ConfigureAwait(false);
+
+                    // Dispatch every non-C# extension under the scope through its registered
+                    // indexer (the C# bulk path above already covered .cs). XAML files end up
+                    // here; plugin-supplied indexers (.py, .ts, …) too.
+                    var nonCsCount = await perScopeDispatcher.DispatchAllAsync(host, ct).ConfigureAwait(false);
+                    if (nonCsCount > 0)
+                    {
+                        _logger.LogInformation("Scope `{Id}` non-C# dispatch indexed {Count} files",
+                            scope.Id, nonCsCount);
+                    }
+                }
+                else
+                {
+                    await _languageDispatcher.BuildProjectMapAsync(host, ct).ConfigureAwait(false);
+                    var nonCsCount = await _languageDispatcher.DispatchAllAsync(host, ct).ConfigureAwait(false);
+                    if (nonCsCount > 0)
+                    {
+                        _logger.LogInformation("Scope `{Id}` non-C# dispatch indexed {Count} files (no MSBuild workspace)",
+                            scope.Id, nonCsCount);
+                    }
+                }
 
                 // Plugin analyzers: walk every indexed file and dispatch the registered analyzers.
                 // Done after the cold index so the per-scope graph already has the symbols /

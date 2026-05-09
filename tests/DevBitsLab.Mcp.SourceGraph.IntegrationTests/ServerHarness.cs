@@ -82,17 +82,22 @@ internal sealed class ServerHarness : IAsyncDisposable
         CancellationToken cancellationToken = default)
     {
         var serverProject = LocateServerProject();
+        var configuration = DetectBuildConfiguration();
         var stderrLines = new ConcurrentQueue<string>();
 
         // Build the full argument list. `dotnet run` arguments come before the `--`, then the
         // server's CLI args after. `--no-launch-profile` skips the launchSettings.json lookup
         // that would otherwise log a warning to stderr on every spawn. `--no-build` keeps the
         // spawn fast — the IntegrationTests csproj already lists Server as a build-time dep so
-        // the binaries exist by the time tests run.
+        // the binaries exist by the time tests run. `--configuration <X>` is required because
+        // `dotnet run --no-build` defaults to Debug regardless of how the test was built; CI
+        // builds Release and the harness would otherwise look for Debug binaries that don't
+        // exist. We mirror whichever configuration the test assembly itself was built in.
         var args = new List<string>
         {
             "run",
             "--project", serverProject,
+            "--configuration", configuration,
             "--no-build",
             "--no-launch-profile",
             "--",
@@ -161,6 +166,27 @@ internal sealed class ServerHarness : IAsyncDisposable
             // Tests will already have signalled failure via assertion if the disposal path was
             // misbehaving; swallow here so a flaky teardown doesn't mask the real test failure.
         }
+    }
+
+    /// <summary>
+    /// Detect the build configuration (<c>Debug</c> / <c>Release</c>) the test assembly itself
+    /// was compiled in by looking at <see cref="AppContext.BaseDirectory"/> — paths under the
+    /// MSBuild conventions land in <c>…/bin/Debug/&lt;tfm&gt;/</c> or <c>…/bin/Release/&lt;tfm&gt;/</c>.
+    /// We mirror this configuration when invoking <c>dotnet run --no-build</c> for the server so
+    /// the harness picks up the binaries that were just built (CI builds Release; local
+    /// <c>dotnet test</c> defaults to Debug). Falls back to <c>Debug</c> if the path doesn't
+    /// match either convention so unusual layouts don't crash the harness — the subsequent
+    /// <c>dotnet run --no-build</c> will surface a useful error if the chosen configuration
+    /// doesn't exist on disk.
+    /// </summary>
+    private static string DetectBuildConfiguration()
+    {
+        var baseDirectory = AppContext.BaseDirectory.Replace('\\', '/');
+        if (baseDirectory.Contains("/bin/Release/", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Release";
+        }
+        return "Debug";
     }
 
     /// <summary>

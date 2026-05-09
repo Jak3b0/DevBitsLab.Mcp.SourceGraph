@@ -290,14 +290,26 @@ public sealed class XamlLanguageIndexer : ILanguageIndexer
 
         private void EmitMergedDictionaryEdges(XamlElement element, string hostKey)
         {
-            if (!string.Equals(element.LocalName, "MergedDictionaries", StringComparison.Ordinal)) return;
+            // The canonical XAML idiom for merged dictionaries is the property-element form
+            // `<ResourceDictionary.MergedDictionaries>` (or
+            // `<Application.Resources>` containing `<ResourceDictionary.MergedDictionaries>`,
+            // or Avalonia's `<ResourceDictionary.MergedDictionaries>` shape). Match either the
+            // bare local name or the `*.MergedDictionaries` property-element form so every
+            // dialect's idiomatic shape lands. Source collection itself is keyed off the parent
+            // <ResourceDictionary>, not this property-element wrapper, so we walk grandchildren
+            // when we're on the property element and direct children when we're on the bare form.
+            var isMergedRoot = string.Equals(element.LocalName, "MergedDictionaries", StringComparison.Ordinal);
+            var isMergedProperty = element.LocalName.EndsWith(".MergedDictionaries", StringComparison.Ordinal);
+            if (!isMergedRoot && !isMergedProperty) return;
+
             foreach (var child in element.Children)
             {
                 var sourceAttr = child.FindAttributeByLocalName("Source");
                 if (sourceAttr is null || string.IsNullOrEmpty(sourceAttr.Value)) continue;
                 // We don't resolve the Source URI to a real resource dictionary in v1; emit with
                 // an unresolved sentinel so the edge is still discoverable by `list_callees`
-                // queries on the parent dictionary.
+                // queries on the parent dictionary. The source is the host symbol of the
+                // property-element / merged-dictionaries collection itself.
                 var targetKey = $"xaml:resource:{_relativePath}#__merged:{sourceAttr.Value}";
                 Events.Add(new IndexEvent.EdgeEmitted(
                     sourceCanonicalKey: hostKey,

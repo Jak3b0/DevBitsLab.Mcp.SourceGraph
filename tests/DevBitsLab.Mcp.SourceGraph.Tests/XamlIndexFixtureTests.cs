@@ -47,8 +47,8 @@ public sealed class XamlIndexFixtureTests : IAsyncLifetime
     {
         if (_wpfStore is not null) await _wpfStore.DisposeAsync();
         if (_avaloniaStore is not null) await _avaloniaStore.DisposeAsync();
-        SafeDelete(_wpfDbPath);
-        SafeDelete(_avaloniaDbPath);
+        SafeDeleteWithDir(_wpfDbPath);
+        SafeDeleteWithDir(_avaloniaDbPath);
     }
 
     [Fact]
@@ -190,8 +190,19 @@ public sealed class XamlIndexFixtureTests : IAsyncLifetime
         throw new DirectoryNotFoundException("Could not locate tests/fixtures/" + fixtureName + " from " + AppContext.BaseDirectory);
     }
 
-    private static void SafeDelete(string path)
+    private static void SafeDeleteWithDir(string path)
     {
+        // Best-effort cleanup of both the SQLite DB file AND its parent temp directory so the
+        // sourcegraph-xaml-tests-* folders don't accumulate on developer machines / CI agents.
         try { if (File.Exists(path)) File.Delete(path); } catch { /* best-effort */ }
+        try
+        {
+            var dir = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir))
+            {
+                Directory.Delete(dir, recursive: true);
+            }
+        }
+        catch { /* best-effort */ }
     }
 }

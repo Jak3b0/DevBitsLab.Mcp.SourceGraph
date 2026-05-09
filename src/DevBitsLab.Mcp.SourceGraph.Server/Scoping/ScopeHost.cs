@@ -62,8 +62,10 @@ public sealed class ScopeHost : IAsyncDisposable
     /// running every registered <see cref="ILanguageProjectFactory"/>'s <c>DiscoverAsync</c>. The
     /// dispatcher reads from this map to populate <see cref="IndexContext.Project"/> for every
     /// dispatched document; a file outside any project receives <c>Project = null</c>. Keys are
-    /// absolute, OS-native paths (case-insensitive on Windows / macOS, case-sensitive on Linux —
-    /// matching <see cref="StringComparer.OrdinalIgnoreCase"/> default).
+    /// absolute paths compared case-insensitively
+    /// (<see cref="StringComparer.OrdinalIgnoreCase"/>) regardless of OS — a deliberate v1
+    /// simplification that costs the rare two-files-with-same-name-different-case pair on
+    /// case-sensitive filesystems but spares every other path the cross-platform comparer dance.
     /// </summary>
     public Dictionary<string, ILanguageProject> ProjectByFilePath { get; } = new(StringComparer.OrdinalIgnoreCase);
 

@@ -130,8 +130,13 @@ public static class MarkupExtensionParser
     }
 
     /// <summary>
-    /// Read a quoted string. Consumes both the opening and closing quote chars. Backslash-escapes
-    /// the closing quote (so <c>'it\\'s ok'</c> is "it's ok"); other backslashes pass through.
+    /// Read a quoted string. Consumes both the opening and closing quote chars. Any backslash
+    /// is treated as an escape: the next character is appended verbatim to the value (so
+    /// <c>'it\'s ok'</c> yields "it's ok", and <c>'a\\b'</c> yields "a\\b" — only the trailing
+    /// backslash is consumed as an escape token, not the leading one). This is broader than a
+    /// strict quote-only escape but simpler to reason about and matches what
+    /// <see cref="ReadBareValue"/> does for unquoted braces; the markup-extension grammar in
+    /// practice only escapes quotes and braces so the difference is invisible to real input.
     /// </summary>
     private static string ReadQuoted(string text, ref int pos, char quote)
     {

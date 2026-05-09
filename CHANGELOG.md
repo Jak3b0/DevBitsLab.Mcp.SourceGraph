@@ -16,7 +16,7 @@ below note which package the change applies to.
   files. Indexes WPF / WinUI 3 / UWP / Avalonia / Uno from a single indexer
   with framework-profile auto-detection. Emits five symbol kinds
   (`xaml-view`, `xaml-element`, `xaml-resource`, `xaml-style`,
-  `xaml-template`), seven cross-language edge kinds (`code-behind`,
+  `xaml-template`), eight cross-language edge kinds (`code-behind`,
   `binds-path`, `binds-element`, `handles-event`, `uses-resource`,
   `instantiates-type`, `merges`, `applies-style`), and one annotation
   flavor (`xaml-attached-property`). Cross-language joins to the C#

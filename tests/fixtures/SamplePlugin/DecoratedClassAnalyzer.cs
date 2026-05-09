@@ -5,10 +5,11 @@ namespace SamplePlugin;
 /// <summary>
 /// Reference analyzer that demonstrates the <see cref="ICodeAnalyzer"/> seam. Reacts to symbols
 /// the language indexer flagged with the <c>[Decorated]</c> attribute (any class carrying it is
-/// a candidate) and emits a synthetic edge to a placeholder target. We re-use the existing
-/// <see cref="EdgeKinds.UsesType"/> kind because the SDK doesn't yet expose user-defined edge
-/// kinds in v1; the test asserts that an edge of that kind appears whose source matches a
-/// decorated class.
+/// a candidate) and emits a synthetic edge to a placeholder target. The SDK accepts any
+/// kebab-case edge-kind name (plugins are free to invent their own — see
+/// <see cref="EdgeKinds"/> for the well-known set), but this fixture re-uses
+/// <see cref="EdgeKinds.UsesType"/> so the assertion stays anchored to a stable built-in
+/// constant rather than a fixture-private name that could drift.
 /// </summary>
 public sealed class DecoratedClassAnalyzer : ICodeAnalyzer
 {

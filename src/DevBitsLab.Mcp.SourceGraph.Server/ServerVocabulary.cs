@@ -2,6 +2,7 @@ using System.Reflection;
 using DevBitsLab.Mcp.SourceGraph.Core;
 using DevBitsLab.Mcp.SourceGraph.Sdk;
 using DevBitsLab.Mcp.SourceGraph.Storage;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 
 namespace DevBitsLab.Mcp.SourceGraph.Server;
@@ -34,9 +35,13 @@ internal static class ServerVocabulary
 
     /// <summary>
     /// Compute the vocabulary for every scope in <paramref name="scopes"/>: opens each scope's DB
-    /// read-only, queries the three distinct-kind columns, and unions with the SDK constants.
-    /// Each missing or unreadable scope is skipped silently — the host stays up regardless and the
-    /// vocabulary just falls back to the constants for that scope.
+    /// in true <see cref="SqliteOpenMode.ReadOnly"/> mode, queries the three distinct-kind columns,
+    /// and unions the result with the SDK constants. The probe deliberately bypasses
+    /// <see cref="SqliteGraphStore"/> so it never runs <c>EnsureSchemaAsync</c> (which would
+    /// drop-and-rebuild a stale schema as a side effect of vocabulary collection) and never flips
+    /// the journal_mode pragma. A scope DB at an older schema version simply errors out on the
+    /// missing columns; the catch falls back to the SDK constants for that scope. Each missing or
+    /// unreadable scope is skipped silently — the host stays up regardless.
     /// </summary>
     public static async Task<VocabularyResult> ComputeAsync(
         IReadOnlyList<Scope> scopes,
@@ -65,14 +70,7 @@ internal static class ServerVocabulary
             }
             try
             {
-                await using var store = new SqliteGraphStore(dbPath);
-                await store.EnsureSchemaAsync(ct).ConfigureAwait(false);
-                foreach (var v in await store.GetDistinctEdgeKindsAsync(ct).ConfigureAwait(false))
-                    if (!string.IsNullOrEmpty(v)) edgeKinds.Add(v.ToLowerInvariant());
-                foreach (var v in await store.GetDistinctSymbolKindsAsync(ct).ConfigureAwait(false))
-                    if (!string.IsNullOrEmpty(v)) symbolKinds.Add(v.ToLowerInvariant());
-                foreach (var v in await store.GetDistinctAnnotationFlavorsAsync(ct).ConfigureAwait(false))
-                    if (!string.IsNullOrEmpty(v)) annotationFlavors.Add(v.ToLowerInvariant());
+                await ProbeScopeAsync(dbPath, edgeKinds, symbolKinds, annotationFlavors, ct).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -84,6 +82,55 @@ internal static class ServerVocabulary
             edgeKinds.ToList(),
             symbolKinds.ToList(),
             annotationFlavors.ToList());
+    }
+
+    /// <summary>
+    /// Open <paramref name="dbPath"/> in true read-only mode and union its three distinct-kind
+    /// columns into the supplied sets. Uses raw <see cref="SqliteCommand"/> so we bypass
+    /// <see cref="SqliteGraphStore"/>'s schema migration and journal-mode pragmas — this path must
+    /// have zero side effects on the file. Throws on missing columns / older schemas; the caller
+    /// catches and falls back to the SDK constants.
+    /// </summary>
+    private static async Task ProbeScopeAsync(
+        string dbPath,
+        SortedSet<string> edgeKinds,
+        SortedSet<string> symbolKinds,
+        SortedSet<string> annotationFlavors,
+        CancellationToken ct)
+    {
+        var connectionString = new SqliteConnectionStringBuilder
+        {
+            DataSource = dbPath,
+            // ReadOnly mode prevents any writes, schema migration, or WAL/journal pragmas from
+            // mutating the file. Pooling=false keeps this transient connection out of the shared
+            // pool that the indexer-side SqliteGraphStore uses.
+            Mode = SqliteOpenMode.ReadOnly,
+            Pooling = false,
+        }.ConnectionString;
+
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync(ct).ConfigureAwait(false);
+
+        await ReadDistinctIntoAsync(connection, "SELECT DISTINCT kind_name FROM edges ORDER BY kind_name", edgeKinds, ct).ConfigureAwait(false);
+        await ReadDistinctIntoAsync(connection, "SELECT DISTINCT kind_name FROM symbols ORDER BY kind_name", symbolKinds, ct).ConfigureAwait(false);
+        await ReadDistinctIntoAsync(connection, "SELECT DISTINCT flavor FROM annotations ORDER BY flavor", annotationFlavors, ct).ConfigureAwait(false);
+    }
+
+    private static async Task ReadDistinctIntoAsync(
+        SqliteConnection connection,
+        string sql,
+        SortedSet<string> sink,
+        CancellationToken ct)
+    {
+        await using var cmd = connection.CreateCommand();
+        cmd.CommandText = sql;
+        await using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            if (reader.IsDBNull(0)) continue;
+            var v = reader.GetString(0);
+            if (v.Length > 0) sink.Add(v.ToLowerInvariant());
+        }
     }
 
     /// <summary>

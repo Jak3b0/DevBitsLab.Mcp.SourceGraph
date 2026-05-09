@@ -3,7 +3,8 @@ namespace DevBitsLab.Mcp.SourceGraph.Sdk;
 /// <summary>
 /// Well-known edge-kind identifiers emitted by the built-in C# Roslyn indexer. Plugins MAY emit
 /// additional kebab-case identifiers — the host stores them as TEXT and does not reject unknown
-/// kebab-case kinds. Use <see cref="KebabCaseValidator"/> to validate plugin-supplied kinds.
+/// kebab-case kinds. Use <see cref="DevBitsLab.Mcp.SourceGraph.Sdk.Validation.KebabCaseValidator"/>
+/// to validate plugin-supplied kinds.
 /// </summary>
 public static class EdgeKinds
 {

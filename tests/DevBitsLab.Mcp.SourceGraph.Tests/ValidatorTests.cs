@@ -118,9 +118,11 @@ public sealed class CanonicalKeyValidatorTests
     [Fact]
     public void Validate_messageHints_atReservedFutureUse()
     {
-        // python is not in either scheme set — error message must NOT misleadingly call it
-        // reserved-for-future. The validator's error message specifically calls out
-        // reserved-but-not-enforced names so plugin authors can self-diagnose.
+        // vbnet is in ReservedFutureSchemes (documented but not yet enforced). The validator's
+        // error message must specifically call out the reserved-but-not-enforced status so the
+        // plugin author knows to switch to an enforced scheme rather than reading the rejection
+        // as a typo. Pair with `Validate_messageDoesNotHintFutureUse_forCompletelyUnknownScheme`
+        // below, which asserts the inverse for a scheme that's not reserved at all.
         var act = () => CanonicalKeyValidator.Validate("vbnet:T:Foo", "key");
         var ex = act.Should().Throw<ArgumentException>().Which;
         ex.Message.Should().Contain("reserved for a future language");

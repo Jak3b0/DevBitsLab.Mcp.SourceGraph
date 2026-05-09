@@ -123,7 +123,8 @@ public static class HistoryTools
                 var rows = await host.Store.ListRecentChangesAsync(sinceMs, author, limit, ct).ConfigureAwait(false);
                 var sb = new StringBuilder();
                 var authorClause = string.IsNullOrEmpty(author) ? "" : $" by author~'{author}'";
-                sb.AppendLine($"{rows.Count} symbols changed in the last {days} day(s){authorClause}:");
+                var symbolNoun = rows.Count == 1 ? "symbol" : "symbols";
+                sb.AppendLine($"{rows.Count} {symbolNoun} changed in the last {days} day(s){authorClause}:");
                 if (rows.Count == 0) return sb.ToString();
                 if (rows.Count >= 2)
                 {

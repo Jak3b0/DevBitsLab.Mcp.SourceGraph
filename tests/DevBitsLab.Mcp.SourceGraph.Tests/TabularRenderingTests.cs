@@ -75,7 +75,8 @@ public sealed class TabularRenderingTests : IAsyncLifetime, IDisposable
             // ran in WAL mode. Skipping them leaks temp files across runs.
             if (Directory.Exists(_tempDir)) Directory.Delete(_tempDir, recursive: true);
         }
-        catch (Exception) { /* best-effort cleanup; let CI keep running */ }
+        catch (IOException) { /* best-effort cleanup; WAL/SHM sidecars sometimes linger after dispose */ }
+        catch (UnauthorizedAccessException) { /* best-effort cleanup; CI sometimes denies temp-dir teardown */ }
     }
 
     private static string LocateSolution()

@@ -144,6 +144,7 @@ public static class ScopedExecution
         })).ConfigureAwait(false);
 
         var merged = new List<ContentBlock>();
+        var anyError = false;
         foreach (var (id, body) in perHost)
         {
             merged.Add(new TextContentBlock { Text = $"### scope: `{id}`" });
@@ -151,8 +152,13 @@ public static class ScopedExecution
             {
                 foreach (var b in blocks) merged.Add(b);
             }
+            // OR per-scope IsError flags so a single failed scope marks the merged response as
+            // an error — keeps ToolMetrics' ok/err telemetry honest. StructuredContent merging
+            // is still deferred (sweep-level work), but error propagation is cheap and
+            // cross-cutting, so we land it here.
+            if (body.IsError == true) anyError = true;
         }
-        return new CallToolResult { Content = merged };
+        return new CallToolResult { Content = merged, IsError = anyError ? true : null };
     }
 
     /// <summary>

@@ -110,10 +110,10 @@ public static class ScopedExecution
         CancellationToken ct)
     {
         var resolution = router.Resolve(scope);
-        if (resolution.IsError) return DiagnosticResult.Build(resolution.ErrorMessage!);
+        if (resolution.IsError) return DiagnosticResult.Error(resolution.ErrorMessage!);
 
         var hosts = resolution.Hosts;
-        if (hosts.Count == 0) return DiagnosticResult.Build("No scopes matched.");
+        if (hosts.Count == 0) return DiagnosticResult.Error("No scopes matched.");
 
         if (hosts.Count == 1)
         {
@@ -121,7 +121,7 @@ public static class ScopedExecution
             await WaitUntilReadyAsync(host, ct).ConfigureAwait(false);
             if (host.Status == "degraded")
             {
-                return DiagnosticResult.Build(
+                return DiagnosticResult.Error(
                     $"scope `{host.Scope.Id}` is degraded: {host.StatusMessage ?? "(no message)"}");
             }
             return await onResolved(host).ConfigureAwait(false);
@@ -134,7 +134,7 @@ public static class ScopedExecution
             await WaitUntilReadyAsync(h, ct).ConfigureAwait(false);
             if (h.Status == "degraded")
             {
-                return (h.Scope.Id, DiagnosticResult.Build($"scope is degraded: {h.StatusMessage ?? "(no message)"}"));
+                return (h.Scope.Id, DiagnosticResult.Error($"scope is degraded: {h.StatusMessage ?? "(no message)"}"));
             }
             try
             {
@@ -144,7 +144,7 @@ public static class ScopedExecution
             catch (OperationCanceledException) { throw; }
             catch (Exception ex)
             {
-                return (h.Scope.Id, DiagnosticResult.Build($"scope query failed: {ex.Message}"));
+                return (h.Scope.Id, DiagnosticResult.Error($"scope query failed: {ex.Message}"));
             }
         })).ConfigureAwait(false);
 

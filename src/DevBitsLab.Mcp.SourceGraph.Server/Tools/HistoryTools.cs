@@ -161,7 +161,7 @@ public static class HistoryTools
                 var sw = System.Diagnostics.Stopwatch.StartNew();
                 if (options.Disabled)
                 {
-                    return DiagnosticResult.Build("git history unavailable on this server (--no-history)");
+                    return DiagnosticResult.Error("git history unavailable on this server (--no-history)");
                 }
                 var hits = await host.Store.FindSymbolsAsync(symbol, filePathHint: null, limit: 5, ct).ConfigureAwait(false);
                 if (hits.Count == 0) return DiagnosticResult.Build($"No matches for '{symbol}'.");
@@ -248,7 +248,7 @@ public static class HistoryTools
                 var sw = System.Diagnostics.Stopwatch.StartNew();
                 if (options.Disabled)
                 {
-                    return DiagnosticResult.Build("git history unavailable on this server (--no-history)");
+                    return DiagnosticResult.Error("git history unavailable on this server (--no-history)");
                 }
                 var sinceMs = DateTimeOffset.UtcNow.AddDays(-days).ToUnixTimeMilliseconds();
                 var rows = await host.Store.ListRecentChangesAsync(sinceMs, author, limit, ct).ConfigureAwait(false);

@@ -513,23 +513,35 @@ The brand-mark chokepoint SHALL find the **first user-visible** `TextContentBloc
 - **THEN** the client renders only the `TextContentBlock` items and skips the unrecognised ones; the user sees a complete prose answer because the prose is self-sufficient
 
 ### Requirement: Structured content output
-Every built-in tool whose result is naturally typed (a list of hits, a typed singleton record, a counts summary) SHALL ship its result as both renderable `content` and a typed `structuredContent` object. The tool's MCP catalog entry SHALL declare an `outputSchema` matching the structured-content shape, with the top-level schema being `{"type":"object", ...}` (the MCP SDK rejects non-object root schemas at registration time).
+Every built-in tool whose result is naturally typed (a list of hits, a typed singleton record, a counts summary) SHALL ship its successful result as both renderable `content` and a typed `structuredContent` object. The tool's MCP catalog entry SHALL declare an `outputSchema` matching the structured-content shape, with the top-level schema being `{"type":"object", ...}` (the MCP SDK rejects non-object root schemas at registration time).
 
 `structuredContent` payloads SHALL use named DTO types — never anonymous types. The compile-time typing of `CallToolResult.StructuredContent` (`JsonElement?`) and `CallToolResult.Meta` (`JsonObject?`) enforces this at assignment: anonymous types simply do not satisfy either type, so the C# compiler rejects them before the code can even be built. No runtime guard is needed; the SDK's typed properties are the contract.
 
+Property names on the wire SHALL use `snake_case` to match the tool catalog's published `outputSchema`. C# DTOs use PascalCase records with `[property: JsonPropertyName("snake_name")]` overrides on multi-word fields, so both the source-gen-derived `structuredContent` payload and the SDK's `JsonSchemaExporter`-derived `outputSchema` publish the same wire names.
+
 The pair (`content`, `structuredContent`) SHALL describe the same result. The number of items in any structured array SHALL equal the number of corresponding rows in the rendered prose.
+
+Diagnostic short-circuits — input validation failures (unknown severity / accessibility / edge kind), disabled subsystems (`--no-history`, `--no-embeddings`), scope-routing failures (no scopes registered, scope degraded, exception thrown inside the scope query) — MAY omit `structuredContent` and SHALL set `isError = true` on the wire. Successful zero-row responses (the query ran cleanly but produced no rows) SHALL still ship the typed structured shape with the empty collection populated.
 
 #### Scenario: find_definition publishes structured hits
 - **WHEN** the agent invokes `find_definition(symbol = "Calculator")` and the graph returns 3 hits
-- **THEN** the response's `structuredContent` is a `{"hits": [...]}` object whose `hits` array has 3 typed entries with at least the fields `fqn`, `kind`, `filePath`, `line`, `column`, `signature`, `xmlSummary`; and the rendered prose lists the same 3 hits in the same order
+- **THEN** the response's `structuredContent` is a `{"hits": [...]}` object whose `hits` array has 3 typed entries with at least the fields `fqn`, `kind`, `file_path`, `line`, `column`, `signature`, `xml_summary`; and the rendered prose lists the same 3 hits in the same order
 
 #### Scenario: Output schema declared at tools/list time
 - **WHEN** an MCP client calls `tools/list`
-- **THEN** every tool that ships `structuredContent` carries an `outputSchema` field with `{"type":"object", "properties": ...}` matching the tool's structured-content payload
+- **THEN** every tool that ships `structuredContent` carries an `outputSchema` field with `{"type":"object", "properties": ...}` matching the tool's structured-content payload, with `snake_case` property names matching the wire shape of `structuredContent`
 
 #### Scenario: Empty result populates structured content
-- **WHEN** a tool that ships structured output returns no rows (e.g. `find_definition(symbol = "Nonexistent")`)
-- **THEN** the response's `structuredContent` is the typed object with an empty array (e.g. `{"hits": []}`), not omitted; the prose carries the existing "No matches for 'X'." line
+- **WHEN** a tool that ships structured output returns no rows for a successful query (e.g. `find_definition(symbol = "Nonexistent")`)
+- **THEN** the response's `structuredContent` is the typed object with an empty array (e.g. `{"hits": []}`), not omitted; `isError` is unset; the prose carries the existing "No matches for 'X'." line
+
+#### Scenario: Diagnostic responses may omit structuredContent
+- **WHEN** a tool short-circuits before producing a structured result — input validation failure, disabled subsystem, scope-routing failure, or caught exception
+- **THEN** the response MAY omit `structuredContent` entirely; the prose carries the diagnostic message branded by the leaf chokepoint; `isError` is set to `true` so telemetry and strict-validating clients can distinguish the diagnostic from a successful zero-row response
+
+#### Scenario: Successful no-resolve targets short-circuit without structuredContent
+- **WHEN** a target-shaped tool (`find_references`, `list_callers`, `list_callees`, `find_implementations`, `list_members`, `neighborhood`, `impact_of_change`, `list_tests_for`, `who_authored`) is invoked with a symbol or container the graph doesn't resolve
+- **THEN** the response ships the prose `"No matches for '<symbol>'."` line as a single text block, omits `structuredContent` (no resolved target descriptor exists to populate it), and leaves `isError` unset — telemetry counts the call as ok=true, symmetric with the historical `Task<string>` "no matches" behaviour
 
 ### Requirement: Resource-link content items
 Tools whose result rows correspond to individual symbols or files SHALL emit a `ResourceLinkBlock` per row alongside the rendered prose. Each `ResourceLinkBlock` SHALL carry a URI in the project's defined `graph://` scheme — `graph://symbol/<id>` for symbols, `graph://file/<path>` for files — pointing at a resource the project's `Resources/GraphResources.cs` subsystem can serve.

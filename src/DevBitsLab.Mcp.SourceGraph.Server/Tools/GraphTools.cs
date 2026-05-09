@@ -306,12 +306,13 @@ public static class GraphTools
                 var hits = await host.Store.FindSymbolsAsync(symbol, filePathHint: null, limit: 5, ct).ConfigureAwait(false);
                 if (hits.Count == 0)
                 {
-                    return BuildFindReferencesResult(
-                        prose: $"No matches for '{symbol}'.",
-                        target: null,
-                        refs: Array.Empty<ReferenceHit>(),
-                        scopeId: host.Scope.Id,
-                        elapsedMs: sw.ElapsedMilliseconds);
+                    // No symbol resolved — short-circuit through DiagnosticResult.Build instead of
+                    // BuildFindReferencesResult. Without a resolved target we can't construct a
+                    // meaningful FindReferencesResult (Target* fields would be sentinel placeholders,
+                    // ambiguous to consumers). Matches every other target-shaped tool's no-resolve
+                    // path. Telemetry counts as ok=true (success-with-empty), symmetric with the
+                    // pre-conversion `Task<string>` "No matches for 'X'." behaviour.
+                    return DiagnosticResult.Build($"No matches for '{symbol}'.");
                 }
 
                 var sb = new StringBuilder();
@@ -377,7 +378,7 @@ public static class GraphTools
     /// </summary>
     private static CallToolResult BuildFindReferencesResult(
         string prose,
-        SymbolHit? target,
+        SymbolHit target,
         IReadOnlyList<ReferenceHit> refs,
         string scopeId,
         long elapsedMs)
@@ -387,27 +388,24 @@ public static class GraphTools
             new TextContentBlock { Text = prose },
         };
 
-        if (target is not null)
+        // Per spec scenario "find_references emits a link per reference row": each row's URI
+        // is `graph://symbol/<id>` where the id is the *reference's symbol id*. In our schema
+        // ReferenceHit.SymbolId is the *target* symbol's id (the thing being referenced),
+        // shared across every row, so all emitted links carry the same Uri value. The Title
+        // varies per row (kind + location of this specific reference) so card-rendering UIs
+        // can distinguish individual occurrences. Wasteful in serialized bytes — N copies of
+        // the same Uri — but matches the literal spec wording. Revisit (e.g. switch to
+        // `graph://file/<path>` per row) if usage telemetry shows agents care.
+        foreach (var r in refs)
         {
-            // Per spec scenario "find_references emits a link per reference row": each row's URI
-            // is `graph://symbol/<id>` where the id is the *reference's symbol id*. In our schema
-            // ReferenceHit.SymbolId is the *target* symbol's id (the thing being referenced),
-            // shared across every row, so all emitted links carry the same Uri value. The Title
-            // varies per row (kind + location of this specific reference) so card-rendering UIs
-            // can distinguish individual occurrences. Wasteful in serialized bytes — N copies of
-            // the same Uri — but matches the literal spec wording. Revisit (e.g. switch to
-            // `graph://file/<path>` per row) if usage telemetry shows agents care.
-            foreach (var r in refs)
+            content.Add(new ResourceLinkBlock
             {
-                content.Add(new ResourceLinkBlock
-                {
-                    Uri = GraphResourceUris.Symbol(target.Id),
-                    Name = target.Fqn,
-                    Title = $"{RefKindLabel(r.Kind)} at {Format.Location(r.FilePath, r.Line, r.Col)}",
-                    Description = $"{KindLabel(target.Kind)} — {Format.Location(target.FilePath, target.StartLine, target.StartCol)}",
-                    MimeType = "text/markdown",
-                });
-            }
+                Uri = GraphResourceUris.Symbol(target.Id),
+                Name = target.Fqn,
+                Title = $"{RefKindLabel(r.Kind)} at {Format.Location(r.FilePath, r.Line, r.Col)}",
+                Description = $"{KindLabel(target.Kind)} — {Format.Location(target.FilePath, target.StartLine, target.StartCol)}",
+                MimeType = "text/markdown",
+            });
         }
 
         content.Add(AudienceMetadata.Build(
@@ -424,9 +422,9 @@ public static class GraphTools
                 IsGenerated: r.IsGenerated))
             .ToList();
         var dto = new FindReferencesResult(
-            TargetFqn: target?.Fqn ?? string.Empty,
-            TargetKind: target?.Kind ?? string.Empty,
-            TargetSymbolId: target?.Id ?? 0,
+            TargetFqn: target.Fqn,
+            TargetKind: target.Kind,
+            TargetSymbolId: target.Id,
             References: structuredReferences);
 
         return new CallToolResult
@@ -556,7 +554,7 @@ public static class GraphTools
                 if (!isAll && edgeKind is not null)
                 {
                     var unknownNote = await CheckUnknownEdgeKindAsync(host.Store, edgeKind, ct).ConfigureAwait(false);
-                    if (unknownNote is not null) return DiagnosticResult.Build(unknownNote);
+                    if (unknownNote is not null) return DiagnosticResult.Error(unknownNote);
                 }
 
                 var hits = await host.Store.FindSymbolsAsync(symbol, filePathHint: null, limit: 5, ct).ConfigureAwait(false);
@@ -693,7 +691,7 @@ public static class GraphTools
                 if (!isAll && edgeKind is not null)
                 {
                     var unknownNote = await CheckUnknownEdgeKindAsync(host.Store, edgeKind, ct).ConfigureAwait(false);
-                    if (unknownNote is not null) return DiagnosticResult.Build(unknownNote);
+                    if (unknownNote is not null) return DiagnosticResult.Error(unknownNote);
                 }
 
                 var hits = await host.Store.FindSymbolsAsync(symbol, filePathHint: null, limit: 5, ct).ConfigureAwait(false);
@@ -1043,7 +1041,7 @@ public static class GraphTools
                 if (!isAll && edgeKind is not null)
                 {
                     var unknownNote = await CheckUnknownEdgeKindAsync(host.Store, edgeKind, ct).ConfigureAwait(false);
-                    if (unknownNote is not null) return DiagnosticResult.Build(unknownNote);
+                    if (unknownNote is not null) return DiagnosticResult.Error(unknownNote);
                 }
 
                 var hits = await host.Store.FindSymbolsAsync(symbol, filePathHint: null, limit: 5, ct).ConfigureAwait(false);
@@ -1370,7 +1368,7 @@ public static class GraphTools
                 if (!isAll && edgeKind is not null)
                 {
                     var unknownNote = await CheckUnknownEdgeKindAsync(host.Store, edgeKind, ct).ConfigureAwait(false);
-                    if (unknownNote is not null) return DiagnosticResult.Build(unknownNote);
+                    if (unknownNote is not null) return DiagnosticResult.Error(unknownNote);
                 }
 
                 var hits = await host.Store.FindSymbolsAsync(symbol, filePathHint: null, limit: 5, ct).ConfigureAwait(false);
@@ -1509,7 +1507,7 @@ public static class GraphTools
                 int? accFilter = ParseAccessibility(accessibility);
                 if (!string.IsNullOrEmpty(accessibility) && accFilter is null)
                 {
-                    return DiagnosticResult.Build(
+                    return DiagnosticResult.Error(
                         $"Unknown accessibility '{accessibility}'. Valid: public, internal, private, protected, protected internal, private protected.");
                 }
 
@@ -1643,12 +1641,12 @@ public static class GraphTools
                 // string-matching the prose.
                 if (!host.EmbeddingsStore.IsAvailable || !generator.IsAvailable)
                 {
-                    return DiagnosticResult.Build(
+                    return DiagnosticResult.Error(
                         "semantic_search disabled: install the embedding model (run with the network on for first start) or remove `--no-embeddings`. The graph itself is fully indexed; other tools (`find_definition`, `search_symbols`, `list_callers`, …) work as normal.");
                 }
                 if (string.IsNullOrWhiteSpace(query))
                 {
-                    return DiagnosticResult.Build("semantic_search: provide a non-empty query.");
+                    return DiagnosticResult.Error("semantic_search: provide a non-empty query.");
                 }
 
                 var kindFilter = NormaliseKindFilter(kind);
@@ -1660,7 +1658,7 @@ public static class GraphTools
                 var queryEmbeddings = await generator.EmbedAsync(new[] { query }, ct).ConfigureAwait(false);
                 if (queryEmbeddings.Count == 0)
                 {
-                    return DiagnosticResult.Build("semantic_search: encoder produced no vector for the query.");
+                    return DiagnosticResult.Error("semantic_search: encoder produced no vector for the query.");
                 }
 
                 progress?.Report(Format.Progress(0.5, "searching"));
@@ -1837,7 +1835,7 @@ public static class GraphTools
                 var sev = ParseSeverity(severity);
                 if (sev == -1)
                 {
-                    return DiagnosticResult.Build(
+                    return DiagnosticResult.Error(
                         $"Unknown severity '{severity}'. Expected one of: hidden | info | warning | error | all.");
                 }
 

@@ -338,6 +338,28 @@ The server emits three signals you can hook into:
    `mcp.tool.scope`. Both signals are zero-cost when no listener is attached;
    pick them up with the OpenTelemetry SDK or `dotnet-counters monitor --name
    sourcegraph-mcp DevBitsLab.Mcp.SourceGraph`.
+4. **MCP `notifications/progress`** — three tools opt in to live progress
+   reporting on their slow paths: `semantic_search` (three checkpoints around
+   ONNX-model load + vector search + formatting), `impact_of_change`, and
+   `module_summary` (one starting checkpoint each). Clients opt in by sending
+   a `progressToken` field on the originating `tools/call` request:
+
+   ```json
+   {
+     "method": "tools/call",
+     "params": {
+       "name": "semantic_search",
+       "arguments": {"query": "retry on transient errors"},
+       "_meta": {"progressToken": "any-string-or-int"}
+     }
+   }
+   ```
+
+   When no `progressToken` is set, the server emits zero progress messages
+   — the wire fast-path is unchanged. When set, the server emits one
+   `notifications/progress` message per checkpoint with a normalised
+   `progress` value in `[0, 1]` and a short `message` (`encoding query`,
+   `searching`, `formatting results`, `querying`).
 
 ## Resource limits and tunables
 

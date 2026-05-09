@@ -22,6 +22,12 @@ prefer unbranded output.
 A persistent JSONL log of every tool call lives at
 `<solution>/.sourcegraph/usage.jsonl` for offline analysis.
 
+`semantic_search`, `impact_of_change`, and `module_summary` emit MCP
+`notifications/progress` when the originating `tools/call` request includes
+a `progressToken` — useful for live status indicators on the slow paths
+(cold-start ONNX model load, deep recursive CTE walks). Clients that don't
+opt in see today's silent-then-result behaviour.
+
 ## Scopes (multi-solution monorepos)
 
 A `.sourcegraph.json` at the repo root opts a project into multi-scope mode:

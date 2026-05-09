@@ -6,6 +6,7 @@ using DevBitsLab.Mcp.SourceGraph.Sdk;
 using DevBitsLab.Mcp.SourceGraph.Server.Observability;
 using DevBitsLab.Mcp.SourceGraph.Server.Scoping;
 using DevBitsLab.Mcp.SourceGraph.Storage;
+using ModelContextProtocol;
 using ModelContextProtocol.Server;
 
 namespace DevBitsLab.Mcp.SourceGraph.Server.Tools;
@@ -519,10 +520,12 @@ public static class GraphTools
         [Description("Namespace (e.g. 'Sample.Domain') or path-substring that identifies the module")] string namespaceOrPath,
         [Description("Top-K most-referenced symbols to return (default 25)")] int topK = 25,
         [Description(ScopeDescription)] string? scope = null,
+        IProgress<ProgressNotificationValue>? progress = null,
         CancellationToken ct = default) =>
         ToolMetrics.TrackAsync("module_summary", new { namespaceOrPath, topK, scope }, () =>
             ScopedExecution.RunAsync(router, scope, async host =>
             {
+                progress?.Report(Format.Progress(0.0, "querying"));
                 var rows = await host.Store.ModuleSummaryAsync(namespaceOrPath, topK, ct).ConfigureAwait(false);
                 if (rows.Count == 0) return $"No symbols matched module '{namespaceOrPath}'.";
                 var multipleFlavors = await HasMultipleAnnotationFlavorsAsync(host.Store, ct).ConfigureAwait(false);
@@ -586,6 +589,7 @@ public static class GraphTools
         [Description("Maximum results (default 100)")] int limit = 100,
         [Description("Edge kind to walk (kebab-case): calls (default) | uses-type | overrides-member | implements-member | instantiates | throws | tests | all. Plugin-defined kinds are accepted.")] string? kind = null,
         [Description(ScopeDescription)] string? scope = null,
+        IProgress<ProgressNotificationValue>? progress = null,
         CancellationToken ct = default) =>
         ToolMetrics.TrackAsync("impact_of_change", new { symbol, maxDepth, limit, kind, scope }, () =>
             ScopedExecution.RunAsync(router, scope, async host =>
@@ -600,6 +604,7 @@ public static class GraphTools
                 var hits = await host.Store.FindSymbolsAsync(symbol, filePathHint: null, limit: 5, ct).ConfigureAwait(false);
                 if (hits.Count == 0) return $"No matches for '{symbol}'.";
                 var top = hits[0];
+                progress?.Report(Format.Progress(0.0, "querying"));
                 var rows = await host.Store.ImpactOfChangeAsync(top.Id, maxDepth, limit, edgeKind, ct).ConfigureAwait(false);
                 var sb = new StringBuilder();
                 sb.AppendLine($"Upstream impact of **{top.Fqn}** ({KindLabel(top.Kind)}) [kind={label}] up to depth {maxDepth}:");
@@ -703,6 +708,7 @@ public static class GraphTools
         [Description("Top-K results to return (default 20)")] int k = 20,
         [Description("Optional kebab-case symbol kind filter: class|method|property|field|interface|namespace|...")] string? kind = null,
         [Description(ScopeDescription)] string? scope = null,
+        IProgress<ProgressNotificationValue>? progress = null,
         CancellationToken ct = default) =>
         ToolMetrics.TrackAsync("semantic_search", new { query, k, kind, scope }, () =>
             ScopedExecution.RunAsync(router, scope, async host =>
@@ -718,18 +724,24 @@ public static class GraphTools
 
                 var kindFilter = NormaliseKindFilter(kind);
 
+                // Cold-start: the JinaCodeEmbeddingGenerator singleton is lazy-instantiated by DI
+                // on first use, so the first `EmbedAsync` call after server start carries the ONNX
+                // model load (3-5s). Subsequent calls reuse the loaded model and are sub-second.
+                progress?.Report(Format.Progress(0.0, "encoding query"));
                 var queryEmbeddings = await generator.EmbedAsync(new[] { query }, ct).ConfigureAwait(false);
                 if (queryEmbeddings.Count == 0)
                 {
                     return "semantic_search: encoder produced no vector for the query.";
                 }
 
+                progress?.Report(Format.Progress(0.5, "searching"));
                 var hits = await host.EmbeddingsStore.SearchAsync(queryEmbeddings[0], k, kindFilter, ct).ConfigureAwait(false);
                 if (hits.Count == 0)
                 {
                     return $"No semantic matches for '{query}'. The graph may not have any embeddings yet — let the indexer's embedding pass complete after a fresh `index` and try again.";
                 }
 
+                progress?.Report(Format.Progress(0.9, "formatting results"));
                 var sb = new StringBuilder();
                 sb.AppendLine($"{hits.Count} semantic hits for '{query}':");
                 if (hits.Count >= 2)
@@ -1215,6 +1227,16 @@ internal static class Format
     /// <summary>Escape a literal <c>|</c> in cell content so it doesn't break GFM table parsing.</summary>
     private static string EscapeCell(string s) =>
         string.IsNullOrEmpty(s) ? string.Empty : s.Replace("|", "\\|", StringComparison.Ordinal);
+
+    /// <summary>
+    /// Build a <see cref="ProgressNotificationValue"/> for emission via an injected
+    /// <see cref="IProgress{T}"/>. Centralises the notification shape so every tool's checkpoints
+    /// share the same contract: <c>Total = 1.0</c>, <paramref name="fraction"/> in <c>[0.0, 1.0]</c>,
+    /// and a short imperative <paramref name="message"/> with no caller-supplied substrings (avoids
+    /// PII echo back to the chat UI).
+    /// </summary>
+    public static ProgressNotificationValue Progress(double fraction, string message) =>
+        new() { Progress = (float)fraction, Total = 1f, Message = message };
 }
 
 /// <summary>

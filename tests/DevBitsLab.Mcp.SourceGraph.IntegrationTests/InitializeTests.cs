@@ -264,13 +264,13 @@ public sealed class InitializeTests
                 if (!sdkBin.Exists) continue;
                 // Pick the first TFM directory that has the SDK DLL — this project only depends
                 // on the SDK's public constants, which are TFM-independent.
-                foreach (var tfmDir in sdkBin.EnumerateDirectories())
+                var match = sdkBin
+                    .EnumerateDirectories()
+                    .Select(tfmDir => Path.Join(tfmDir.FullName, "DevBitsLab.Mcp.SourceGraph.Sdk.dll"))
+                    .FirstOrDefault(File.Exists);
+                if (match is not null)
                 {
-                    var candidate = Path.Join(tfmDir.FullName, "DevBitsLab.Mcp.SourceGraph.Sdk.dll");
-                    if (File.Exists(candidate))
-                    {
-                        return Assembly.LoadFrom(candidate);
-                    }
+                    return Assembly.LoadFrom(match);
                 }
             }
         }

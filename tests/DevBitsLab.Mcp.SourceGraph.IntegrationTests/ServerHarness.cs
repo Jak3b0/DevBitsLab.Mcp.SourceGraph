@@ -161,10 +161,20 @@ internal sealed class ServerHarness : IAsyncDisposable
         {
             await _client.DisposeAsync().ConfigureAwait(false);
         }
-        catch (Exception)
+        catch (Exception ex) when (
+            ex is IOException
+            or ObjectDisposedException
+            or OperationCanceledException
+            or InvalidOperationException)
         {
-            // Tests will already have signalled failure via assertion if the disposal path was
-            // misbehaving; swallow here so a flaky teardown doesn't mask the real test failure.
+            // Swallow the disposal-path exceptions the MCP SDK / stdio transport realistically
+            // throws — broken pipe (IOException), already-disposed race
+            // (ObjectDisposedException), graceful close-stdin timeout (OperationCanceledException),
+            // and state-machine reentry (InvalidOperationException). Tests will already have
+            // signalled failure via assertion if the disposal path was misbehaving; swallowing
+            // these keeps a flaky teardown from masking the real test failure. Anything else
+            // (e.g. a NullReferenceException indicating a bug in the harness itself) propagates
+            // and surfaces.
         }
     }
 

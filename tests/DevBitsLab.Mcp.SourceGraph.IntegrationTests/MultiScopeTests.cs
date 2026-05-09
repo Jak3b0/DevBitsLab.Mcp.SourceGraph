@@ -74,13 +74,14 @@ public sealed class MultiScopeTests
         await using var harness = await ServerHarness.StartAsync(WithRoot(multiScopeRoot));
 
         var experimental = harness.Client.ServerCapabilities?.Experimental;
-        experimental.Should().NotBeNull("server should publish experimental capabilities by default");
-        // FluentAssertions's NotBeNull doesn't propagate non-nullness to the static type, so we
-        // capture the asserted-non-null reference explicitly before subsequent dereferences.
-        var experimentalNonNull = experimental!;
-        experimentalNonNull.Should().ContainKey("sourcegraph.vocabulary");
+        // xUnit's Assert.NotNull propagates non-nullness to the static analyzer
+        // (annotated with [NotNull]), unlike FluentAssertions's NotBeNull. Subsequent
+        // dereferences are then safe without `!` and without tripping CodeQL's
+        // "may be null at this access" warning.
+        Assert.NotNull(experimental);
+        experimental.Should().ContainKey("sourcegraph.vocabulary");
 
-        var raw = experimentalNonNull["sourcegraph.vocabulary"];
+        var raw = experimental["sourcegraph.vocabulary"];
         raw.Should().BeOfType<JsonElement>(
             "Experimental values come through the SDK as JsonElement on the wire");
         var vocab = (JsonElement)raw;

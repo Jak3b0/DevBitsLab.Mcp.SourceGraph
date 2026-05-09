@@ -42,7 +42,9 @@ public sealed class ScopeHost : IAsyncDisposable
 
     /// <summary>
     /// Mark the initial bring-up as settled. Idempotent — only the first call has effect, so it's
-    /// safe to invoke from every status-transition site in <c>LiveIndexService.OpenScopeAsync</c>.
+    /// safe to invoke from every status-transition site in <c>LiveIndexService.RunInitialIndexAsync</c>
+    /// (notably from its <c>finally</c>, which fires on both the ok and degraded paths so waiters
+    /// always see the host's terminal status rather than hang).
     /// </summary>
     public void MarkReady() => _readiness.TrySetResult(true);
 

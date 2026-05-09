@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using DevBitsLab.Mcp.SourceGraph.Core;
 using DevBitsLab.Mcp.SourceGraph.Embeddings;
 using DevBitsLab.Mcp.SourceGraph.Indexing;
@@ -79,8 +80,10 @@ public sealed class LiveIndexService : BackgroundService
                 _config.Scopes.Count, string.Join(", ", _config.Scopes.Select(s => s.Id)));
 
             // Prepare scopes concurrently — store creation + schema migration + registration are
-            // independent across scopes. WhenAll preserves the failure-isolation guarantee:
-            // PrepareScopeAsync's catch path returns null and never throws past this barrier.
+            // independent across scopes. PrepareScopeAsync's broad catch swallows in-scope
+            // failures and returns null; OperationCanceledException is rethrown (so cooperative
+            // shutdown propagates) and registry writes in the catch path are best-effort
+            // (try/catch around the degraded upsert), so neither path leaks past this barrier.
             var prepareTasks = _config.Scopes
                 .Select(scope => PrepareScopeAsync(scope, cancellationToken))
                 .ToArray();
@@ -133,6 +136,8 @@ public sealed class LiveIndexService : BackgroundService
     /// <c>status="indexing"</c>. No solution loading or cold-index work happens here — that's
     /// phase 2 (<see cref="RunInitialIndexAsync"/>) which runs in <see cref="ExecuteAsync"/>.
     /// </summary>
+    [SuppressMessage("Design", "CA1031:DoNotCatchGeneralExceptionTypes",
+        Justification = "Bring-up of any single scope must not crash the host: a per-scope failure (Roslyn workspace, plugin embeddings, malformed config, transient I/O) marks that scope `degraded` in the registry and lets every other scope and the MCP transport keep running. The exception is logged + persisted before the catch returns.")]
     private async Task<ScopeHost?> PrepareScopeAsync(Scope scope, CancellationToken ct)
     {
         var solutionPath = ResolvePrimarySolution(scope);
@@ -188,12 +193,15 @@ public sealed class LiveIndexService : BackgroundService
                 EmbeddingsSink = scopeSink,
                 EmbeddingsService = scopeEmbeddings,
             };
-            // Register with status="indexing" so list_scopes can show progress AND tools that hit
-            // the lazy-wait path (ScopedExecution.WaitUntilReadyAsync) can find the scope and
-            // await its Ready task instead of short-circuiting with "No scopes are registered".
             host.Status = "indexing";
-            _router.Register(host);
+            // Persist the registry row BEFORE registering with the router. If the registry
+            // upsert throws, the catch path disposes the host and never registers it, so we
+            // can't end up with a disposed ScopeHost stranded in the router with status
+            // "indexing" (which would hang any tool waiting on ScopeHost.Ready and trip a
+            // double-dispose during StopAsync). Once the upsert succeeds, registration is a
+            // pure dictionary insert under a lock and is the last fallible step here.
             await _registry.UpsertAsync(ToRow(scope, host.Status, null), ct).ConfigureAwait(false);
+            _router.Register(host);
             return host;
         }
         catch (OperationCanceledException) { throw; }
@@ -208,12 +216,26 @@ public sealed class LiveIndexService : BackgroundService
                 scopeSink?.Complete();
                 using var stopCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
                 try { await scopeEmbeddings.StopAsync(stopCts.Token).ConfigureAwait(false); }
-                catch { /* best-effort */ }
+                catch (Exception stopEx)
+                {
+                    _logger.LogDebug(stopEx, "Scope `{Id}` embeddings drain failed to stop cleanly", scope.Id);
+                }
                 scopeEmbeddings.Dispose();
             }
             if (indexer is not null) await indexer.DisposeAsync().ConfigureAwait(false);
             if (store is not null) await store.DisposeAsync().ConfigureAwait(false);
-            await _registry.UpsertAsync(ToRow(scope, "degraded", ex.Message), ct).ConfigureAwait(false);
+            // Best-effort registry write — if the original failure was a registry/storage issue
+            // this second call probably also throws. Logging the secondary failure is enough;
+            // the primary failure was already logged above and a missing degraded row in the
+            // registry is recoverable on next bring-up.
+            try
+            {
+                await _registry.UpsertAsync(ToRow(scope, "degraded", ex.Message), ct).ConfigureAwait(false);
+            }
+            catch (Exception upsertEx)
+            {
+                _logger.LogWarning(upsertEx, "Scope `{Id}` could not persist degraded row to registry", scope.Id);
+            }
             return null;
         }
     }
@@ -225,6 +247,8 @@ public sealed class LiveIndexService : BackgroundService
     /// to either <c>"ok"</c> or <c>"degraded"</c> and calls <see cref="ScopeHost.MarkReady"/> so
     /// tools waiting on <see cref="ScopeHost.Ready"/> can proceed.
     /// </summary>
+    [SuppressMessage("Design", "CA1031:DoNotCatchGeneralExceptionTypes",
+        Justification = "Cold-indexing surface area spans Roslyn workspace open, MSBuild project load, our own indexer, and arbitrary plugin analyzers — any of which can throw any exception type. The broad catch logs, marks the scope `degraded`, persists the message to the registry, and signals readiness via the finally so waiting tools see the failure rather than hang. The host stays up to serve healthy scopes.")]
     private async Task RunInitialIndexAsync(ScopeHost host, CancellationToken ct)
     {
         var scope = host.Scope;

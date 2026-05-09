@@ -45,9 +45,9 @@ public sealed class FindDefinitionStructuredOutputTests : IAsyncLifetime, IDispo
     public async Task InitializeAsync()
     {
         var slnPath = LocateSolution();
-        _tempDir = Path.Combine(Path.GetTempPath(), "find-definition-structured-" + Guid.NewGuid().ToString("N"));
+        _tempDir = Path.Join(Path.GetTempPath(), "find-definition-structured-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_tempDir);
-        _dbPath = Path.Combine(_tempDir, "graph.db");
+        _dbPath = Path.Join(_tempDir, "graph.db");
 
         _store = new SqliteGraphStore(_dbPath);
         await RoslynIndexer.IndexSolutionOnceAsync(slnPath, _store);
@@ -79,7 +79,7 @@ public sealed class FindDefinitionStructuredOutputTests : IAsyncLifetime, IDispo
             // ran in WAL mode. Skipping them leaks temp files across runs.
             if (Directory.Exists(_tempDir)) Directory.Delete(_tempDir, recursive: true);
         }
-        catch { /* best-effort */ }
+        catch (Exception) { /* best-effort cleanup; let CI keep running */ }
     }
 
     private static string LocateSolution()
@@ -87,7 +87,7 @@ public sealed class FindDefinitionStructuredOutputTests : IAsyncLifetime, IDispo
         var dir = AppContext.BaseDirectory;
         for (var d = new DirectoryInfo(dir); d is not null; d = d.Parent)
         {
-            var candidate = Path.Combine(d.FullName, "tests", "fixtures", "Sample.sln");
+            var candidate = Path.Join(d.FullName, "tests", "fixtures", "Sample.sln");
             if (File.Exists(candidate)) return candidate;
         }
         throw new FileNotFoundException("Could not locate tests/fixtures/Sample.sln from " + dir);

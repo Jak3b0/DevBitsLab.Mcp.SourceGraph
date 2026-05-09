@@ -205,8 +205,11 @@ public sealed class TelemetrySignalTests
             IsError = true,
         }));
 
-        samples.Should().Contain(s => s.Instrument == "sourcegraph.tool.calls" && s.Value == 1d);
-        samples.Should().Contain(s => s.Instrument == "sourcegraph.tool.errors" && s.Value == 1d);
+        // Cast Value to long to keep CodeQL's float-equality lint quiet — these are integer
+        // counters (Counter<long>.Add(1) on the metric instrument), so the read-back is exactly
+        // representable and the cast loses no information.
+        samples.Should().Contain(s => s.Instrument == "sourcegraph.tool.calls" && (long)s.Value == 1L);
+        samples.Should().Contain(s => s.Instrument == "sourcegraph.tool.errors" && (long)s.Value == 1L);
     }
 
     private sealed record TestStructuredDto(string Status, int Value);

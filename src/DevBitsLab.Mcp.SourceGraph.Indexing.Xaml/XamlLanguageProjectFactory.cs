@@ -13,10 +13,19 @@ namespace DevBitsLab.Mcp.SourceGraph.Indexing.Xaml;
 /// <summary>
 /// <see cref="ILanguageProjectFactory"/> for the in-tree XAML indexer. Walks every
 /// <c>.csproj</c> under the repo root, locates the <c>.xaml</c> files belonging to each project
-/// (via <c>&lt;Page&gt;</c> / <c>&lt;ApplicationDefinition&gt;</c> items, falling back to a
-/// directory scan when the items aren't present), and builds a per-project resource cache from
-/// <c>App.xaml</c>'s <c>Application.Resources</c>, any <c>MergedDictionaries</c>, and a theme
-/// <c>Generic.xaml</c> if present in <c>Themes/</c>.
+/// (via <c>&lt;Page&gt;</c> / <c>&lt;ApplicationDefinition&gt;</c> / <c>&lt;EmbeddedResource&gt;</c>
+/// / <c>&lt;Resource&gt;</c> items, falling back to a directory scan when the items aren't
+/// present), and builds a per-project resource cache from <c>App.xaml</c>'s
+/// <c>Application.Resources</c> plus a theme <c>Generic.xaml</c> if present under <c>Themes/</c>.
+///
+/// <para><b>v1 simplification — no MergedDictionaries Source-URI dereferencing.</b> The cache
+/// includes any <c>x:Key</c>-bearing element nested inside <c>App.xaml</c>'s own
+/// <c>MergedDictionaries</c> declarations, but the <c>Source=</c> URIs that point at separate
+/// <c>.xaml</c> files are NOT followed: their resources are not pulled into the cache.
+/// References to those keys fall through to the unresolved sentinel
+/// (<c>xaml:resource:&lt;file&gt;#__unresolved:&lt;key&gt;</c>) rather than confidently resolving
+/// to the wrong target. The cross-project cascade is the design.md open question; v1 ships the
+/// honest answer and revisits if usage data shows it hurts.</para>
 /// </summary>
 public sealed class XamlLanguageProjectFactory : ILanguageProjectFactory
 {
@@ -163,8 +172,14 @@ public sealed class XamlLanguageProjectFactory : ILanguageProjectFactory
     }
 
     private static bool IsXamlItemElement(string localName) =>
+        // <Page> + <ApplicationDefinition> are the WPF/WinUI markup-compiler item types; many
+        // projects also include resource dictionaries via <Resource> or <EmbeddedResource> when
+        // the file isn't compiled at build time but still belongs to the project. Match all
+        // four so explicit item includes are honoured before the directory-scan fallback runs.
         string.Equals(localName, "Page", StringComparison.OrdinalIgnoreCase) ||
-        string.Equals(localName, "ApplicationDefinition", StringComparison.OrdinalIgnoreCase);
+        string.Equals(localName, "ApplicationDefinition", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(localName, "EmbeddedResource", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(localName, "Resource", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Build the per-project resource cache from the actual cascade roots — the project's

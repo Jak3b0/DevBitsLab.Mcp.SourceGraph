@@ -199,7 +199,7 @@ After this change, the host SHALL discover `ILanguageProjectFactory` instances f
 The `XamlLanguageIndexer` SHALL implement `ILanguageIndexer` and SHALL emit:
 
 - Five symbol kinds under the `xaml:` URI scheme: `xaml-view`, `xaml-element`, `xaml-resource`, `xaml-style`, `xaml-template`
-- Seven edge kinds: `code-behind`, `binds-path`, `binds-element`, `handles-event`, `uses-resource`, `instantiates-type`, `merges`, `applies-style`
+- Eight edge kinds: `code-behind`, `binds-path`, `binds-element`, `handles-event`, `uses-resource`, `instantiates-type`, `merges`, `applies-style`
 - One annotation flavor: `xaml-attached-property`
 
 Cross-language edges (`code-behind`, `handles-event`, `instantiates-type`) SHALL construct C# canonical keys via `CanonicalKeys.ForType` / `CanonicalKeys.ForMethod` (from `harden-sdk-pre-xaml`) so the resulting `dst` is byte-equal to the key the Roslyn indexer wrote for the same symbol.

@@ -13,7 +13,9 @@ namespace DevBitsLab.Mcp.SourceGraph.Indexing.Xaml;
 
 /// <summary>
 /// Built-in XAML <see cref="ILanguageIndexer"/>. Registered for the <c>.xaml</c> extension; emits
-/// the five XAML symbol kinds, the seven cross-language edge kinds, and the
+/// the five XAML symbol kinds, the eight cross-language edge kinds (<c>code-behind</c>,
+/// <c>binds-path</c>, <c>binds-element</c>, <c>handles-event</c>, <c>uses-resource</c>,
+/// <c>instantiates-type</c>, <c>merges</c>, <c>applies-style</c>), and the
 /// <c>xaml-attached-property</c> annotation flavor documented in
 /// <c>openspec/changes/xaml-language-indexer/specs/extensibility/spec.md</c>. The indexer is
 /// profile-aware: it detects the framework profile per file via
@@ -200,9 +202,10 @@ public sealed class XamlLanguageIndexer : ILanguageIndexer
             else
             {
                 // Unnamed element — only emit a symbol if it carries an attribute that needs
-                // its own anchor (binding, event, style application). Otherwise skip the symbol
-                // emission entirely; attached-property annotations need a host symbol so we
-                // still need ONE for those. The simplest rule: emit on demand below.
+                // its own anchor (binding, event, style application, OR attached property).
+                // `<Button Grid.Row="2"/>` has no x:Name and no binding but the
+                // `xaml-attached-property` annotation contract requires a host symbol to attach
+                // to, so attached properties also justify synthesizing one.
                 if (!ElementNeedsSymbol(element))
                 {
                     // Use the parent's view key as the surrogate so subsequent emissions still
@@ -309,8 +312,21 @@ public sealed class XamlLanguageIndexer : ILanguageIndexer
                 // We don't resolve the Source URI to a real resource dictionary in v1; emit with
                 // an unresolved sentinel so the edge is still discoverable by `list_callees`
                 // queries on the parent dictionary. The source is the host symbol of the
-                // property-element / merged-dictionaries collection itself.
+                // property-element / merged-dictionaries collection itself. The placeholder
+                // symbol declaration below is required: GraphStoreEmitter skips edges whose
+                // endpoints aren't in the canonical-key map, so without it the `merges` edge
+                // would silently disappear at flush time.
                 var targetKey = $"xaml:resource:{_relativePath}#__merged:{sourceAttr.Value}";
+                Events.Add(new IndexEvent.SymbolDeclared(
+                    canonicalKey: targetKey,
+                    name: sourceAttr.Value,
+                    fqn: targetKey.Substring(targetKey.IndexOf(':') + 1),
+                    kind: KindXamlResource,
+                    startLine: sourceAttr.Line,
+                    startColumn: sourceAttr.Column,
+                    endLine: sourceAttr.Line,
+                    endColumn: sourceAttr.Column,
+                    containerCanonicalKey: _viewKey));
                 Events.Add(new IndexEvent.EdgeEmitted(
                     sourceCanonicalKey: hostKey,
                     targetCanonicalKey: targetKey,
@@ -403,6 +419,7 @@ public sealed class XamlLanguageIndexer : ILanguageIndexer
             if (string.IsNullOrEmpty(key)) return;
 
             string targetKey;
+            string targetKind;
             string edgeKind;
             if (_project is not null && _project.ResourceCache.TryGetValue(key!, out var resource))
             {
@@ -410,21 +427,26 @@ public sealed class XamlLanguageIndexer : ILanguageIndexer
                 var schemeRest = ClassifyResourceFromElementName(resource.ElementName);
                 var resourcePath = ToRepoRelative(_ctx.RepoRoot, resource.FilePath);
                 targetKey = $"xaml:{schemeRest}:{resourcePath}#{key}";
+                targetKind = SymbolKindFromSchemeRest(schemeRest);
                 edgeKind = string.Equals(schemeRest, "style", StringComparison.Ordinal) ? EdgeAppliesStyle : EdgeUsesResource;
             }
             else
             {
                 targetKey = $"xaml:resource:{_relativePath}#__unresolved:{key}";
+                targetKind = KindXamlResource;
                 edgeKind = EdgeUsesResource;
             }
 
             // Synthesise a placeholder so the emitter has both endpoints; the unresolved case is
-            // distinguished by the `__unresolved:` prefix in the canonical key.
+            // distinguished by the `__unresolved:` prefix in the canonical key. Crucially, the
+            // declared `kind` matches the canonical-key scheme — emitting an `xaml:style:…` key
+            // with `kind=xaml-resource` would produce stored rows whose kind disagrees with
+            // their key prefix and break `kind`-filtered queries on `xaml-style` / `xaml-template`.
             Events.Add(new IndexEvent.SymbolDeclared(
                 canonicalKey: targetKey,
                 name: key!,
                 fqn: targetKey.Substring(targetKey.IndexOf(':') + 1),
-                kind: KindXamlResource,
+                kind: targetKind,
                 startLine: attr.Line,
                 startColumn: attr.Column,
                 endLine: attr.Line,
@@ -438,6 +460,20 @@ public sealed class XamlLanguageIndexer : ILanguageIndexer
                 edgeKindName: edgeKind,
                 metadata: meta));
         }
+
+        /// <summary>
+        /// Map the scheme-rest fragment used in the canonical key (<c>style</c> / <c>template</c>
+        /// / <c>resource</c>) back to the corresponding kebab-case symbol kind constant. Pairs
+        /// with <see cref="ClassifyResourceFromElementName"/>; keeping the two in lockstep means
+        /// the placeholder emitted for a resolved style carries kind <c>xaml-style</c> not
+        /// <c>xaml-resource</c>.
+        /// </summary>
+        private static string SymbolKindFromSchemeRest(string schemeRest) => schemeRest switch
+        {
+            "style" => KindXamlStyle,
+            "template" => KindXamlTemplate,
+            _ => KindXamlResource,
+        };
 
         private void EmitPossibleEventHandlerEdge(XamlAttribute attr, string hostKey)
         {
@@ -536,13 +572,16 @@ public sealed class XamlLanguageIndexer : ILanguageIndexer
 
         private static bool ElementNeedsSymbol(XamlElement element)
         {
-            // Element warrants a symbol if it carries any binding/event/style attribute. The
-            // attached-property check is intentionally NOT here: attached properties attach to
-            // an EXISTING symbol, they don't justify creating one.
+            // Element warrants a symbol if it carries any binding/event/style attribute, OR an
+            // attached property — attached properties annotate the element they're written on
+            // (`<Button Grid.Row="2"/>` annotates the button), so the spec's
+            // `xaml-attached-property` annotation needs a host symbol to attach to even when
+            // the element has no other reason to exist as a node in the graph.
             foreach (var attr in element.Attributes)
             {
                 var k = XamlAttributeClassifier.Classify(attr);
                 if (k == XamlAttributeKind.MarkupExtension) return true;
+                if (k == XamlAttributeKind.AttachedProperty) return true;
                 if (k == XamlAttributeKind.Value && IsLikelyEventName(attr.LocalName) && IsBareIdentifier(attr.Value ?? "")) return true;
             }
             return false;

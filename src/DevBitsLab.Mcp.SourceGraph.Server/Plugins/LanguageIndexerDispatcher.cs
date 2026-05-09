@@ -258,6 +258,21 @@ public sealed class LanguageIndexerDispatcher
         var events = await indexer.IndexAsync(ctx, ct).ConfigureAwait(false);
         if (events.Count == 0) return;
 
+        // Walk events twice: once to collect every canonical key the indexer declared (so the
+        // stale-symbol sweep below knows which rows to keep), and once to feed the emitter.
+        // The two-pass shape mirrors what the C# bulk path does and is mandatory because the
+        // sweep MUST run BEFORE the flush — `DeleteSymbolsForFileNotInAsync` wipes every
+        // annotation row whose symbol_id resolves to this file_id (so `[Foo]` removed from a
+        // surviving method actually disappears). Calling it after flush would delete the
+        // annotations we just inserted; calling it before delivers the documented invariant
+        // (this-file's-annotations are always reconstructed from the current pass).
+        var emittedKeys = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var ev in events)
+        {
+            if (ev is IndexEvent.SymbolDeclared sd) emittedKeys.Add(sd.CanonicalKey);
+        }
+        await store.DeleteSymbolsForFileNotInAsync(fileId, emittedKeys, ct).ConfigureAwait(false);
+
         var emitter = new GraphStoreEmitter(store, fileId, symbolIdByKey, _logger);
         foreach (var ev in events)
         {

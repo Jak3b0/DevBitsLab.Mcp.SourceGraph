@@ -1183,11 +1183,22 @@ public sealed class SqliteGraphStore : IGraphStore
 
         try
         {
-            await _connection.DisposeAsync().ConfigureAwait(false);
+            if (_connection.State != System.Data.ConnectionState.Closed)
+            {
+                await _connection.DisposeAsync().ConfigureAwait(false);
+            }
         }
-        catch (NullReferenceException)
+        catch (ObjectDisposedException ex)
         {
-            // Swallow NRE from SqliteConnection.Close/Dispose when connection is in invalid state
+            _logger.LogWarning(ex, "Sqlite connection was already disposed during store disposal.");
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "Sqlite connection was in an invalid state during store disposal.");
+        }
+        catch (SqliteException ex)
+        {
+            _logger.LogWarning(ex, "Sqlite exception occurred while disposing store connection.");
         }
         finally
         {

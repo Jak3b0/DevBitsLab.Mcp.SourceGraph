@@ -68,8 +68,16 @@ public sealed class QueryPlanTests : IAsyncLifetime
         try
         {
             if (File.Exists(_dbPath)) File.Delete(_dbPath);
+            var dbDir = Path.GetDirectoryName(_dbPath);
+            if (!string.IsNullOrEmpty(dbDir) && Directory.Exists(dbDir))
+            {
+                // Recursive delete swallows residual `-wal` / `-shm` SQLite sidecar files plus
+                // any nested temp content the test or store may have created; without this the
+                // per-test temp directory leaks under the system temp folder across many runs.
+                Directory.Delete(dbDir, recursive: true);
+            }
         }
-        catch (IOException) { /* best-effort cleanup; another handle may still hold the file */ }
+        catch (IOException) { /* best-effort cleanup; another handle may still hold a file */ }
         catch (UnauthorizedAccessException) { /* best-effort cleanup; readonly bit or ACL drift */ }
     }
 

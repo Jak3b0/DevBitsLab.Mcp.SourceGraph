@@ -198,8 +198,10 @@ public sealed class VocabularyCliTests : IDisposable
         fullArgs.Add("--root");
         fullArgs.Add(_tempRoot);
         var cli = CommandLine.Parse(fullArgs.ToArray());
-        await using var stdout = new StringWriter();
-        await using var stderr = new StringWriter();
+        // StringWriter has no real I/O to flush at dispose, so synchronous `using` is enough
+        // (and survives an older runtime where TextWriter doesn't implement IAsyncDisposable).
+        using var stdout = new StringWriter();
+        using var stderr = new StringWriter();
         var rc = await VocabularyCli.RunSubcommandAsync(cli, stdout, stderr);
         return (rc, stdout.ToString(), stderr.ToString());
     }
@@ -302,6 +304,11 @@ public sealed class VocabularyCliTests : IDisposable
         {
             for (var i = 0; i < count; i++)
             {
+                // Capture the current id BEFORE incrementing so name/full_name match the inserted
+                // id. The previous form mixed `id = annotationId++` (post-increment, returns the
+                // pre-increment value) with `name = $"Attr{annotationId}"` (the post-increment
+                // value), producing an off-by-one between id and name.
+                var thisId = annotationId++;
                 await connection.ExecuteAsync(
                     """
                     INSERT INTO annotations
@@ -310,9 +317,9 @@ public sealed class VocabularyCliTests : IDisposable
                     """,
                     new
                     {
-                        id = annotationId++,
-                        name = $"Attr{annotationId}",
-                        fn = $"X.Attr{annotationId}Attribute",
+                        id = thisId,
+                        name = $"Attr{thisId}",
+                        fn = $"X.Attr{thisId}Attribute",
                         flavor = flavor,
                     });
             }

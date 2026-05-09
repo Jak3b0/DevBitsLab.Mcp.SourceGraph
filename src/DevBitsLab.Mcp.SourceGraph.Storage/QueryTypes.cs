@@ -21,12 +21,13 @@ public sealed record SymbolHit(
     /// <summary>Roslyn DocumentationCommentId; identifies the same symbol across scope DBs.</summary>
     string? CanonicalKey = null,
     /// <summary>
-    /// JSON payload from the originating <c>edges.payload</c> column when the hit came from an
-    /// edge-walking query (<c>list_callers</c>, <c>list_callees</c>, <c>neighborhood</c>); otherwise
-    /// <c>null</c>. The dictionary is opaque to the host — the renderer decodes it into per-edge
-    /// metadata sub-lines but storage doesn't validate the shape. <c>null</c> means "no payload"
-    /// (the originating edge had no <see cref="DevBitsLab.Mcp.SourceGraph.Sdk.IndexEvent.EdgeEmitted.Metadata"/>),
-    /// not "originated from a non-edge query".
+    /// When the hit comes from an edge-walking query (<c>list_callers</c>, <c>list_callees</c>,
+    /// <c>neighborhood</c>), this carries the originating <c>edges.payload</c> column verbatim —
+    /// itself nullable when the originating edge had no
+    /// <see cref="DevBitsLab.Mcp.SourceGraph.Sdk.IndexEvent.EdgeEmitted.Metadata"/>. When the hit
+    /// comes from any other query (symbol search, FTS, annotation scan, etc.), this is always
+    /// <c>null</c>. The renderer decodes the JSON into per-edge metadata sub-lines; storage does
+    /// not validate the shape.
     /// </summary>
     string? PayloadJson = null);
 

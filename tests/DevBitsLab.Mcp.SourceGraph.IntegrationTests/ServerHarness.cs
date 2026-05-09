@@ -132,12 +132,18 @@ internal sealed class ServerHarness : IAsyncDisposable
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cts.CancelAfter(ProcessExitTimeout);
 
+        // McpClient.CreateAsync takes ownership of `transport` on success — disposing the
+        // returned client also disposes the transport. On failure the ownership transfer never
+        // happened, so we have to dispose the transport ourselves to avoid leaking the spawned
+        // `dotnet run ... serve` child process. Track success via a non-null `client` reference
+        // and use a finally branch (which runs uniformly on success, on the OCE → TimeoutException
+        // rethrow, and on any other unexpected exception) to dispose the orphaned transport.
+        McpClient? client = null;
         try
         {
-            var client = await McpClient
+            client = await McpClient
                 .CreateAsync(transport, clientOptions: null, NullLoggerFactory.Instance, cts.Token)
                 .ConfigureAwait(false);
-            return new ServerHarness(client, stderrLines);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -146,6 +152,47 @@ internal sealed class ServerHarness : IAsyncDisposable
             throw new TimeoutException(
                 $"sourcegraph-mcp server did not complete the MCP `initialize` handshake within {ProcessExitTimeout}. " +
                 $"Captured stderr: {string.Join(Environment.NewLine, stderrLines)}");
+        }
+        finally
+        {
+            if (client is null)
+            {
+                await DisposeTransportSafelyAsync(transport).ConfigureAwait(false);
+            }
+        }
+
+        return new ServerHarness(client, stderrLines);
+    }
+
+    /// <summary>
+    /// Best-effort disposal for an <see cref="IClientTransport"/> we know was never handed off
+    /// to an <see cref="McpClient"/>. Probes for both <see cref="IAsyncDisposable"/> and
+    /// <see cref="IDisposable"/> so this works regardless of which interface the SDK exposes on
+    /// the concrete transport. Swallows the realistic disposal-path exceptions so a failed
+    /// dispose can't mask the original failure that triggered this cleanup.
+    /// </summary>
+    private static async ValueTask DisposeTransportSafelyAsync(IClientTransport transport)
+    {
+        try
+        {
+            switch (transport)
+            {
+                case IAsyncDisposable asyncDisposable:
+                    await asyncDisposable.DisposeAsync().ConfigureAwait(false);
+                    break;
+                case IDisposable disposable:
+                    disposable.Dispose();
+                    break;
+            }
+        }
+        catch (Exception ex) when (
+            ex is IOException
+            or ObjectDisposedException
+            or OperationCanceledException
+            or InvalidOperationException)
+        {
+            // Best-effort: don't let a failed transport disposal mask the original failure that
+            // brought us into the cleanup path.
         }
     }
 

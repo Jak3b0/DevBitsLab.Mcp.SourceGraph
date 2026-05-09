@@ -1,12 +1,16 @@
 using System.ComponentModel;
 using System.Text;
+using System.Text.Json;
 using DevBitsLab.Mcp.SourceGraph.Core;
 using DevBitsLab.Mcp.SourceGraph.Embeddings;
 using DevBitsLab.Mcp.SourceGraph.Sdk;
 using DevBitsLab.Mcp.SourceGraph.Server.Observability;
+using DevBitsLab.Mcp.SourceGraph.Server.Resources;
 using DevBitsLab.Mcp.SourceGraph.Server.Scoping;
+using DevBitsLab.Mcp.SourceGraph.Server.Tools.Output;
 using DevBitsLab.Mcp.SourceGraph.Storage;
 using ModelContextProtocol;
+using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 
 namespace DevBitsLab.Mcp.SourceGraph.Server.Tools;
@@ -18,10 +22,10 @@ public static class GraphTools
         "Optional scope id, the literal '*' for all non-isolated scopes, or a comma-separated list of ids " +
         "(e.g. 'frontend,backend'). Omit to use `default_scope` from .sourcegraph.json. Call `list_scopes` to discover.";
 
-    [McpServerTool]
+    [McpServerTool(UseStructuredContent = true, OutputSchemaType = typeof(FindDefinitionResult))]
     [ToolTrigger("\"where is X defined?\"")]
     [Description("Find the definition of a symbol by name or fully-qualified name. Returns location, kind, signature, accessibility, modifiers, and one-line XML summary for each match.")]
-    public static Task<string> FindDefinitionAsync(
+    public static Task<CallToolResult> FindDefinitionAsync(
         ScopeRouter router,
         [Description("Symbol name (e.g. 'Calculator', 'Divide') or FQN suffix (e.g. 'Calculator.Add', 'Sample.Domain.Calculator')")] string symbol,
         [Description("Optional substring to narrow the search to specific file paths")] string? fileHint = null,
@@ -30,16 +34,29 @@ public static class GraphTools
         ToolMetrics.TrackAsync("find_definition", new { symbol, fileHint, scope }, () =>
             ScopedExecution.RunAsync(router, scope, async host =>
             {
+                var sw = System.Diagnostics.Stopwatch.StartNew();
                 var hits = await host.Store.FindSymbolsAsync(symbol, fileHint, limit: 25, ct).ConfigureAwait(false);
-                if (hits.Count == 0) return $"No matches for '{symbol}'.";
+                if (hits.Count == 0)
+                {
+                    return BuildFindDefinitionResult(
+                        prose: $"No matches for '{symbol}'.",
+                        hits: Array.Empty<SymbolHit>(),
+                        structuredHits: Array.Empty<FindDefinitionHit>(),
+                        scopeId: host.Scope.Id,
+                        elapsedMs: sw.ElapsedMilliseconds);
+                }
 
                 // Pre-fetch history rows in one batch so we don't fire a query per hit.
                 var historyById = await host.Store.GetSymbolHistoryBatchAsync(hits.Select(h => h.Id).ToList(), ct).ConfigureAwait(false);
                 var multipleFlavors = await HasMultipleAnnotationFlavorsAsync(host.Store, ct).ConfigureAwait(false);
 
+                // Build prose and the structured DTO from the same enumeration so the two stay in
+                // lockstep — the spec scenario "structured array length equals prose row count"
+                // depends on this single source of truth.
                 var sb = new StringBuilder();
                 sb.AppendLine($"{hits.Count} hits for '{symbol}':");
                 sb.AppendLine();
+                var structuredHits = new List<FindDefinitionHit>(hits.Count);
                 foreach (var h in hits)
                 {
                     sb.AppendLine($"- **{h.Fqn}** ({Format.KindWithAttrs(h)})");
@@ -55,9 +72,84 @@ public static class GraphTools
                         var line = Format.HistoryLine(hist);
                         if (line is not null) sb.AppendLine($"  - {line}");
                     }
+                    structuredHits.Add(new FindDefinitionHit(
+                        Fqn: h.Fqn,
+                        Kind: h.Kind,
+                        FilePath: h.FilePath,
+                        Line: h.StartLine,
+                        Column: h.StartCol,
+                        Signature: string.IsNullOrEmpty(h.Signature) ? null : h.Signature,
+                        XmlSummary: string.IsNullOrEmpty(h.XmlSummary) ? null : h.XmlSummary));
                 }
-                return sb.ToString();
+
+                return BuildFindDefinitionResult(
+                    prose: sb.ToString(),
+                    hits: hits,
+                    structuredHits: structuredHits,
+                    scopeId: host.Scope.Id,
+                    elapsedMs: sw.ElapsedMilliseconds);
             }, ct));
+
+    /// <summary>
+    /// Compose the multi-content <see cref="CallToolResult"/> for <c>find_definition</c>: the
+    /// leading user-visible prose <see cref="TextContentBlock"/>, one
+    /// <see cref="ResourceLinkBlock"/> per matched symbol pointing at the corresponding
+    /// <c>graph://symbol/&lt;id&gt;</c> resource, a trailing audience-restricted
+    /// <see cref="TextContentBlock"/> carrying scope id + latency + hit count for the model only,
+    /// and the typed <see cref="FindDefinitionResult"/> serialized into
+    /// <see cref="CallToolResult.StructuredContent"/>.
+    ///
+    /// The structured payload is serialised through the source-generated
+    /// <see cref="ToolOutputJsonContext"/> so we stay off reflection and the wire shape uses
+    /// snake_case property names (matching the SDK's tools/list outputSchema generator).
+    /// </summary>
+    private static CallToolResult BuildFindDefinitionResult(
+        string prose,
+        IReadOnlyList<SymbolHit> hits,
+        IReadOnlyList<FindDefinitionHit> structuredHits,
+        string scopeId,
+        long elapsedMs)
+    {
+        var content = new List<ContentBlock>(capacity: 2 + hits.Count)
+        {
+            new TextContentBlock { Text = prose },
+        };
+
+        foreach (var h in hits)
+        {
+            content.Add(new ResourceLinkBlock
+            {
+                Uri = GraphResourceUris.Symbol(h.Id),
+                Name = h.Fqn,
+                Title = h.Fqn,
+                Description = $"{Format.KindWithAttrs(h)} — {Format.Location(h.FilePath, h.StartLine, h.StartCol)}",
+                MimeType = "text/markdown",
+            });
+        }
+
+        // Audience-restricted metadata: scope id + latency + hit count are useful to the agent for
+        // chaining (e.g. "if I see latency_ms > 500 maybe drop this scope from a fan-out") but pure
+        // noise to the human reading the chat. Priority < 0.5 is the "informational, deprioritise"
+        // signal documented in the design.
+        content.Add(new TextContentBlock
+        {
+            Text = $"_meta: scope=`{scopeId}`, latency_ms={elapsedMs}, hits={hits.Count}_",
+            Annotations = new Annotations
+            {
+                Audience = new[] { Role.Assistant },
+                Priority = 0.2f,
+            },
+        });
+
+        var result = new CallToolResult
+        {
+            Content = content,
+            StructuredContent = JsonSerializer.SerializeToElement(
+                new FindDefinitionResult(structuredHits),
+                ToolOutputJsonContext.Default.FindDefinitionResult),
+        };
+        return result;
+    }
 
     [McpServerTool]
     [ToolTrigger("\"find every POST endpoint\", \"what's been deprecated?\", \"find all DI singletons\", \"every controller decorated with @Component\"")]

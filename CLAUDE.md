@@ -13,6 +13,12 @@ also carries a `Use when:` line documenting the question shape it answers.
 Suppress with `--no-instructions` or `SOURCEGRAPH_NO_INSTRUCTIONS=1` if you
 prefer to drive guidance from your own `CLAUDE.md`.
 
+Every built-in tool's response begins with a green-leaf glyph `🌿` — that's
+the at-a-glance signal that the answer came from this server (and not from
+`Grep` + `Read` or another MCP server). Suppress with `--no-leaf` or
+`SOURCEGRAPH_NO_LEAF=1` if your terminal doesn't render emoji well or you
+prefer unbranded output.
+
 A persistent JSONL log of every tool call lives at
 `<solution>/.sourcegraph/usage.jsonl` for offline analysis.
 

@@ -33,7 +33,7 @@ public static class HistoryTools
             ScopedExecution.RunAsync(router, scope, async host =>
             {
                 var hits = await host.Store.FindSymbolsAsync(symbol, filePathHint: null, limit: 5, ct).ConfigureAwait(false);
-                if (hits.Count == 0) return $"No symbol found for '{symbol}'.";
+                if (hits.Count == 0) return $"No matches for '{symbol}'.";
                 var top = hits[0];
                 var tests = await host.Store.ListTestsForAsync(top.Id, limit, ct).ConfigureAwait(false);
                 var sb = new StringBuilder();
@@ -73,7 +73,7 @@ public static class HistoryTools
                     return "git history unavailable on this server (--no-history)";
                 }
                 var hits = await host.Store.FindSymbolsAsync(symbol, filePathHint: null, limit: 5, ct).ConfigureAwait(false);
-                if (hits.Count == 0) return $"No symbol found for '{symbol}'.";
+                if (hits.Count == 0) return $"No matches for '{symbol}'.";
                 var top = hits[0];
                 var history = await host.Store.GetSymbolHistoryAsync(top.Id, ct).ConfigureAwait(false);
                 if (history is null || string.IsNullOrEmpty(history.LastCommitSha))
@@ -105,7 +105,7 @@ public static class HistoryTools
                 var rows = await host.Store.ListRecentChangesAsync(sinceMs, author, limit, ct).ConfigureAwait(false);
                 var sb = new StringBuilder();
                 var authorClause = string.IsNullOrEmpty(author) ? "" : $" by author~'{author}'";
-                sb.AppendLine($"{rows.Count} symbol(s) changed in the last {days} day(s){authorClause}:");
+                sb.AppendLine($"{rows.Count} symbols changed in the last {days} day(s){authorClause}:");
                 if (rows.Count == 0) return sb.ToString();
                 foreach (var r in rows)
                 {

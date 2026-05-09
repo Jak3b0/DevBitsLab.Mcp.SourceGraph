@@ -16,6 +16,9 @@ internal sealed class CommandLine
     /// <summary>True when <c>--no-instructions</c> was passed; suppresses the server-published
     /// usage guidance string in the MCP <c>initialize</c> response.</summary>
     public bool NoInstructions { get; private init; }
+    /// <summary>True when <c>--no-leaf</c> was passed; suppresses the green-leaf brand mark on
+    /// every built-in tool response and on the published <c>ServerInstructions</c> string.</summary>
+    public bool NoLeaf { get; private init; }
     /// <summary>Positional rest args (used by `scopes add`, `scopes remove`, etc.).</summary>
     public IReadOnlyList<string> Positional { get; private init; } = Array.Empty<string>();
 
@@ -32,6 +35,7 @@ internal sealed class CommandLine
         var noEmbeddings = false;
         var noHistory = false;
         var noInstructions = false;
+        var noLeaf = false;
         var positional = new List<string>();
 
         for (var i = 1; i < args.Length; i++)
@@ -61,6 +65,9 @@ internal sealed class CommandLine
                     break;
                 case "--no-instructions":
                     noInstructions = true;
+                    break;
+                case "--no-leaf":
+                    noLeaf = true;
                     break;
                 default:
                     if (subcommand == "index" && solution is null && !a.StartsWith('-'))
@@ -93,6 +100,7 @@ internal sealed class CommandLine
             NoEmbeddings = noEmbeddings,
             NoHistory = noHistory,
             NoInstructions = noInstructions,
+            NoLeaf = noLeaf,
             Positional = positional,
         };
     }
@@ -181,6 +189,9 @@ internal sealed class CommandLine
                             git on PATH or in CI runs where per-symbol history isn't needed.
           --no-instructions Don't publish server-side usage guidance in the MCP `initialize`
                             response. Equivalent to setting SOURCEGRAPH_NO_INSTRUCTIONS=1.
+          --no-leaf         Don't prefix tool responses (or the published `ServerInstructions`
+                            string) with the green-leaf brand mark. Equivalent to setting
+                            SOURCEGRAPH_NO_LEAF=1.
 
         Defaults:
           --db   ./.sourcegraph/scopes/default.db   (created if missing; legacy graph.db is migrated)

@@ -25,7 +25,7 @@ public static class ScopeTools
                 return "No scopes registered. Run `sourcegraph-mcp init-scopes` to scaffold .sourcegraph.json, or pass --solution to register a single-scope default.";
             }
             var sb = new StringBuilder();
-            sb.AppendLine($"{hosts.Count} scope(s) registered:");
+            sb.AppendLine($"{hosts.Count} scopes registered:");
             sb.AppendLine();
             sb.AppendLine("| Id | Name | Status | Isolated | Projects | Last indexed | Root |");
             sb.AppendLine("|----|------|--------|---------:|---------:|--------------|------|");

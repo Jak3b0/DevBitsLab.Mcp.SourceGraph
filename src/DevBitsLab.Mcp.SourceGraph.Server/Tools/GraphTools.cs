@@ -30,14 +30,14 @@ public static class GraphTools
             ScopedExecution.RunAsync(router, scope, async host =>
             {
                 var hits = await host.Store.FindSymbolsAsync(symbol, fileHint, limit: 25, ct).ConfigureAwait(false);
-                if (hits.Count == 0) return $"No definition found for '{symbol}'.";
+                if (hits.Count == 0) return $"No matches for '{symbol}'.";
 
                 // Pre-fetch history rows in one batch so we don't fire a query per hit.
                 var historyById = await host.Store.GetSymbolHistoryBatchAsync(hits.Select(h => h.Id).ToList(), ct).ConfigureAwait(false);
                 var multipleFlavors = await HasMultipleAnnotationFlavorsAsync(host.Store, ct).ConfigureAwait(false);
 
                 var sb = new StringBuilder();
-                sb.AppendLine($"Found {hits.Count} match(es) for '{symbol}':");
+                sb.AppendLine($"{hits.Count} hits for '{symbol}':");
                 sb.AppendLine();
                 foreach (var h in hits)
                 {
@@ -83,7 +83,7 @@ public static class GraphTools
                 }
                 var multipleFlavors = await HasMultipleAnnotationFlavorsAsync(host.Store, ct).ConfigureAwait(false);
                 var sb = new StringBuilder();
-                sb.AppendLine($"{hits.Count} symbol(s) carry [{name}]:");
+                sb.AppendLine($"{hits.Count} symbols carry [{name}]:");
                 foreach (var h in hits)
                 {
                     sb.AppendLine($"- **{h.Fqn}** ({Format.KindWithAttrs(h)}) at {Format.Location(h.FilePath, h.StartLine, h.StartCol)}");
@@ -108,7 +108,7 @@ public static class GraphTools
             ScopedExecution.RunAsync(router, scope, async host =>
             {
                 var hits = await host.Store.FindSymbolsAsync(symbol, filePathHint: null, limit: 5, ct).ConfigureAwait(false);
-                if (hits.Count == 0) return $"No symbol found for '{symbol}'.";
+                if (hits.Count == 0) return $"No matches for '{symbol}'.";
 
                 var sb = new StringBuilder();
                 if (hits.Count > 1)
@@ -128,7 +128,7 @@ public static class GraphTools
                     return sb.ToString();
                 }
                 sb.AppendLine();
-                sb.AppendLine($"{refs.Count} reference(s):");
+                sb.AppendLine($"{refs.Count} references:");
                 foreach (var r in refs)
                 {
                     sb.AppendLine($"- {RefKindLabel(r.Kind)} at {Format.Location(r.FilePath, r.Line, r.Col)}{GeneratedSuffix(r.IsGenerated)}");
@@ -148,13 +148,13 @@ public static class GraphTools
             ScopedExecution.RunAsync(router, scope, async host =>
             {
                 var hits = await host.Store.ListSymbolsInFileAsync(path, ct).ConfigureAwait(false);
-                if (hits.Count == 0) return $"No indexed symbols found in '{path}'. The file may not be part of an indexed solution, or may not exist.";
+                if (hits.Count == 0) return $"No indexed symbols in '{path}'. The file may not be part of an indexed solution, or may not exist.";
 
                 var historyById = await host.Store.GetSymbolHistoryBatchAsync(hits.Select(h => h.Id).ToList(), ct).ConfigureAwait(false);
                 var multipleFlavors = await HasMultipleAnnotationFlavorsAsync(host.Store, ct).ConfigureAwait(false);
 
                 var sb = new StringBuilder();
-                sb.AppendLine($"{hits.Count} symbol(s) in {hits[0].FilePath}:");
+                sb.AppendLine($"{hits.Count} symbols in {hits[0].FilePath}:");
                 foreach (var h in hits)
                 {
                     sb.AppendLine($"- L{h.StartLine}: **{h.Name}** ({Format.KindWithAttrs(h)}) — {h.Fqn}");
@@ -194,7 +194,7 @@ public static class GraphTools
                 }
 
                 var hits = await host.Store.FindSymbolsAsync(symbol, filePathHint: null, limit: 5, ct).ConfigureAwait(false);
-                if (hits.Count == 0) return $"No symbol found for '{symbol}'.";
+                if (hits.Count == 0) return $"No matches for '{symbol}'.";
                 var top = hits[0];
                 var callers = await host.Store.ListCallersAsync(top.Id, limit, edgeKind, ct).ConfigureAwait(false);
                 var sb = new StringBuilder();
@@ -228,7 +228,7 @@ public static class GraphTools
                 }
 
                 var hits = await host.Store.FindSymbolsAsync(symbol, filePathHint: null, limit: 5, ct).ConfigureAwait(false);
-                if (hits.Count == 0) return $"No symbol found for '{symbol}'.";
+                if (hits.Count == 0) return $"No matches for '{symbol}'.";
                 var top = hits[0];
                 var callees = await host.Store.ListCalleesAsync(top.Id, limit, edgeKind, ct).ConfigureAwait(false);
                 var sb = new StringBuilder();
@@ -255,7 +255,7 @@ public static class GraphTools
             ScopedExecution.RunAsync(router, scope, async host =>
             {
                 var hits = await host.Store.FindSymbolsAsync(symbol, filePathHint: null, limit: 5, ct).ConfigureAwait(false);
-                if (hits.Count == 0) return $"No symbol found for '{symbol}'.";
+                if (hits.Count == 0) return $"No matches for '{symbol}'.";
                 var top = hits[0];
                 var impls = await host.Store.ListImplementationsAsync(top.Id, limit, ct).ConfigureAwait(false);
                 var filtered = includeAbstract
@@ -289,7 +289,7 @@ public static class GraphTools
                 var hits = await host.Store.SearchSymbolsAsync(query, kindFilter, topK, ct).ConfigureAwait(false);
                 if (hits.Count == 0) return $"No symbols match '{query}'.";
                 var sb = new StringBuilder();
-                sb.AppendLine($"{hits.Count} match(es) for '{query}':");
+                sb.AppendLine($"{hits.Count} hits for '{query}':");
                 foreach (var h in hits)
                 {
                     sb.AppendLine($"- **{h.Fqn}** ({KindLabel(h.Kind)}) at {Format.Location(h.FilePath, h.StartLine, h.StartCol)}");
@@ -318,7 +318,7 @@ public static class GraphTools
                 }
 
                 var hits = await host.Store.FindSymbolsAsync(symbol, filePathHint: null, limit: 5, ct).ConfigureAwait(false);
-                if (hits.Count == 0) return $"No symbol found for '{symbol}'.";
+                if (hits.Count == 0) return $"No matches for '{symbol}'.";
                 var top = hits[0];
                 var callers = await host.Store.ListCallersAsync(top.Id, perCategory, edgeKind, ct).ConfigureAwait(false);
                 var callees = await host.Store.ListCalleesAsync(top.Id, perCategory, edgeKind, ct).ConfigureAwait(false);
@@ -377,7 +377,7 @@ public static class GraphTools
                 if (rows.Count == 0) return $"No symbols matched module '{namespaceOrPath}'.";
                 var multipleFlavors = await HasMultipleAnnotationFlavorsAsync(host.Store, ct).ConfigureAwait(false);
                 var sb = new StringBuilder();
-                sb.AppendLine($"Top {rows.Count} symbol(s) in '{namespaceOrPath}' (by inbound calls):");
+                sb.AppendLine($"Top {rows.Count} symbols in '{namespaceOrPath}' (by inbound calls):");
                 foreach (var row in rows)
                 {
                     sb.Append($"- in-deg {row.InDegree,3} — **{row.Symbol.Fqn}** ({Format.KindWithAttrs(row.Symbol)}) at {Format.Location(row.Symbol.FilePath, row.Symbol.StartLine, row.Symbol.StartCol)}");
@@ -413,7 +413,7 @@ public static class GraphTools
                 }
 
                 var hits = await host.Store.FindSymbolsAsync(symbol, filePathHint: null, limit: 5, ct).ConfigureAwait(false);
-                if (hits.Count == 0) return $"No symbol found for '{symbol}'.";
+                if (hits.Count == 0) return $"No matches for '{symbol}'.";
                 var top = hits[0];
                 var rows = await host.Store.ImpactOfChangeAsync(top.Id, maxDepth, limit, edgeKind, ct).ConfigureAwait(false);
                 var sb = new StringBuilder();
@@ -441,7 +441,7 @@ public static class GraphTools
             ScopedExecution.RunAsync(router, scope, async host =>
             {
                 var hits = await host.Store.FindSymbolsAsync(container, filePathHint: null, limit: 5, ct).ConfigureAwait(false);
-                if (hits.Count == 0) return $"No symbol found for container '{container}'.";
+                if (hits.Count == 0) return $"No matches for container '{container}'.";
                 var top = hits[0];
 
                 int? accFilter = ParseAccessibility(accessibility);
@@ -453,7 +453,7 @@ public static class GraphTools
                 var members = await host.Store.ListMembersAsync(top.Id, accFilter, limit, ct).ConfigureAwait(false);
                 var sb = new StringBuilder();
                 var filterNote = accFilter is null ? "" : $" (accessibility = {accessibility})";
-                sb.AppendLine($"{members.Count} member(s) of **{top.Fqn}** ({Format.KindWithAttrs(top)}){filterNote}:");
+                sb.AppendLine($"{members.Count} members of **{top.Fqn}** ({Format.KindWithAttrs(top)}){filterNote}:");
                 if (includeInherited)
                 {
                     sb.AppendLine("_(includeInherited is reserved for a future change; only direct members are returned.)_");
@@ -507,7 +507,7 @@ public static class GraphTools
                 }
 
                 var sb = new StringBuilder();
-                sb.AppendLine($"{hits.Count} semantic match(es) for '{query}':");
+                sb.AppendLine($"{hits.Count} semantic hits for '{query}':");
                 foreach (var h in hits)
                 {
                     var sym = await host.Store.GetSymbolByIdAsync(h.SymbolId, ct).ConfigureAwait(false);
@@ -558,7 +558,7 @@ public static class GraphTools
                 if (!string.IsNullOrWhiteSpace(symbol))
                 {
                     var hits = await host.Store.FindSymbolsAsync(symbol, filePathHint: null, limit: 5, ct).ConfigureAwait(false);
-                    if (hits.Count == 0) return $"No symbol found for '{symbol}'.";
+                    if (hits.Count == 0) return $"No matches for '{symbol}'.";
                     symbolId = hits[0].Id;
                     symbolFqn = hits[0].Fqn;
                 }

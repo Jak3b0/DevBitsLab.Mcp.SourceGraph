@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text.Json;
+using DevBitsLab.Mcp.SourceGraph.Server.Tools;
 
 namespace DevBitsLab.Mcp.SourceGraph.Server.Observability;
 
@@ -40,7 +41,10 @@ public static class ToolMetrics
         try
         {
             result = await body().ConfigureAwait(false);
-            return result;
+            // The leaf is presentation, not payload — `result` (the local) stays unbranded so
+            // the `finally` block records true response size, while the caller gets the branded
+            // version. See openspec/changes/add-leaf-brand-mark/design.md (Decision 3).
+            return LeafFormatter.Brand(result);
         }
         catch (Exception ex)
         {
@@ -71,7 +75,7 @@ public static class ToolMetrics
         try
         {
             result = body();
-            return result;
+            return LeafFormatter.Brand(result);
         }
         catch (Exception ex)
         {

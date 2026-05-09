@@ -11,7 +11,13 @@ namespace DevBitsLab.Mcp.SourceGraph.Tests;
 /// <c>ActivitySource</c> + <c>Meter</c>, and <see cref="ToolMetrics"/> emits well-formed signals
 /// for every tool call. Each test uses a unique tool name so it can filter out signals produced
 /// by other tests sharing the static <c>Telemetry</c> instances.
+///
+/// One test below reads <see cref="ToolMetrics.TrackAsync"/>'s return value, which the
+/// add-leaf-brand-mark chokepoint now decorates with a leaf prefix. Joins the
+/// <c>LeafFormatterState</c> collection so it doesn't race with tests that flip
+/// <c>LeafFormatter.Suppressed</c>.
 /// </summary>
+[Collection("LeafFormatterState")]
 public sealed class TelemetrySignalTests
 {
     [Fact]
@@ -121,8 +127,9 @@ public sealed class TelemetrySignalTests
     public async Task TrackAsync_withoutAnyListeners_runsAndReturnsBodyResult()
     {
         // Sanity: no ActivityListener, no MeterListener — Track* must not throw and must surface
-        // the body's return value unchanged. The cost path collapses to a null-Activity using-block
-        // plus instrument calls into unwatched Counter/Histogram instances.
+        // the body's return value (with the brand-mark prefix from the add-leaf-brand-mark
+        // chokepoint applied per design.md Decision 3). The cost path collapses to a null-Activity
+        // using-block plus instrument calls into unwatched Counter/Histogram instances.
         const string toolName = "test_otel_no_listener";
 
         var result = await ToolMetrics.TrackAsync(
@@ -130,7 +137,7 @@ public sealed class TelemetrySignalTests
             args: null,
             () => Task.FromResult("result-from-body"));
 
-        result.Should().Be("result-from-body");
+        result.Should().Be("\U0001F33F result-from-body");
     }
 
     [Fact]

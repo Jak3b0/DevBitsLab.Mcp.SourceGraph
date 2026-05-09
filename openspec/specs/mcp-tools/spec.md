@@ -51,7 +51,7 @@ The server SHALL expose `list_callers` and `list_callees` tools that walk `calls
 
 #### Scenario: Unknown kind reported back
 - **WHEN** the agent invokes `list_callers(symbol = "X", kind = "not-a-real-kind")` against a scope where no indexer emits `not-a-real-kind`
-- **THEN** the response is an empty result set with a brief note that the kind was not present in the active scope's published `edge_kinds` vocabulary
+- **THEN** the response is an empty result set with a brief note that the kind was not present in the active scope's published `edge_kinds` vocabulary (which unions the SDK constants with the scope's stored kinds, so a built-in kind like `"calls"` is never reported as unknown even on a never-indexed scope)
 
 ### Requirement: Free-text symbol search
 The server SHALL expose a `search_symbols` tool that runs an FTS5 trigram match over `name`, `fqn`, `signature`, and `xml_summary`, optionally filtered by kind.
@@ -275,7 +275,7 @@ The `ServerInstructions` string SHALL NOT enumerate a question-to-tool table. Tr
 - **THEN** the string MAY reference tool names by example but SHALL NOT carry a markdown table or structured list mapping question phrases to tool names
 
 ### Requirement: Vocabulary published in MCP initialize response
-The MCP `initialize` response SHALL include three string arrays alongside the existing `ServerInstructions` payload: `edge_kinds`, `symbol_kinds`, and `annotation_flavors`. Each array SHALL list the distinct kebab-case identifiers that the active scope's loaded indexers are configured to emit, sorted lowercase and deduplicated. Sources are: the kebab-case constants exposed by `EdgeKinds` / `SymbolKinds`; constants declared by loaded plugins; and any kinds already present in the scope's storage from a prior index pass.
+The MCP `initialize` response SHALL include three top-level string arrays alongside the existing `ServerInstructions` payload: `edge_kinds`, `symbol_kinds`, and `annotation_flavors`, plus a `scopes` map keyed by scope id whose values are per-scope `{ edge_kinds, symbol_kinds, annotation_flavors }` triples. The top-level arrays SHALL be the **server-wide union** across every configured scope; the per-scope entries SHALL be the union of the SDK's kebab-case constants (`EdgeKinds` / `SymbolKinds`), constants declared by loaded plugins, and the distinct values already present in that specific scope's storage. All arrays are sorted lowercase and deduplicated.
 
 #### Scenario: Single-language scope vocabulary
 - **WHEN** an MCP client completes the initialize handshake against a scope whose only loaded indexer is the built-in C# Roslyn indexer

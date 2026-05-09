@@ -1317,10 +1317,14 @@ public sealed class RoslynIndexer : IAsyncDisposable, ILanguageIndexer
             var span = node.GetLocation().GetLineSpan();
             // Syntax-tree-only path: no semantics, so we cannot derive a Roslyn DocumentationCommentId.
             // Fall back to a stable position+name shape under the reserved <c>csharp:</c> scheme so
-            // the SDK's CanonicalKeyValidator accepts the emission. The "approx" sub-form signals
-            // these are best-effort keys; bulk-mode workspaces always emit the doc-id form.
+            // the SDK's CanonicalKeyValidator accepts the emission. Include a forward-slash-
+            // normalised file component (repo-relative when possible, absolute otherwise) so two
+            // files declaring the same symbol name on the same line don't collide on the upsert
+            // primary key. The "approx" sub-form signals these are best-effort keys; bulk-mode
+            // workspaces always emit the doc-id form.
+            var keyPath = NormalizePathForKey(ctx.FilePath, ctx.RepoRoot);
             events.Add(new Sdk.IndexEvent.SymbolDeclared(
-                canonicalKey: $"{SymbolMapping.CanonicalKeyScheme}approx:{span.StartLinePosition.Line}:{name}",
+                canonicalKey: $"{SymbolMapping.CanonicalKeyScheme}approx:{keyPath}#{span.StartLinePosition.Line}:{name}",
                 name: name,
                 fqn: fqn,
                 kind: kind,
@@ -1347,6 +1351,25 @@ public sealed class RoslynIndexer : IAsyncDisposable, ILanguageIndexer
         var typeName = typeDecl.Identifier.ValueText;
         var nsName = typeDecl.Ancestors().OfType<BaseNamespaceDeclarationSyntax>().FirstOrDefault()?.Name.ToString();
         return string.IsNullOrEmpty(nsName) ? $"{typeName}.{name}" : $"{nsName}.{typeName}.{name}";
+    }
+
+    /// <summary>
+    /// Build the file component used in the <c>csharp:approx:&lt;path&gt;#&lt;line&gt;:&lt;name&gt;</c>
+    /// fallback canonical key produced by the syntax-tree-only path. Repo-relative when
+    /// <paramref name="filePath"/> sits under <paramref name="repoRoot"/> (so two clones of the
+    /// same repo at different absolute locations produce identical keys); absolute otherwise.
+    /// Always forward-slashed so the SDK's <c>CanonicalKeyValidator</c> (which forbids
+    /// backslashes) accepts the result on Windows.
+    /// </summary>
+    private static string NormalizePathForKey(string filePath, string repoRoot)
+    {
+        var relative = !string.IsNullOrEmpty(repoRoot)
+            ? Path.GetRelativePath(repoRoot, filePath)
+            : filePath;
+        // GetRelativePath returns the input verbatim when it can't be made relative; fall back
+        // to the original absolute path in that case so we still emit something stable.
+        var chosen = relative.StartsWith("..", StringComparison.Ordinal) ? filePath : relative;
+        return chosen.Replace('\\', '/');
     }
 }
 

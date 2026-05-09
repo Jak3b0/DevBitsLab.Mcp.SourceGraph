@@ -170,11 +170,11 @@ The host SHALL load `ILanguageProjectFactory` instances from registered plugins,
 - **THEN** `ctx.Project` is the same `ILanguageProject` instance the factory returned for `ProjectX`
 
 ### Requirement: MCP initialize response publishes the active vocabulary
-The MCP server's `initialize` response SHALL include three string arrays alongside the existing usage-instructions surface: `edge_kinds`, `symbol_kinds`, `annotation_flavors`. Each array SHALL list the distinct kebab-case identifiers that the active scope's loaded indexers are configured to emit (sourced from the constants the indexers reference plus any kinds already present in the scope's storage from a previous index). The arrays SHALL be sorted, lowercase, and deduplicated.
+The MCP server's `initialize` response SHALL include three top-level string arrays alongside the existing usage-instructions surface: `edge_kinds`, `symbol_kinds`, `annotation_flavors`. Each top-level array SHALL list the **server-wide union** across every configured scope's vocabulary, sorted lowercase and deduplicated. The response SHALL ALSO include a `scopes` map keyed by scope id, where each value is a `{ edge_kinds, symbol_kinds, annotation_flavors }` triple carrying the per-scope vocabulary; clients that need to validate a tool argument against a specific scope read the per-scope entry rather than the union. Each scope's vocabulary is the union of (a) the SDK's well-known constants (so a built-in kind like `"calls"` is published even on a fresh / never-indexed scope) and (b) the distinct kinds already present in that scope's storage.
 
-#### Scenario: Single-language scope
-- **WHEN** an MCP client completes the initialize handshake against a scope that only has the built-in C# Roslyn indexer loaded
-- **THEN** `edge_kinds` contains the built-in C# constants (`"calls"`, `"inherits"`, `"implements"`, `"uses-type"`, `"overrides-member"`, `"implements-member"`, `"instantiates"`, `"throws"`, `"tests"`); `symbol_kinds` contains the built-in symbol constants; `annotation_flavors` contains `["csharp-attribute"]`
+#### Scenario: Single-scope server
+- **WHEN** an MCP client completes the initialize handshake against a server with one scope (`default`) using the built-in C# Roslyn indexer
+- **THEN** the top-level `edge_kinds` contains the built-in C# constants (`"calls"`, `"inherits"`, `"implements"`, `"uses-type"`, `"overrides-member"`, `"implements-member"`, `"instantiates"`, `"throws"`, `"tests"`) and equals `scopes["default"].edge_kinds`; `symbol_kinds` and `annotation_flavors` mirror the same union-equals-per-scope shape
 
 #### Scenario: Vocabulary publishing suppressed via flag
 - **WHEN** the server is started with `--no-instructions` (or `SOURCEGRAPH_NO_INSTRUCTIONS=1`)

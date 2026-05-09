@@ -225,7 +225,11 @@ static async Task<int> RunServeAsync(CommandLine cli)
             // Capabilities.Experimental is the MCP spec's extension point for non-standard
             // server capabilities; we slot the vocabulary in under a namespaced key so unrelated
             // clients ignore it. The value is a small typed record that System.Text.Json
-            // serialises as `{ "edge_kinds": [...], "symbol_kinds": [...], ... }`.
+            // serialises as `{ "edge_kinds": [...union...], "symbol_kinds": [...], ...,
+            // "scopes": { "<id>": { "edge_kinds": [...], ... } } }`. The top-level lists are the
+            // server-wide union across every scope; the `scopes` map carries the per-scope
+            // breakdown for clients that need to validate a tool argument against a specific
+            // scope's vocabulary.
             o.Capabilities ??= new ModelContextProtocol.Protocol.ServerCapabilities();
             o.Capabilities.Experimental ??= new Dictionary<string, object>(StringComparer.Ordinal);
             o.Capabilities.Experimental[ServerVocabulary.CapabilityKey] = new
@@ -233,6 +237,15 @@ static async Task<int> RunServeAsync(CommandLine cli)
                 edge_kinds = vocabulary.EdgeKinds,
                 symbol_kinds = vocabulary.SymbolKinds,
                 annotation_flavors = vocabulary.AnnotationFlavors,
+                scopes = vocabulary.Scopes.ToDictionary(
+                    kv => kv.Key,
+                    kv => (object)new
+                    {
+                        edge_kinds = kv.Value.EdgeKinds,
+                        symbol_kinds = kv.Value.SymbolKinds,
+                        annotation_flavors = kv.Value.AnnotationFlavors,
+                    },
+                    StringComparer.Ordinal),
             };
         });
     }

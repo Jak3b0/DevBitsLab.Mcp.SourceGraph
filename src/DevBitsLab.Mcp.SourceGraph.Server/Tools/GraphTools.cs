@@ -777,18 +777,28 @@ public static class GraphTools
     }
 
     /// <summary>
-    /// Check whether an edge kind is present in the active scope's stored edges. When the kind is
-    /// missing, return a one-line note pointing at the active vocabulary so the agent can pick a
-    /// real one. <c>null</c> means "kind exists, proceed with the query".
+    /// Check whether an edge kind is in the active scope's published <c>edge_kinds</c> vocabulary
+    /// — the union of the SDK's well-known constants (which the indexer is configured to emit
+    /// regardless of whether storage has any rows yet) with the distinct kinds already present in
+    /// storage. Returning <c>null</c> means "kind is valid, proceed with the query"; a non-null
+    /// string is a one-line note pointing at the active vocabulary so the agent can pick a real
+    /// one. SDK constants in the union mean a fresh / never-indexed scope still accepts a
+    /// built-in kind name like <c>"calls"</c> instead of false-flagging it as "unknown".
     /// </summary>
     private static async Task<string?> CheckUnknownEdgeKindAsync(IGraphStore store, string edgeKind, CancellationToken ct)
     {
-        var present = await store.GetDistinctEdgeKindsAsync(ct).ConfigureAwait(false);
-        if (present.Contains(edgeKind, StringComparer.Ordinal)) return null;
-        // Be lenient when no edges are present at all (graph is empty / not indexed yet) — let the
-        // storage call run; it'll return zero rows.
-        if (present.Count == 0) return null;
-        var avail = string.Join(", ", present);
+        if (ServerVocabulary.SdkEdgeKinds.Contains(edgeKind)) return null;
+        var stored = await store.GetDistinctEdgeKindsAsync(ct).ConfigureAwait(false);
+        if (stored.Contains(edgeKind, StringComparer.Ordinal)) return null;
+        // Be lenient when no edges are stored AND the kind isn't a built-in (graph is empty /
+        // not indexed yet, plugin-defined kind we can't disprove) — let the storage call run;
+        // it'll return zero rows.
+        if (stored.Count == 0) return null;
+        var union = ServerVocabulary.SdkEdgeKinds
+            .Concat(stored)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(k => k, StringComparer.Ordinal);
+        var avail = string.Join(", ", union);
         return $"Edge kind `{edgeKind}` isn't in this scope's published `edge_kinds` vocabulary. Available: [{avail}]. Use `kind=all` to walk every kind.";
     }
 

@@ -14,6 +14,7 @@ public sealed class SqliteGraphStore : IGraphStore
     private readonly SemaphoreSlim _writeLock = new(1, 1);
     private bool _vectorExtensionLoaded;
     private int _embeddingDimension;
+    private bool _disposed;
 
     public SqliteGraphStore(string databasePath, ILogger<SqliteGraphStore>? logger = null)
     {
@@ -1177,7 +1178,20 @@ public sealed class SqliteGraphStore : IGraphStore
 
     public async ValueTask DisposeAsync()
     {
-        await _connection.DisposeAsync().ConfigureAwait(false);
-        _writeLock.Dispose();
+        if (_disposed) return;
+        _disposed = true;
+
+        try
+        {
+            await _connection.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (NullReferenceException)
+        {
+            // Swallow NRE from SqliteConnection.Close/Dispose when connection is in invalid state
+        }
+        finally
+        {
+            _writeLock.Dispose();
+        }
     }
 }

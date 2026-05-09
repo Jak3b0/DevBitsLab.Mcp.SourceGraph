@@ -488,15 +488,32 @@ static async Task<int> RunIndexAsync(CommandLine cli)
         }
 
         // Dispatch non-C# files (XAML + plugin-supplied) for the one-shot path. The C# bulk index
-        // above already covered .cs.
+        // above already covered .cs. We use the dispatcher's test-friendly overload here rather
+        // than constructing a ScopeHost: ScopeHost owns indexer/embeddings/store lifetimes via
+        // its DisposeAsync, but the one-shot CLI path keeps `await using var indexer = new ...`
+        // and `await using var store = new ...` for those — wrapping the host would either
+        // double-dispose them or leak when the dispatcher throws. Building the project map
+        // inline against the existing store sidesteps both problems.
         var dispatcher = new LanguageIndexerDispatcher(langRegistry, projectFactoryRegistry, loggerFactory.CreateLogger<LanguageIndexerDispatcher>());
-        var oneShotScope = new DevBitsLab.Mcp.SourceGraph.Core.Scope("default", "default", repoRootForIndex,
-            new DevBitsLab.Mcp.SourceGraph.Core.ScopeProjectSet.Solutions(new[] { solutionFull }, Array.Empty<string>()), false, DateTimeOffset.UtcNow);
-        var oneShotHost = new DevBitsLab.Mcp.SourceGraph.Server.Scoping.ScopeHost(
-            oneShotScope, (SqliteGraphStore)store, store.CreateEmbeddingsStore(modelInfo.Dimension, loggerFactory.CreateLogger<SqliteEmbeddingsStore>()),
-            indexer, solutionFull);
-        await dispatcher.BuildProjectMapAsync(oneShotHost).ConfigureAwait(false);
-        var dispatched = await dispatcher.DispatchAllAsync(oneShotHost).ConfigureAwait(false);
+        var oneShotProjectMap = new Dictionary<string, ILanguageProject>(StringComparer.OrdinalIgnoreCase);
+        foreach (var factory in projectFactoryRegistry.All())
+        {
+            IReadOnlyList<ILanguageProject> projects;
+            try { projects = await factory.DiscoverAsync(repoRootForIndex, default).ConfigureAwait(false); }
+            catch (Exception ex)
+            {
+                await Console.Error.WriteLineAsync($"[sourcegraph-mcp] factory `{factory.GetType().FullName}` failed DiscoverAsync: {ex.Message}").ConfigureAwait(false);
+                continue;
+            }
+            foreach (var p in projects)
+            {
+                foreach (var path in p.FilePaths)
+                {
+                    if (!oneShotProjectMap.ContainsKey(path)) oneShotProjectMap[path] = p;
+                }
+            }
+        }
+        var dispatched = await dispatcher.DispatchAllForTestAsync(store, "default", repoRootForIndex, oneShotProjectMap).ConfigureAwait(false);
         if (dispatched > 0)
         {
             Console.WriteLine($"non-C# dispatch: indexed {dispatched} files");

@@ -71,12 +71,9 @@ public sealed class XamlIndexFixtureTests : IAsyncLifetime
     [Fact]
     public async Task SampleWpf_handlesEventEdgeResolvesToCSharpMethod()
     {
-        var view = (await _wpfStore!.FindSymbolsAsync("Views/MainWindow.xaml"))
-            .First(h => h.Kind == "xaml-view");
         // The Click="OnSave" attribute lives on the SaveButton element; emission attaches the edge
-        // to that element symbol. Walk the view's contained elements instead of relying on the
-        // root view to be the edge source.
-        var saveButton = (await _wpfStore.FindSymbolsAsync("SaveButton"))
+        // to that element symbol, so we look it up by name (not by walking from the view root).
+        var saveButton = (await _wpfStore!.FindSymbolsAsync("SaveButton"))
             .FirstOrDefault(h => h.Kind == "xaml-element");
         saveButton.Should().NotBeNull();
         var callees = await _wpfStore.ListCalleesAsync(saveButton!.Id, limit: 50, edgeKind: "handles-event");

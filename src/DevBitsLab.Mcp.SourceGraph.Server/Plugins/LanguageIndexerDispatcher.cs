@@ -107,10 +107,12 @@ public sealed class LanguageIndexerDispatcher
     }
 
     /// <summary>
-    /// Test-friendly overload: dispatch every non-C# file under <paramref name="repoRoot"/>
+    /// ScopeHost-free overload: dispatch every non-C# file under <paramref name="repoRoot"/>
     /// directly against an <see cref="IGraphStore"/> + an externally-built project map. Used by
-    /// the XAML indexer's smoke tests to drive the dispatcher without having to construct a full
-    /// <see cref="ScopeHost"/> (which would require a Roslyn workspace and embeddings setup).
+    /// the XAML indexer's smoke tests AND by the one-shot <c>index</c> CLI path — both want
+    /// dispatcher behaviour but neither owns a <see cref="ScopeHost"/> (the test path doesn't
+    /// need one; the CLI path keeps its own <c>await using</c> ownership of the store + indexer
+    /// + embeddings to avoid double-dispose with ScopeHost.DisposeAsync).
     /// </summary>
     public async Task<int> DispatchAllForTestAsync(
         IGraphStore store,

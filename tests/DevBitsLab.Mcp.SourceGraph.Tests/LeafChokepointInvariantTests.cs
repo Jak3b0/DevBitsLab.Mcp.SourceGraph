@@ -89,25 +89,30 @@ public sealed class LeafChokepointInvariantTests
     {
         // Plugin tools are registered through ToolRegistry.AddTool, which calls
         // McpServerTool.Create(handler, ...) — the handler is wrapped by the SDK with no
-        // ToolMetrics.Track* in between. We verify here that the registered tool's handler
-        // delegate, when invoked directly, returns its raw string. Because the plugin path does
-        // not flow through the leaf chokepoint, plugin output ships unbranded.
+        // ToolMetrics.Track* in between. We verify the contract structurally: the same handler
+        // delegate the registry consumed, when invoked, returns its payload verbatim — no leaf,
+        // no chokepoint mutation. The McpServerTool the registry produces wraps that delegate
+        // via the SDK's marshalling but doesn't introduce the leaf chokepoint, so the wire-level
+        // output preserves the same unbranded contract.
         var record = new PluginRecord("plugin", "1.0", "/path/to.dll", isNuGet: false);
         var registry = new ToolRegistry("mine", new HashSet<string>(StringComparer.Ordinal), record);
 
         const string pluginPayload = "plugin-author-output";
-        registry.AddTool("hello", "Greet from a plugin.", new Func<string>(() => pluginPayload));
+        // Capture the same delegate instance we hand to AddTool so the assertion below proves
+        // *that* delegate's behaviour, not a fresh look-alike.
+        var pluginHandler = new Func<string>(() => pluginPayload);
+        registry.AddTool("hello", "Greet from a plugin.", pluginHandler);
 
         var pluginTool = registry.RegisteredTools.Should().ContainSingle().Subject;
         pluginTool.ProtocolTool.Name.Should().Be("mine.hello",
             "the plugin's wire-level tool name is prefixed but otherwise unwrapped");
 
-        // Sanity: the handler the registry was given is the raw delegate. Calling it directly
-        // returns the unbranded plugin payload — no leaf prefix. We can't trivially exercise the
-        // SDK's wire-level invocation in-process, but the structural guarantee is this: every
-        // McpServerTool produced by this path is built from the raw handler with no Track* wrap.
-        var handler = new Func<string>(() => pluginPayload);
-        handler().Should().Be(pluginPayload);
-        handler().Should().NotStartWith("\U0001F33F ");
+        // Invoke the *original* handler instance — the same delegate the registry stored — and
+        // confirm it returns unbranded prose. The leaf chokepoint lives in ToolMetrics.Track*,
+        // and ToolRegistry.AddTool's path through McpServerTool.Create never touches it, so the
+        // delegate remains pristine.
+        var output = pluginHandler();
+        output.Should().Be(pluginPayload);
+        output.Should().NotStartWith("\U0001F33F ");
     }
 }

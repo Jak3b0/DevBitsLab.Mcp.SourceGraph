@@ -29,6 +29,7 @@ namespace DevBitsLab.Mcp.SourceGraph.Tests;
 [Collection("LeafFormatterState")]
 public sealed class TabularRenderingTests : IAsyncLifetime, IDisposable
 {
+    private string _tempDir = string.Empty;
     private string _dbPath = string.Empty;
     private SqliteGraphStore? _store;
     private ScopeRouter? _router;
@@ -40,9 +41,9 @@ public sealed class TabularRenderingTests : IAsyncLifetime, IDisposable
     public async Task InitializeAsync()
     {
         var slnPath = LocateSolution();
-        var tmp = Path.Combine(Path.GetTempPath(), "tabular-rendering-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(tmp);
-        _dbPath = Path.Combine(tmp, "graph.db");
+        _tempDir = Path.Combine(Path.GetTempPath(), "tabular-rendering-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(_tempDir);
+        _dbPath = Path.Combine(_tempDir, "graph.db");
 
         _store = new SqliteGraphStore(_dbPath);
         await RoslynIndexer.IndexSolutionOnceAsync(slnPath, _store);
@@ -66,9 +67,13 @@ public sealed class TabularRenderingTests : IAsyncLifetime, IDisposable
     public async Task DisposeAsync()
     {
         if (_host is not null) await _host.DisposeAsync();
+        if (_store is not null) await _store.DisposeAsync();
         try
         {
-            if (File.Exists(_dbPath)) File.Delete(_dbPath);
+            // Recursive delete clears `graph.db` plus the SQLite WAL sidecars
+            // (`graph.db-wal`, `graph.db-shm`) that linger when the connection
+            // ran in WAL mode. Skipping them leaks temp files across runs.
+            if (Directory.Exists(_tempDir)) Directory.Delete(_tempDir, recursive: true);
         }
         catch { /* best-effort */ }
     }

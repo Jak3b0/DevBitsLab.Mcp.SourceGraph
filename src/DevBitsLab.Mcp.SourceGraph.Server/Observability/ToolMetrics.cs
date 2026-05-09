@@ -135,12 +135,18 @@ public static class ToolMetrics
 
     /// <summary>
     /// Rich-result overload: tools that need <see cref="CallToolResult.StructuredContent"/> or
-    /// <see cref="CallToolResult.IsError"/> route here. Same leaf-branding + telemetry rules as the
-    /// content-list overload, plus a defensive anonymous-type guard on
-    /// <see cref="CallToolResult.StructuredContent"/> and <see cref="CallToolResult.Meta"/>: the
-    /// SDK's source-generated <c>JsonContext</c> rejects anonymous types at wire time with an
-    /// opaque exception, so we check at the chokepoint and surface a diagnosable
-    /// <see cref="InvalidOperationException"/> naming the offending tool and field.
+    /// <see cref="CallToolResult.IsError"/> route here. Same leaf-branding rule as the
+    /// content-list overload (the first user-visible <see cref="TextContentBlock"/> is prefixed
+    /// with the brand mark), and same telemetry — measured on the **unbranded** payload so the
+    /// recorded response size is comparable to the string and content-list overloads. When
+    /// <see cref="CallToolResult.IsError"/> is true the call records as ok=false so dashboards
+    /// surface tool-reported errors alongside thrown exceptions.
+    ///
+    /// No runtime guard against anonymous types — both <see cref="CallToolResult.StructuredContent"/>
+    /// (<see cref="System.Text.Json.JsonElement"/>?) and <see cref="CallToolResult.Meta"/>
+    /// (<see cref="System.Text.Json.Nodes.JsonObject"/>?) are typed strictly enough that the SDK's
+    /// source-gen <c>JsonContext</c> can't reject them at wire time; the C# compiler enforces the
+    /// shape at assignment instead.
     /// </summary>
     public static async Task<CallToolResult> TrackAsync(
         string toolName, object? args, Func<Task<CallToolResult>> body)
@@ -153,15 +159,18 @@ public static class ToolMetrics
         var sw = Stopwatch.StartNew();
         var ok = true;
         CallToolResult result = new() { Content = Array.Empty<ContentBlock>() };
+        // Snapshots of the unbranded shape captured before LeafFormatter.BrandFirstText mutates
+        // result.Content in place. Telemetry measures these so the recorded byte count reflects
+        // payload size, not branded prose — consistent with the string and IReadOnlyList<ContentBlock>
+        // overloads which also measure unbranded.
+        IReadOnlyList<ContentBlock> unbrandedContent = Array.Empty<ContentBlock>();
+        JsonElement? unbrandedStructured = null;
         try
         {
             result = await body().ConfigureAwait(false);
-            // Note: the design called for an anonymous-type guard on StructuredContent / Meta to
-            // surface the same failure mode that bit us with the initialize vocabulary fix. On
-            // closer inspection the SDK already prevents it: StructuredContent is typed as
-            // JsonElement? and Meta is typed as JsonObject? — the C# compiler rejects anonymous
-            // types at assignment time, so the runtime guard is unreachable. We keep the typed
-            // DTO discipline (decision 3) but drop the guard.
+            unbrandedContent = result.Content as IReadOnlyList<ContentBlock>
+                ?? (result.Content is null ? Array.Empty<ContentBlock>() : (IReadOnlyList<ContentBlock>)result.Content.ToArray());
+            unbrandedStructured = result.StructuredContent;
             LeafFormatter.BrandFirstText(result);
             return result;
         }
@@ -175,9 +184,7 @@ public static class ToolMetrics
         finally
         {
             sw.Stop();
-            var content = result.Content as IReadOnlyList<ContentBlock>
-                ?? (result.Content is null ? Array.Empty<ContentBlock>() : (IReadOnlyList<ContentBlock>)result.Content.ToArray());
-            var (textLen, byteLen) = MeasureContent(content);
+            var (textLen, byteLen) = MeasureContent(unbrandedContent, unbrandedStructured);
             activity?.SetTag("mcp.tool.response_bytes", byteLen);
             // CallToolResult with IsError=true should still record as ok=false in telemetry so
             // dashboards see tool-reported errors alongside thrown exceptions.
@@ -186,21 +193,51 @@ public static class ToolMetrics
         }
     }
 
-    /// <summary>Sum the text-block lengths in a content list. Non-text blocks contribute nothing
-    /// (resource_link payloads carry their content elsewhere).</summary>
-    private static (int TextLen, int ByteCount) MeasureContent(IReadOnlyList<ContentBlock> content)
+    /// <summary>
+    /// Sum the size of the user-renderable surface of a tool result: text-block contents,
+    /// resource-link metadata (uri, name, title, description), and — when present — the raw JSON
+    /// of <see cref="CallToolResult.StructuredContent"/>. Captures the bulk of what the SDK
+    /// serialises for a real <c>tools/call</c> response, so <c>mcp.tool.response_bytes</c> stays
+    /// representative when tools emit multi-content blocks or structured payloads. Other
+    /// envelope-level fields (annotations, meta, isError) are small enough to skip.
+    /// </summary>
+    private static (int TextLen, int ByteCount) MeasureContent(
+        IReadOnlyList<ContentBlock> content,
+        JsonElement? structuredContent = null)
     {
         var len = 0;
         var bytes = 0;
         foreach (var block in content)
         {
-            if (block is TextContentBlock t && !string.IsNullOrEmpty(t.Text))
+            switch (block)
             {
-                len += t.Text.Length;
-                bytes += Encoding.UTF8.GetByteCount(t.Text);
+                case TextContentBlock t when !string.IsNullOrEmpty(t.Text):
+                    len += t.Text.Length;
+                    bytes += Encoding.UTF8.GetByteCount(t.Text);
+                    break;
+                case ResourceLinkBlock r:
+                    // Sum every textual field a client renders for a resource link card.
+                    AddString(ref len, ref bytes, r.Uri);
+                    AddString(ref len, ref bytes, r.Name);
+                    AddString(ref len, ref bytes, r.Title);
+                    AddString(ref len, ref bytes, r.Description);
+                    break;
             }
         }
+        if (structuredContent.HasValue)
+        {
+            var raw = structuredContent.Value.GetRawText();
+            len += raw.Length;
+            bytes += Encoding.UTF8.GetByteCount(raw);
+        }
         return (len, bytes);
+    }
+
+    private static void AddString(ref int len, ref int bytes, string? s)
+    {
+        if (string.IsNullOrEmpty(s)) return;
+        len += s.Length;
+        bytes += Encoding.UTF8.GetByteCount(s);
     }
 
     private static void Record(string toolName, object? args, int responseLen, int responseBytes, TimeSpan elapsed, bool ok)

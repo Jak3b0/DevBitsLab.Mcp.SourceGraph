@@ -239,21 +239,29 @@ static async Task<int> RunServeAsync(CommandLine cli)
             // scope's vocabulary.
             o.Capabilities ??= new ModelContextProtocol.Protocol.ServerCapabilities();
             o.Capabilities.Experimental ??= new Dictionary<string, object>(StringComparer.Ordinal);
-            o.Capabilities.Experimental[ServerVocabulary.CapabilityKey] = new
-            {
-                edge_kinds = vocabulary.EdgeKinds,
-                symbol_kinds = vocabulary.SymbolKinds,
-                annotation_flavors = vocabulary.AnnotationFlavors,
-                scopes = vocabulary.Scopes.ToDictionary(
-                    kv => kv.Key,
-                    kv => (object)new
-                    {
-                        edge_kinds = kv.Value.EdgeKinds,
-                        symbol_kinds = kv.Value.SymbolKinds,
-                        annotation_flavors = kv.Value.AnnotationFlavors,
-                    },
-                    StringComparer.Ordinal),
-            };
+            // Pre-serialize the vocabulary payload to a JsonElement before storing it in
+            // ServerCapabilities.Experimental. The MCP SDK ships ServerCapabilities through its
+            // source-generated McpJsonUtilities.JsonContext, which only knows the SDK's own types
+            // and rejects anonymous types at runtime ("JsonTypeInfo metadata for type
+            // '<>f__AnonymousType...' was not provided"). JsonElement is a System.Text.Json
+            // built-in that every JsonContext can write natively, so the SDK doesn't need to
+            // resolve our anonymous shape — it just emits the pre-rendered JSON.
+            o.Capabilities.Experimental[ServerVocabulary.CapabilityKey] =
+                System.Text.Json.JsonSerializer.SerializeToElement(new
+                {
+                    edge_kinds = vocabulary.EdgeKinds,
+                    symbol_kinds = vocabulary.SymbolKinds,
+                    annotation_flavors = vocabulary.AnnotationFlavors,
+                    scopes = vocabulary.Scopes.ToDictionary(
+                        kv => kv.Key,
+                        kv => (object)new
+                        {
+                            edge_kinds = kv.Value.EdgeKinds,
+                            symbol_kinds = kv.Value.SymbolKinds,
+                            annotation_flavors = kv.Value.AnnotationFlavors,
+                        },
+                        StringComparer.Ordinal),
+                });
         });
     }
 

@@ -26,7 +26,7 @@ public sealed class VocabularyCliTests : IDisposable
 
     public VocabularyCliTests()
     {
-        _tempRoot = Path.Combine(Path.GetTempPath(), "vocabulary-cli-tests-" + Guid.NewGuid().ToString("N"));
+        _tempRoot = Path.Join(Path.GetTempPath(), "vocabulary-cli-tests-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_tempRoot);
     }
 
@@ -221,7 +221,7 @@ public sealed class VocabularyCliTests : IDisposable
         }
         sb.AppendLine("  ]");
         sb.AppendLine("}");
-        File.WriteAllText(Path.Combine(_tempRoot, ScopeConfigLoader.FileName), sb.ToString());
+        File.WriteAllText(Path.Join(_tempRoot, ScopeConfigLoader.FileName), sb.ToString());
     }
 
     /// <summary>

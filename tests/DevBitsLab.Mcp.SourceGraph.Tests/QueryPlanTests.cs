@@ -88,12 +88,21 @@ public sealed class QueryPlanTests : IAsyncLifetime
             indexedAt: DateTimeOffset.UtcNow,
             isGenerated: false);
 
-        // 50 symbols: 10 classes + 40 methods. Mixed kinds give idx_symbols_kind_name a
-        // non-trivial selectivity story (otherwise the planner might prefer a full scan).
+        var symbolIds = await SeedSymbolsAsync(fileId);
+        await SeedEdgesAsync(symbolIds);
+        await SeedAnnotationsAsync(symbolIds);
+    }
+
+    /// <summary>
+    /// 50 symbols: 10 classes + 40 methods. Mixed kinds give <c>idx_symbols_kind_name</c> a
+    /// non-trivial selectivity story (otherwise the planner might prefer a full scan).
+    /// </summary>
+    private async Task<List<long>> SeedSymbolsAsync(long fileId)
+    {
         var symbolIds = new List<long>(capacity: 50);
         for (int i = 0; i < 10; i++)
         {
-            var classId = await _store.UpsertSymbolAsync($"csharp:T:Sample.Cls{i}", new Symbol(
+            var classId = await _store!.UpsertSymbolAsync($"csharp:T:Sample.Cls{i}", new Symbol(
                 Id: 0,
                 Name: $"Cls{i}",
                 Fqn: $"Sample.Cls{i}",
@@ -111,7 +120,7 @@ public sealed class QueryPlanTests : IAsyncLifetime
         }
         for (int i = 0; i < 40; i++)
         {
-            var methodId = await _store.UpsertSymbolAsync($"csharp:M:Sample.M{i}", new Symbol(
+            var methodId = await _store!.UpsertSymbolAsync($"csharp:M:Sample.M{i}", new Symbol(
                 Id: 0,
                 Name: $"M{i}",
                 Fqn: $"Sample.M{i}",
@@ -127,10 +136,16 @@ public sealed class QueryPlanTests : IAsyncLifetime
                 TestFramework: null));
             symbolIds.Add(methodId);
         }
+        return symbolIds;
+    }
 
-        // 120 edges across 3 kinds. Pattern: methods call methods, classes inherit classes,
-        // methods use-type classes. Density gives the planner enough rows per index that
-        // a SCAN fallback would be obviously worse on cost.
+    /// <summary>
+    /// 120 edges across 3 kinds. Pattern: methods call methods, classes inherit classes,
+    /// methods use-type classes. Density gives the planner enough rows per index that a
+    /// SCAN fallback would be obviously worse on cost.
+    /// </summary>
+    private async Task SeedEdgesAsync(List<long> symbolIds)
+    {
         var edges = new List<Edge>(capacity: 120);
         // 60 calls (method -> method)
         for (int i = 0; i < 60; i++)
@@ -155,10 +170,15 @@ public sealed class QueryPlanTests : IAsyncLifetime
             var dst = symbolIds[i % 10];
             edges.Add(new Edge(src, dst, EdgeKinds.UsesType));
         }
-        await _store.BulkInsertEdgesAsync(edges);
+        await _store!.BulkInsertEdgesAsync(edges);
+    }
 
-        // One annotation so FindByAnnotationAsync's planner choice has a real data set.
-        await _store.BulkInsertAnnotationsAsync(new[]
+    /// <summary>
+    /// One annotation so <see cref="FindByAnnotationAsync"/>'s planner choice has a non-empty
+    /// data set to consider.
+    /// </summary>
+    private Task SeedAnnotationsAsync(List<long> symbolIds) =>
+        _store!.BulkInsertAnnotationsAsync(new[]
         {
             new AnnotationRecord(
                 SymbolId: symbolIds[10],
@@ -168,7 +188,6 @@ public sealed class QueryPlanTests : IAsyncLifetime
                 ArgsJson: null,
                 AttributeSymbolId: null),
         });
-    }
 
     /// <summary>
     /// Open a fresh <see cref="SqliteConnection"/> against the same DB file the store
@@ -259,14 +278,16 @@ public sealed class QueryPlanTests : IAsyncLifetime
     [Fact]
     public async Task ListCallersAsync_usesEdgeIndex_forKindFilter()
     {
-        // Verbatim copy of SqliteGraphStore.ListCallersAsync's SQL when edgeKind != null.
+        // Verbatim copy of SqliteGraphStore.ListCallersAsync's SQL when edgeKind != null,
+        // including the `e.payload AS PayloadJson` projection added by harden-sdk-pre-xaml.
         // Maintainer: keep this in sync with the source-of-truth method.
         const string sql = """
             SELECT s.id, s.name, s.fqn, s.kind_name AS Kind, f.path AS FilePath, s.start_line AS StartLine, s.start_col AS StartCol,
                    s.end_line AS EndLine, s.end_col AS EndCol, s.signature,
                    s.modifiers AS Modifiers, s.accessibility AS Accessibility, s.xml_summary AS XmlSummary,
                    f.is_generated AS IsGenerated, s.test_framework AS TestFramework,
-                   s.canonical_key AS CanonicalKey
+                   s.canonical_key AS CanonicalKey,
+                   e.payload     AS PayloadJson
             FROM edges e
             JOIN symbols s ON s.id = e.src
             JOIN files   f ON f.id = s.file_id
@@ -283,7 +304,8 @@ public sealed class QueryPlanTests : IAsyncLifetime
     [Fact]
     public async Task ListCalleesAsync_usesEdgeIndex_forKindFilter()
     {
-        // Verbatim copy of SqliteGraphStore.ListCalleesAsync's SQL when edgeKind != null.
+        // Verbatim copy of SqliteGraphStore.ListCalleesAsync's SQL when edgeKind != null,
+        // including the `e.payload AS PayloadJson` projection added by harden-sdk-pre-xaml.
         // Note the (src, dst, kind_name) PK gives this query a perfect-match plan via the
         // PK's leading-column match on src. We accept either the PK plan or one of the
         // secondary indexes; both are non-scan.
@@ -292,7 +314,8 @@ public sealed class QueryPlanTests : IAsyncLifetime
                    s.end_line AS EndLine, s.end_col AS EndCol, s.signature,
                    s.modifiers AS Modifiers, s.accessibility AS Accessibility, s.xml_summary AS XmlSummary,
                    f.is_generated AS IsGenerated, s.test_framework AS TestFramework,
-                   s.canonical_key AS CanonicalKey
+                   s.canonical_key AS CanonicalKey,
+                   e.payload     AS PayloadJson
             FROM edges e
             JOIN symbols s ON s.id = e.dst
             JOIN files   f ON f.id = s.file_id

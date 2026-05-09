@@ -60,19 +60,14 @@ internal static class VocabularyCli
             return 2;
         }
 
-        // Plugin attribution: load the declared plugin set so a future host that surfaces declared
-        // kinds can plug into ResolveSource without changing the call site.
+        // Plugin attribution wiring: keep the `PluginHost` instance threaded through to
+        // `ResolveSource` so a future host API that surfaces declared-kinds metadata plugs in
+        // without changing the call site. Skip the `LoadAllAsync` call until that API exists —
+        // today `ResolveSource` always returns "unknown" for non-SDK kinds, so loading every
+        // plugin (with the assembly-load + restore side effects that entails) buys nothing.
         var pluginHost = new PluginHost(repoRoot, config.Plugins);
-        try
-        {
-            await pluginHost.LoadAllAsync().ConfigureAwait(false);
-        }
-        catch
-        {
-            // Best-effort: a malformed plugin shouldn't kill the diagnostic dump.
-        }
 
-        var scopes = (IReadOnlyList<Scope>)config.Scopes;
+        var scopes = config.Scopes;
         if (!string.IsNullOrEmpty(cli.ScopeId))
         {
             var match = scopes.FirstOrDefault(s => string.Equals(s.Id, cli.ScopeId, StringComparison.Ordinal));

@@ -161,7 +161,7 @@ internal sealed class ServerHarness : IAsyncDisposable
         {
             await _client.DisposeAsync().ConfigureAwait(false);
         }
-        catch
+        catch (Exception)
         {
             // Tests will already have signalled failure via assertion if the disposal path was
             // misbehaving; swallow here so a flaky teardown doesn't mask the real test failure.
@@ -199,7 +199,7 @@ internal sealed class ServerHarness : IAsyncDisposable
     {
         for (var d = new DirectoryInfo(AppContext.BaseDirectory); d is not null; d = d.Parent)
         {
-            var candidate = Path.Combine(
+            var candidate = Path.Join(
                 d.FullName,
                 "src",
                 "DevBitsLab.Mcp.SourceGraph.Server",
@@ -222,7 +222,7 @@ internal sealed class ServerHarness : IAsyncDisposable
     {
         for (var d = new DirectoryInfo(AppContext.BaseDirectory); d is not null; d = d.Parent)
         {
-            var candidate = Path.Combine(d.FullName, "tests", "fixtures", relativeFromFixtures);
+            var candidate = Path.Join(d.FullName, "tests", "fixtures", relativeFromFixtures);
             if (File.Exists(candidate) || Directory.Exists(candidate)) return candidate;
         }
         throw new FileNotFoundException(

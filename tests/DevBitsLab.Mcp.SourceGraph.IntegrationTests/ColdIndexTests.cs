@@ -88,14 +88,7 @@ public sealed class ColdIndexTests
     private static string ExtractText(CallToolResult result)
     {
         if (result.Content is null) return string.Empty;
-        var parts = new List<string>();
-        foreach (var block in result.Content)
-        {
-            if (block is TextContentBlock text)
-            {
-                parts.Add(text.Text);
-            }
-        }
+        var parts = result.Content.OfType<TextContentBlock>().Select(block => block.Text);
         return string.Join(Environment.NewLine, parts);
     }
 }

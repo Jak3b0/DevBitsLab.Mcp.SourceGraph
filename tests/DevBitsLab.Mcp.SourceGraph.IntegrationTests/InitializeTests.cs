@@ -205,11 +205,7 @@ public sealed class InitializeTests
         if (string.IsNullOrEmpty(s)) return false;
         if (s[0] == '-' || s[s.Length - 1] == '-') return false;
         if (s.Contains("--", StringComparison.Ordinal)) return false;
-        foreach (var c in s)
-        {
-            if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-')) return false;
-        }
-        return true;
+        return s.All(c => (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-');
     }
 
     /// <summary>
@@ -249,31 +245,37 @@ public sealed class InitializeTests
     private static Assembly LoadSdkAssembly()
     {
         // The Server csproj is a build-time dependency of this project (ReferenceOutputAssembly=false),
-        // so its bin/Debug/<tfm>/ output (including the SDK assembly) lives somewhere we can find
-        // by walking parents from AppContext.BaseDirectory. The SDK targets netstandard2.0 today;
-        // we glob for it instead of hard-coding a TFM so the test survives a future TFM bump.
+        // so the SDK assembly lives under `src/.../Sdk/bin/<Configuration>/<tfm>/` somewhere we
+        // can find by walking parents from AppContext.BaseDirectory. We probe both `Debug` and
+        // `Release` because CI builds Release while local `dotnet test` defaults to Debug; the
+        // SDK targets netstandard2.0 today, but we glob TFM directories so the test survives a
+        // future TFM bump.
+        var configurations = new[] { "Debug", "Release" };
         for (var d = new DirectoryInfo(AppContext.BaseDirectory); d is not null; d = d.Parent)
         {
-            var sdkBin = new DirectoryInfo(Path.Combine(
-                d.FullName,
-                "src",
-                "DevBitsLab.Mcp.SourceGraph.Sdk",
-                "bin",
-                "Debug"));
-            if (!sdkBin.Exists) continue;
-            // Pick the first TFM directory that has the SDK DLL — this project only depends on the
-            // SDK's public constants, which are TFM-independent.
-            foreach (var tfmDir in sdkBin.EnumerateDirectories())
+            foreach (var configuration in configurations)
             {
-                var candidate = Path.Combine(tfmDir.FullName, "DevBitsLab.Mcp.SourceGraph.Sdk.dll");
-                if (File.Exists(candidate))
+                var sdkBin = new DirectoryInfo(Path.Join(
+                    d.FullName,
+                    "src",
+                    "DevBitsLab.Mcp.SourceGraph.Sdk",
+                    "bin",
+                    configuration));
+                if (!sdkBin.Exists) continue;
+                // Pick the first TFM directory that has the SDK DLL — this project only depends
+                // on the SDK's public constants, which are TFM-independent.
+                foreach (var tfmDir in sdkBin.EnumerateDirectories())
                 {
-                    return Assembly.LoadFrom(candidate);
+                    var candidate = Path.Join(tfmDir.FullName, "DevBitsLab.Mcp.SourceGraph.Sdk.dll");
+                    if (File.Exists(candidate))
+                    {
+                        return Assembly.LoadFrom(candidate);
+                    }
                 }
             }
         }
         throw new FileNotFoundException(
-            "Could not locate DevBitsLab.Mcp.SourceGraph.Sdk.dll under any sibling bin/ directory; " +
+            "Could not locate DevBitsLab.Mcp.SourceGraph.Sdk.dll under any sibling bin/{Debug,Release}/ directory; " +
             "make sure `dotnet build` ran on the SDK project before running these tests.");
     }
 }

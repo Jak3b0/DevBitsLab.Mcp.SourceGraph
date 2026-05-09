@@ -1,15 +1,19 @@
 ## ADDED Requirements
 
 ### Requirement: vocabulary subcommand
-The CLI SHALL accept a `vocabulary` top-level subcommand that exposes diagnostic information about the soft-registry kind vocabulary. At v1 the only nested subcommand is `list`. Future revisions may add `add` / `validate` / `import` if a strict registry is introduced.
+The CLI SHALL accept a `vocabulary` top-level subcommand that exposes diagnostic information about the soft-registry kind vocabulary. At v1 the only nested verb is `list`, which is also the default if the user invokes `vocabulary` with no nested verb. Future revisions may add `add` / `validate` / `import` if a strict registry is introduced.
 
 #### Scenario: Run vocabulary list with default options
 - **WHEN** `sourcegraph-mcp vocabulary list` is invoked from a repo root with at least one configured scope
 - **THEN** the command exits `0`, prints one section per scope to stdout, and each section enumerates the scope's `edge_kinds`, `symbol_kinds`, and `annotation_flavors` arrays as observed in storage
 
-#### Scenario: Vocabulary subcommand without nested verb prints help
-- **WHEN** `sourcegraph-mcp vocabulary` is invoked with no further arguments
-- **THEN** the command prints the help block listing the available verbs (`list`) and exits `2`
+#### Scenario: Vocabulary subcommand defaults to list
+- **WHEN** `sourcegraph-mcp vocabulary` is invoked with no nested verb
+- **THEN** the command behaves identically to `sourcegraph-mcp vocabulary list` (the only verb at v1 is the default)
+
+#### Scenario: Unknown nested verb errors out
+- **WHEN** `sourcegraph-mcp vocabulary register` (or any string other than `list`) is invoked
+- **THEN** the command prints an unknown-subcommand error to stderr and exits `2`
 
 ### Requirement: vocabulary list output format
 The `vocabulary list` subcommand SHALL print, for each scope known to the active `IScopeRegistry`, a header naming the scope id, then three labelled lists (`edge_kinds`, `symbol_kinds`, `annotation_flavors`). Each entry in each list SHALL be tagged with its source (`sdk` if the value matches a constant exposed by `EdgeKinds` / `SymbolKinds`; `plugin: <id>@<version>` if it matches a registered plugin's declared kinds; otherwise `unknown`) and a live emission count obtained by counting matching rows in the scope's storage (`COUNT(*) FROM edges WHERE kind_name = ?`, etc.).
@@ -23,8 +27,8 @@ The `vocabulary list` subcommand SHALL print, for each scope known to the active
 - **THEN** SDK constants are tagged `[sdk]`, XAML-emitted kinds are tagged `[plugin: xaml-indexer@1.0.0]`, and live emission counts reflect the actual storage state for each
 
 #### Scenario: Empty scope output
-- **WHEN** `vocabulary list` runs against a scope whose storage is empty (cold scope, never indexed)
-- **THEN** the SDK constants are listed with `emitted: 0`; no plugin entries appear; no error is produced
+- **WHEN** `vocabulary list` runs against a scope whose storage is missing (cold scope, never indexed — the per-scope DB file does not exist on disk)
+- **THEN** the section header for that scope is followed by a single `(no database at <path> — never indexed)` note, the `edge_kinds` / `symbol_kinds` / `annotation_flavors` lists are empty (no SDK fabricated `emitted: 0` rows), no error is produced, and the command continues to the next scope
 
 ### Requirement: vocabulary list drift detection
 After printing the per-scope kind lists, the `vocabulary list` subcommand SHALL print a "Drift candidates" section that compares pairs of kinds within each scope using Levenshtein distance with threshold ≤2. Pairs that meet the threshold SHALL be listed in the form `<kind-a> ~ <kind-b>` so a maintainer can spot likely typos (`bind-path` vs `binds-path`).

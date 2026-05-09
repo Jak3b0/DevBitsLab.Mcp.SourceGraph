@@ -75,9 +75,12 @@ public sealed class MultiScopeTests
 
         var experimental = harness.Client.ServerCapabilities?.Experimental;
         experimental.Should().NotBeNull("server should publish experimental capabilities by default");
-        experimental.Should().ContainKey("sourcegraph.vocabulary");
+        // FluentAssertions's NotBeNull doesn't propagate non-nullness to the static type, so we
+        // capture the asserted-non-null reference explicitly before subsequent dereferences.
+        var experimentalNonNull = experimental!;
+        experimentalNonNull.Should().ContainKey("sourcegraph.vocabulary");
 
-        var raw = experimental!["sourcegraph.vocabulary"];
+        var raw = experimentalNonNull["sourcegraph.vocabulary"];
         raw.Should().BeOfType<JsonElement>(
             "Experimental values come through the SDK as JsonElement on the wire");
         var vocab = (JsonElement)raw;
@@ -124,14 +127,7 @@ public sealed class MultiScopeTests
     private static string ExtractText(CallToolResult result)
     {
         if (result.Content is null) return string.Empty;
-        var parts = new List<string>();
-        foreach (var block in result.Content)
-        {
-            if (block is TextContentBlock text)
-            {
-                parts.Add(text.Text);
-            }
-        }
+        var parts = result.Content.OfType<TextContentBlock>().Select(block => block.Text);
         return string.Join(Environment.NewLine, parts);
     }
 }

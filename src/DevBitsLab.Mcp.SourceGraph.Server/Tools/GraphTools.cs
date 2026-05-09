@@ -929,19 +929,12 @@ internal static class Format
             if (rendered > 0) sb.Append(", ");
             sb.Append(kv.Key);
             sb.Append(": ");
-            // Strings render with quotes for readability ("two-way", "User.Name"). Other JSON
-            // value kinds round-trip through GetRawText, which preserves numeric formatting,
-            // bool literals, and nested object/array shapes.
-            if (kv.Value.ValueKind == JsonValueKind.String)
-            {
-                sb.Append('"');
-                sb.Append(kv.Value.GetString());
-                sb.Append('"');
-            }
-            else
-            {
-                sb.Append(kv.Value.GetRawText());
-            }
+            // Use GetRawText() for every JSON value kind: for strings it returns the JSON-encoded
+            // form (already wrapped in double quotes, with embedded quotes / backslashes / control
+            // characters escaped per RFC 8259), so a binding path containing a quote or newline
+            // can't break the markdown line. Numbers, bools, nulls, and nested object/array shapes
+            // also round-trip verbatim through GetRawText.
+            sb.Append(kv.Value.GetRawText());
             rendered++;
         }
         if (parsed.Count > PayloadKeyLimit)

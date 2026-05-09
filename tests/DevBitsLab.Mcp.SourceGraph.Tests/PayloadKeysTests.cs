@@ -23,10 +23,11 @@ public sealed class PayloadKeysTests
     public static TheoryData<string, string> AllConstants()
     {
         var data = new TheoryData<string, string>();
-        foreach (var field in typeof(PayloadKeys).GetFields(BindingFlags.Public | BindingFlags.Static))
+        var stringConstants = typeof(PayloadKeys)
+            .GetFields(BindingFlags.Public | BindingFlags.Static)
+            .Where(f => f.IsLiteral && !f.IsInitOnly && f.FieldType == typeof(string));
+        foreach (var field in stringConstants)
         {
-            if (!field.IsLiteral || field.IsInitOnly) continue;
-            if (field.FieldType != typeof(string)) continue;
             var value = (string?)field.GetRawConstantValue();
             data.Add(field.Name, value ?? string.Empty);
         }

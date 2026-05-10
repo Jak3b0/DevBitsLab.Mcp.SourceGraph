@@ -40,7 +40,7 @@ public sealed class TreeSitterLanguageIndexerTests
     }
 
     [Fact]
-    public async Task Files_above_size_cap_are_skipped_with_filescanned_only()
+    public async Task Files_above_size_cap_return_no_events()
     {
         var indexer = new StubJsIndexer(maxFileSizeBytes: 8); // any non-trivial input exceeds this
         var bytes = Encoding.UTF8.GetBytes("function greet(name) { return name; }");
@@ -103,11 +103,11 @@ public sealed class TreeSitterLanguageIndexerTests
             }
             var (line, col) = TreeSitterAdapter.ToOneBased(node.StartPosition);
             var (endLine, endCol) = TreeSitterAdapter.ToOneBased(node.EndPosition);
-            // The test stub uses `xaml:` as a placeholder scheme because `js:` / `ts:` are
-            // reserved-but-rejected at this SDK version (real lifting happens in the
-            // add-typescript-language-indexer change). The scheme choice is irrelevant to what
-            // this test asserts — pipeline correctness — so we use any accepted-and-flexible
-            // scheme.
+            // The test stub uses `xaml:` as a placeholder scheme — its lexical-path body is
+            // the most permissive of the accepted schemes (no kind-prefix structure to
+            // satisfy). The scheme choice is irrelevant to what this test asserts (the
+            // abstract-base pipeline's correctness), so we pick one that doesn't impose
+            // language-specific rules on the stub's synthetic identifiers.
             return new IndexEvent.SymbolDeclared(
                 canonicalKey: $"xaml:test:{ctx.FilePath}::{name}",
                 name: name,

@@ -254,7 +254,7 @@ internal static class ScopesCli
             {
                 Console.WriteLine($"- lsp.args:    {string.Join(" ", lsp.Args)}");
             }
-            Console.WriteLine($"- (no consumer at this version — first runtime use lands with the TypeScript indexer)");
+            Console.WriteLine($"- (no consumer at this version — first runtime use lands with the follow-up `add-typescript-lsp-enrichment` change)");
         }
     }
 

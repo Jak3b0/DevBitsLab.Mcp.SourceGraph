@@ -83,8 +83,21 @@ public sealed class TypeScriptLanguageIndexerTests
 
         var events = await indexer.IndexAsync(ctx, CancellationToken.None);
 
-        var edge = events.OfType<IndexEvent.EdgeEmitted>()
-            .Should().ContainSingle(e => e.EdgeKindName == "instantiates" && e.TargetCanonicalKey.Contains("Button")).Subject;
+        // The indexer emits one EdgeEmitted candidate per likely declaration kind (M / T / V)
+        // because tree-sitter alone can't tell us whether a JSX component is declared as a
+        // function, class, or arrow-bound const. GraphStoreEmitter drops the unmatched
+        // candidates at flush time; here we just assert all three are present.
+        var buttonEdges = events.OfType<IndexEvent.EdgeEmitted>()
+            .Where(e => e.EdgeKindName == "instantiates" && e.TargetCanonicalKey.Contains("Button"))
+            .ToList();
+        buttonEdges.Should().HaveCount(3, "one EdgeEmitted candidate per likely kind prefix (M, T, V)");
+        buttonEdges.Select(e => e.TargetCanonicalKey).Should().BeEquivalentTo(new[]
+        {
+            "tsx:M:src/page.tsx::Button",
+            "tsx:T:src/page.tsx::Button",
+            "tsx:V:src/page.tsx::Button",
+        });
+        var edge = buttonEdges[0];
         edge.Metadata.Should().NotBeNull();
 
         // Props payload is JSON-encoded so the GraphStoreEmitter's `payload: { ... }` markdown
@@ -95,13 +108,18 @@ public sealed class TypeScriptLanguageIndexerTests
         var parsedProps = System.Text.Json.JsonSerializer.Deserialize<string[]>(propsJson)!;
         parsedProps.Should().BeEquivalentTo(new[] { "onClick", "disabled" });
 
-        // The source canonical key is the enclosing function (`Page`), not the file-namespace.
-        // The matching SymbolDeclared comes from the walk's normal declaration dispatch — no
-        // synthetic symbol is needed when the JSX is inside a function/method/class.
-        edge.SourceCanonicalKey.Should().EndWith("::Page",
-            "the JSX edge's source is the nearest enclosing declaration, not the file");
+        // Every candidate edge shares the same source canonical key — the enclosing function
+        // (`Page`), not the file-namespace. The matching SymbolDeclared comes from the walk's
+        // normal declaration dispatch — no synthetic symbol is needed when the JSX is inside a
+        // function/method/class.
+        buttonEdges.Should().AllSatisfy(e => e.SourceCanonicalKey.Should().EndWith("::Page"));
         events.OfType<IndexEvent.SymbolDeclared>()
             .Should().Contain(s => s.CanonicalKey == edge.SourceCanonicalKey && s.Name == "Page");
+
+        // Exactly one ReferenceFound at the tag's position — agents querying "find references
+        // to Button" want one row per usage site, not three.
+        events.OfType<IndexEvent.ReferenceFound>()
+            .Should().ContainSingle(r => r.TargetCanonicalKey.Contains("Button"));
     }
 
     [Fact]
@@ -116,17 +134,61 @@ public sealed class TypeScriptLanguageIndexerTests
 
         var events = await indexer.IndexAsync(ctx, CancellationToken.None);
 
-        var edge = events.OfType<IndexEvent.EdgeEmitted>()
-            .Should().ContainSingle(e => e.EdgeKindName == "instantiates" && e.TargetCanonicalKey.Contains("App")).Subject;
-        edge.SourceCanonicalKey.Should().EndWith("::Root",
-            "the parent-walk picks the nearest *named* declaration ancestor as source");
+        var appEdges = events.OfType<IndexEvent.EdgeEmitted>()
+            .Where(e => e.EdgeKindName == "instantiates" && e.TargetCanonicalKey.Contains("App"))
+            .ToList();
+        appEdges.Should().HaveCount(3, "one EdgeEmitted candidate per likely kind prefix");
+        appEdges.Should().AllSatisfy(e => e.SourceCanonicalKey.Should().EndWith("::Root",
+            "the parent-walk picks the nearest *named* declaration ancestor as source"));
         // The const Root declaration is emitted by the walk's normal declaration dispatch,
         // so no synthetic file-namespace symbol is needed when an enclosing declaration exists.
         events.OfType<IndexEvent.SymbolDeclared>()
-            .Should().Contain(s => s.CanonicalKey == edge.SourceCanonicalKey);
+            .Should().Contain(s => s.CanonicalKey == appEdges[0].SourceCanonicalKey);
         events.OfType<IndexEvent.SymbolDeclared>()
             .Should().NotContain(s => s.Kind == "namespace",
                 "the file-namespace fallback should not fire when an enclosing named declaration exists");
+    }
+
+    [Fact]
+    public async Task Method_declarations_carry_class_container_in_canonical_key()
+    {
+        var indexer = new TypeScriptLanguageIndexer();
+        // Two classes, both with a `tick` method. Without container nesting in the canonical
+        // key, both methods would collide on `ts:M:src/counters.ts::tick` and only one would
+        // persist. With container nesting they get distinct keys.
+        var bytes = Encoding.UTF8.GetBytes(
+            "export class Counter { tick() { return 1; } }\n" +
+            "export class Timer { tick() { return 2; } }");
+        var ctx = new IndexContext("/repo/src/counters.ts", bytes, "test", "/repo");
+
+        var events = await indexer.IndexAsync(ctx, CancellationToken.None);
+        var ticks = events.OfType<IndexEvent.SymbolDeclared>()
+            .Where(s => s.Name == "tick")
+            .ToList();
+
+        ticks.Should().HaveCount(2);
+        ticks.Select(s => s.CanonicalKey).Should().BeEquivalentTo(new[]
+        {
+            "ts:M:src/counters.ts::Counter::tick",
+            "ts:M:src/counters.ts::Timer::tick",
+        });
+        ticks.Select(s => s.Fqn).Should().BeEquivalentTo(new[] { "Counter.tick", "Timer.tick" });
+    }
+
+    [Fact]
+    public async Task Member_expression_call_targets_rightmost_property()
+    {
+        var indexer = new TypeScriptLanguageIndexer();
+        // For `service.users.fetch()` the called member is `fetch`, not `service` (the root)
+        // or `users` (the intermediate). The reference target must be the leaf.
+        var bytes = Encoding.UTF8.GetBytes("service.users.fetch();");
+        var ctx = new IndexContext("/repo/src/api.ts", bytes, "test", "/repo");
+
+        var events = await indexer.IndexAsync(ctx, CancellationToken.None);
+        var refs = events.OfType<IndexEvent.ReferenceFound>().ToList();
+
+        refs.Should().Contain(r => r.Kind == "call" && r.TargetCanonicalKey.EndsWith("::fetch"));
+        refs.Should().NotContain(r => r.Kind == "call" && r.TargetCanonicalKey.EndsWith("::service"));
     }
 
     [Fact]

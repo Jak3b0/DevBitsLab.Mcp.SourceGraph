@@ -106,7 +106,7 @@ Both arrays SHALL be omitted when empty (or rendered as empty arrays — the JSO
 - **THEN** the markdown row for `backend` shows `status: partial` and a sub-list (or column) carrying `Legacy.WebForms — compilation null`; the `structuredContent.failed_projects` array contains exactly one entry with `name: "Legacy.WebForms"` and a non-empty `reason`; `failed_files` is empty
 
 ### Requirement: Scope `language` field
-A scope entry in `.sourcegraph.json` MAY carry an optional `language` field whose value is a kebab-case string identifying the scope's primary language (e.g. `"typescript"`, `"python"`, `"go"`). The loader SHALL accept any kebab-case value and SHALL NOT enforce a closed list at this version. When present, `scopes info` and `scopes list` surface the value; when absent, both render `(unset)`.
+A scope entry in `.sourcegraph.json` MAY carry an optional `language` field whose value is a kebab-case string identifying the scope's primary language (e.g. `"typescript"`, `"python"`, `"go"`). The loader SHALL accept any kebab-case value and SHALL NOT enforce a closed list at this version. When present, `scopes info <name>` surfaces the value; when absent, it renders `(unset)`. (`scopes list` does not display the field at this version — `scopes info` is the dedicated surface for per-scope metadata.)
 
 #### Scenario: Loader accepts a kebab-case language
 - **WHEN** a scope declares `"language": "typescript"`

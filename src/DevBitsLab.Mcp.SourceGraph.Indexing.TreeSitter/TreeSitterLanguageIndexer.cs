@@ -14,7 +14,17 @@ namespace DevBitsLab.Mcp.SourceGraph.Indexing.TreeSitter;
 /// supply their grammar config plus the language-specific identity construction
 /// (<see cref="OnDeclarationNode"/>, <see cref="OnReferenceNode"/>). The base owns the
 /// iteration, the file-size cap, the SHA-256 of source bytes, the cancellation discipline,
-/// and the single <see cref="IndexEvent.FileScanned"/> emission per file.
+/// and a single <see cref="IndexEvent.FileScanned"/> emission for every file the parser
+/// actually processes (files skipped by the size cap return an empty event list — no
+/// <see cref="IndexEvent.FileScanned"/>, no symbols).
+///
+/// <para>"Malformed source" surfaces in two distinguishable shapes from
+/// <c>TreeSitter.DotNet</c>: a <c>null</c> tree (binary file masquerading as source) and a
+/// non-null tree containing <c>ERROR</c> nodes (syntactically invalid input). The base
+/// handles both: <c>null</c> trees skip the walk; <c>ERROR</c> nodes are skipped during the
+/// walk because the subclass's <see cref="INodeKindMapper"/> won't recognise them. Either
+/// way the file's <see cref="IndexEvent.FileScanned"/> still fires so the watcher records
+/// the SHA and won't re-scan unchanged content next pass.</para>
 ///
 /// <para>The variation that <em>must</em> live per-language is canonical-key construction
 /// (each language picks its own scheme prefix + lexical-path shape) and reference target

@@ -189,6 +189,16 @@ public static class ScopeConfigLoader
     /// </summary>
     private static ScopeEnrichmentConfig ParseEnrichment(string scopeName, ScopeEnrichmentJson dto)
     {
+        // `JsonExtensionData` captures any keys we don't recognise (e.g. a typo of `lsp` or a
+        // future-enrichment block this SDK doesn't enforce yet). Reject up front so the
+        // operator sees a precise error at startup rather than discovering hours later that
+        // their `embeddings: { ... }` block was silently dropped.
+        if (dto.Extra is { Count: > 0 })
+        {
+            var unknownKey = dto.Extra.Keys.First();
+            throw new ScopeConfigException(
+                $"{FileName} scope `{scopeName}`: unknown key `{unknownKey}` in `enrichment` block. At this SDK version the only recognised key is `lsp` ({{ command, args }}); future enrichment kinds (embeddings, static-analysis, …) are reserved-but-rejected until their indexers ship.");
+        }
         if (dto.Lsp is null)
         {
             throw new ScopeConfigException(
@@ -371,6 +381,15 @@ internal sealed record ScopeEntryJson
 internal sealed record ScopeEnrichmentJson
 {
     [JsonPropertyName("lsp")] public LspEnrichmentJson? Lsp { get; init; }
+
+    /// <summary>
+    /// Captures any JSON keys not declared above (e.g. a future <c>embeddings</c> or
+    /// <c>static-analysis</c> block that this SDK version doesn't recognise yet). The loader
+    /// inspects this dictionary at parse time and rejects with <see cref="ScopeConfigException"/>
+    /// when it's non-empty so a misspelled future-enrichment key surfaces as a precise startup
+    /// error rather than silent acceptance.
+    /// </summary>
+    [JsonExtensionData] public Dictionary<string, JsonElement>? Extra { get; init; }
 }
 
 /// <summary>

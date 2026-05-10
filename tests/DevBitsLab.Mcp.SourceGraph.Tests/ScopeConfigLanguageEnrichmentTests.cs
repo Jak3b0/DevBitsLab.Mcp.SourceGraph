@@ -180,6 +180,32 @@ public sealed class ScopeConfigLanguageEnrichmentTests : IDisposable
     }
 
     [Fact]
+    public void Load_rejects_enrichment_with_unknown_keys()
+    {
+        // Future enrichment kinds (embeddings, static-analysis, …) are reserved-but-rejected
+        // until their indexers ship. Without `[JsonExtensionData]` on `ScopeEnrichmentJson`,
+        // the deserializer would silently drop unknown keys and the operator would never know.
+        var root = WriteConfig("""
+            {
+              "scopes": [
+                {
+                  "name": "frontend",
+                  "paths": ["src/**/*.ts"],
+                  "enrichment": {
+                    "lsp": { "command": "tsserver" },
+                    "embeddings": { "model": "jina-v2" }
+                  }
+                }
+              ]
+            }
+            """);
+
+        var act = () => ScopeConfigLoader.Load(root);
+        act.Should().Throw<ScopeConfigException>()
+            .WithMessage("*embeddings*");
+    }
+
+    [Fact]
     public void Load_rejects_lsp_with_empty_command()
     {
         var root = WriteConfig("""

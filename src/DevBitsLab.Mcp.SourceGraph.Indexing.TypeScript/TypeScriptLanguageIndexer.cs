@@ -32,7 +32,7 @@ public sealed class TypeScriptLanguageIndexer : TreeSitterLanguageIndexer<TypeSc
 
     /// <inheritdoc />
     /// <remarks>
-    /// Per-extension grammar dispatch:
+    /// Per-extension grammar dispatch matches the config's <c>FileExtensions</c> set exactly:
     /// <list type="bullet">
     /// <item><c>.ts</c> → <c>"TypeScript"</c></item>
     /// <item><c>.tsx</c> → <c>"TSX"</c></item>
@@ -48,8 +48,7 @@ public sealed class TypeScriptLanguageIndexer : TreeSitterLanguageIndexer<TypeSc
         {
             ".ts" => "TypeScript",
             ".tsx" => "TSX",
-            ".js" or ".mjs" or ".cjs" => "JavaScript",
-            ".jsx" => "JavaScript",
+            ".js" or ".jsx" => "JavaScript",
             _ => Config.GrammarName,
         };
     }
@@ -83,17 +82,64 @@ public sealed class TypeScriptLanguageIndexer : TreeSitterLanguageIndexer<TypeSc
         var (line, col) = TreeSitterAdapter.ToOneBased(node.StartPosition);
         var (endLine, endCol) = TreeSitterAdapter.ToOneBased(node.EndPosition);
 
-        var canonicalKey = TypeScriptCanonicalKeys.Build(scheme, kindPrefix, repoRelativePath, name);
+        // Walk up the AST to assemble the full container nesting (`Counter::tick` for a method
+        // on a class, `User#name` for an interface property, etc.) so canonical keys for
+        // members are unique across the file. Without this, two methods named `tick` on
+        // different classes would collide on the same `ts:M:foo.ts::tick` key.
+        var ancestorPath = BuildContainerLexicalPath(node);
+        var fqn = ancestorPath is null ? name : $"{ancestorPath}.{name}";
+
+        string canonicalKey;
+        if (kindPrefix == TypeScriptCanonicalKeys.PrefixProperty && ancestorPath is not null)
+        {
+            // Properties / fields use `#` to separate the type-name from the member-name; the
+            // helper handles the formatting so consumers don't need to remember the convention.
+            canonicalKey = TypeScriptCanonicalKeys.BuildProperty(scheme, repoRelativePath, ancestorPath, name);
+        }
+        else
+        {
+            var lexicalPath = ancestorPath is null ? name : $"{ancestorPath}::{name}";
+            canonicalKey = TypeScriptCanonicalKeys.Build(scheme, kindPrefix, repoRelativePath, lexicalPath);
+        }
 
         return new IndexEvent.SymbolDeclared(
             canonicalKey: canonicalKey,
             name: name,
-            fqn: name, // TS doesn't have a single "fully-qualified name" outside namespaces; keep simple at v1.
+            fqn: fqn,
             kind: kind,
             startLine: line,
             startColumn: col,
             endLine: endLine,
             endColumn: endCol);
+    }
+
+    /// <summary>
+    /// Walk up the AST from <paramref name="declarationNode"/> collecting the names of every
+    /// enclosing declaration-mappable ancestor, in outer-to-inner order, and join them with
+    /// <c>::</c>. Returns <c>null</c> when the declaration has no enclosing declaration ancestor
+    /// (i.e. it's a top-level declaration). Used to build container-aware lexical paths so
+    /// canonical keys for members of different containers don't collide.
+    /// </summary>
+    private string? BuildContainerLexicalPath(TsNode declarationNode)
+    {
+        var ancestors = new List<string>();
+        TsNode? cursor = declarationNode.Parent;
+        for (var hops = 0; hops < 1024 && cursor is not null; hops++)
+        {
+            var type = cursor.Type;
+            if (!string.IsNullOrEmpty(type) && _mapper.TryMapDeclaration(type, out _))
+            {
+                var ancestorName = ExtractDeclarationName(cursor);
+                if (!string.IsNullOrEmpty(ancestorName))
+                {
+                    ancestors.Add(ancestorName!);
+                }
+            }
+            cursor = cursor.Parent;
+        }
+        if (ancestors.Count == 0) return null;
+        ancestors.Reverse();
+        return string.Join("::", ancestors);
     }
 
     /// <inheritdoc />
@@ -151,7 +197,20 @@ public sealed class TypeScriptLanguageIndexer : TreeSitterLanguageIndexer<TypeSc
 
         var repoRelativePath = MakeRepoRelative(ctx);
         var fileNamespaceKey = BuildFileNamespaceKey(scheme, repoRelativePath);
-        var targetKey = TypeScriptCanonicalKeys.Build(scheme, TypeScriptCanonicalKeys.PrefixMethod, repoRelativePath, tag.Value.Name);
+
+        // Components in modern React land as functions (`M`), classes (`T`), or arrow-bound
+        // consts (`V`) — tree-sitter doesn't tell us which without resolving the binding.
+        // Emit one EdgeEmitted candidate per likely prefix; GraphStoreEmitter drops every
+        // unmatched canonical key at flush time, so exactly one edge persists per JSX usage
+        // (the one whose prefix matches the actual declaration). The cost is a small
+        // multiplier on emission volume that collapses to nothing in storage.
+        var targetCandidates = new[]
+        {
+            TypeScriptCanonicalKeys.Build(scheme, TypeScriptCanonicalKeys.PrefixMethod, repoRelativePath, tag.Value.Name),
+            TypeScriptCanonicalKeys.Build(scheme, TypeScriptCanonicalKeys.PrefixType, repoRelativePath, tag.Value.Name),
+            TypeScriptCanonicalKeys.Build(scheme, TypeScriptCanonicalKeys.PrefixVariable, repoRelativePath, tag.Value.Name),
+        };
+        var primaryTargetKey = targetCandidates[0];
 
         // Prefer the enclosing declaration as the edge source — it's the semantically meaningful
         // answer ("function `Page` instantiates `<Button>`" beats "the file instantiates").
@@ -196,8 +255,16 @@ public sealed class TypeScriptLanguageIndexer : TreeSitterLanguageIndexer<TypeSc
                 endLine: 1,
                 endColumn: 1));
         }
-        emissions.Add(new IndexEvent.ReferenceFound(targetKey, refLine, refCol, "reference"));
-        emissions.Add(new IndexEvent.EdgeEmitted(sourceKey, targetKey, edgeKindName, metadata));
+        // Single ReferenceFound at the tag's position — the agent's "find references" query
+        // wants one row per usage site, not three, so we emit only the most-common-case prefix
+        // (`M`) and accept that components declared as classes/consts may not surface as refs
+        // until cross-file resolution lands. The instantiates *edges* below cover all three
+        // declaration kinds.
+        emissions.Add(new IndexEvent.ReferenceFound(primaryTargetKey, refLine, refCol, "reference"));
+        foreach (var candidate in targetCandidates)
+        {
+            emissions.Add(new IndexEvent.EdgeEmitted(sourceKey, candidate, edgeKindName, metadata));
+        }
         return emissions;
     }
 
@@ -273,14 +340,12 @@ public sealed class TypeScriptLanguageIndexer : TreeSitterLanguageIndexer<TypeSc
             }
             if (child.Type == "member_expression")
             {
-                // Use the rightmost property_identifier as the called member.
-                foreach (var inner in child.NamedChildren)
-                {
-                    if (inner.Type is "property_identifier" or "identifier")
-                    {
-                        return (inner.Text, inner.StartPosition);
-                    }
-                }
+                // For `foo.bar.baz()` we want `baz` (the called member) — the *rightmost*
+                // property_identifier in the chain, not the leftmost identifier (`foo`, the
+                // root object). Tree-sitter exposes the property as the named child whose
+                // field name is `property`; failing that, the last property_identifier child
+                // is the next-best heuristic.
+                return ExtractMemberLeaf(child);
             }
         }
         return null;
@@ -296,16 +361,52 @@ public sealed class TypeScriptLanguageIndexer : TreeSitterLanguageIndexer<TypeSc
             }
             if (child.Type == "member_expression")
             {
-                foreach (var inner in child.NamedChildren)
-                {
-                    if (inner.Type is "property_identifier" or "identifier")
-                    {
-                        return (inner.Text, inner.StartPosition);
-                    }
-                }
+                // `<Foo.Bar />` should target `Bar` (the component), not `Foo` (its container).
+                // Same rightmost-property rule as call expressions.
+                return ExtractMemberLeaf(child);
             }
         }
         return null;
+    }
+
+    /// <summary>
+    /// For a <c>member_expression</c> node like <c>foo.bar.baz</c>, return the rightmost
+    /// property in the chain (<c>baz</c>) — that's the leaf the call/JSX is actually
+    /// referencing. Tree-sitter wraps the chain as a left-associative binary tree where the
+    /// outer member_expression's right-hand <c>property</c> field is the leaf.
+    /// </summary>
+    private static (string Name, global::TreeSitter.Point Position)? ExtractMemberLeaf(TsNode memberExpression)
+    {
+        // Prefer the explicit `property` field; tree-sitter's JS/TS grammar exposes it.
+        var property = memberExpression["property"];
+        if (!string.IsNullOrEmpty(property.Type))
+        {
+            return (property.Text, property.StartPosition);
+        }
+        // Fallback: take the LAST property_identifier child (the rightmost) so we land on the
+        // leaf rather than the root object.
+        global::TreeSitter.Node? leaf = null;
+        foreach (var inner in memberExpression.NamedChildren)
+        {
+            if (inner.Type is "property_identifier")
+            {
+                leaf = inner;
+            }
+        }
+        if (leaf is not null)
+        {
+            return (leaf.Text, leaf.StartPosition);
+        }
+        // Last resort: the rightmost identifier of any kind.
+        global::TreeSitter.Node? lastIdent = null;
+        foreach (var inner in memberExpression.NamedChildren)
+        {
+            if (inner.Type is "identifier" or "property_identifier")
+            {
+                lastIdent = inner;
+            }
+        }
+        return lastIdent is null ? null : (lastIdent.Text, lastIdent.StartPosition);
     }
 
     private static List<string> ExtractJsxProps(TsNode jsxElement)

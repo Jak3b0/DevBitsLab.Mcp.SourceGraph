@@ -107,20 +107,12 @@ The documented `.sourcegraph.json` schema for a scope entry SHALL be extended wi
   ```
 - **THEN** the loader succeeds, the `Scope` (or sister runtime record) exposes both values, and the README's documented shape matches what was loaded
 
-### Requirement: CLI scaffolder writes the new fields when present
-The `sourcegraph-mcp init-scopes` CLI subcommand SHALL not emit `language` or `enrichment` keys for the synthesised default config (those are operator-authored, not auto-discoverable). The `scopes add` subcommand SHALL accept optional `--language` and `--enrichment-lsp-command` flags and SHALL serialise them when supplied.
+### Requirement: `init-scopes` does not emit the new fields
+The `sourcegraph-mcp init-scopes` CLI subcommand SHALL not emit `language` or `enrichment` keys for the synthesised default config — those are operator-authored, not auto-discoverable. Editing them into an existing `.sourcegraph.json` is the operator's responsibility at this SDK version; CLI helpers for adding them via flags on `scopes add` are deferred to a follow-up change.
 
 #### Scenario: `init-scopes` produces a minimal config
 - **WHEN** the user runs `sourcegraph-mcp init-scopes` in a repo with a single .slnx and no `.sourcegraph.json`
 - **THEN** the scaffolder writes a config containing only `name` + `solutions` for the default scope; no `language` or `enrichment` keys appear
-
-#### Scenario: `scopes add` with optional language flag
-- **WHEN** the user runs `sourcegraph-mcp scopes add frontend --paths "src/web/**/*.ts" --language typescript`
-- **THEN** the resulting JSON entry has `language: "typescript"` serialised; `enrichment` is omitted entirely
-
-#### Scenario: `scopes add` rejects an enrichment command without language context
-- **WHEN** the user runs `sourcegraph-mcp scopes add frontend --paths "src/web/**/*.ts" --enrichment-lsp-command tsserver` (no `--language` flag)
-- **THEN** the CLI MAY succeed (operators are trusted to know the consumer); a future change adding strict validation would reject. At v1 the field is informational, so the relaxed acceptance matches the loader's posture
 
 ### Requirement: First-class per-client config writers
 The CLI SHALL ship a dedicated configuration writer for each first-class MCP client (`Claude Code`, `GitHub Copilot`, `Cursor`, `Continue`, `Claude Desktop`). Each writer SHALL emit the schema documented by its target client verbatim — schemas are not normalised across writers. The writers SHALL be invokable from the `init` subcommand and SHALL share an `IClientConfigWriter` contract so future clients can be added by adding a new writer file.

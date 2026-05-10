@@ -1,4 +1,6 @@
+using System.Text.Json;
 using Dapper;
+using DevBitsLab.Mcp.SourceGraph.Core;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -12,7 +14,10 @@ namespace DevBitsLab.Mcp.SourceGraph.Storage;
 /// </summary>
 public sealed class SqliteScopeRegistry : IScopeRegistry
 {
-    private const int SchemaVersion = 1;
+    // v2 adds failed_projects_json + failed_files_json columns for partial-scope reporting.
+    // The schema migration is destructive (DROP + recreate); failure lists are display-only
+    // so losing them on upgrade is acceptable — they repopulate on the next index pass.
+    private const int SchemaVersion = 2;
 
     private readonly SqliteConnection _connection;
     private readonly ILogger<SqliteScopeRegistry> _logger;
@@ -68,7 +73,9 @@ public sealed class SqliteScopeRegistry : IScopeRegistry
                     isolated INTEGER NOT NULL DEFAULT 0,
                     last_indexed_at INTEGER NOT NULL,
                     status TEXT NOT NULL DEFAULT 'ok',
-                    status_message TEXT
+                    status_message TEXT,
+                    failed_projects_json TEXT NOT NULL DEFAULT '[]',
+                    failed_files_json TEXT NOT NULL DEFAULT '[]'
                 );
                 """, transaction: tx);
             _connection.Execute(
@@ -87,14 +94,16 @@ public sealed class SqliteScopeRegistry : IScopeRegistry
     {
         var rows = await _connection.QueryAsync<RawScopeRow>(new CommandDefinition(
             """
-            SELECT id              AS Id,
-                   name            AS Name,
-                   root            AS Root,
-                   project_set_json AS ProjectSetJson,
-                   isolated        AS IsolatedInt,
-                   last_indexed_at AS LastIndexedAtMs,
-                   status          AS Status,
-                   status_message  AS StatusMessage
+            SELECT id                  AS Id,
+                   name                AS Name,
+                   root                AS Root,
+                   project_set_json    AS ProjectSetJson,
+                   isolated            AS IsolatedInt,
+                   last_indexed_at     AS LastIndexedAtMs,
+                   status              AS Status,
+                   status_message      AS StatusMessage,
+                   failed_projects_json AS FailedProjectsJson,
+                   failed_files_json   AS FailedFilesJson
             FROM scopes
             ORDER BY id;
             """,
@@ -106,14 +115,16 @@ public sealed class SqliteScopeRegistry : IScopeRegistry
     {
         var row = await _connection.QueryFirstOrDefaultAsync<RawScopeRow>(new CommandDefinition(
             """
-            SELECT id              AS Id,
-                   name            AS Name,
-                   root            AS Root,
-                   project_set_json AS ProjectSetJson,
-                   isolated        AS IsolatedInt,
-                   last_indexed_at AS LastIndexedAtMs,
-                   status          AS Status,
-                   status_message  AS StatusMessage
+            SELECT id                  AS Id,
+                   name                AS Name,
+                   root                AS Root,
+                   project_set_json    AS ProjectSetJson,
+                   isolated            AS IsolatedInt,
+                   last_indexed_at     AS LastIndexedAtMs,
+                   status              AS Status,
+                   status_message      AS StatusMessage,
+                   failed_projects_json AS FailedProjectsJson,
+                   failed_files_json   AS FailedFilesJson
             FROM scopes WHERE id = @id;
             """, new { id }, cancellationToken: ct)).ConfigureAwait(false);
         return row?.ToRow();
@@ -126,16 +137,18 @@ public sealed class SqliteScopeRegistry : IScopeRegistry
         {
             await _connection.ExecuteAsync(new CommandDefinition(
                 """
-                INSERT INTO scopes(id, name, root, project_set_json, isolated, last_indexed_at, status, status_message)
-                VALUES (@Id, @Name, @Root, @ProjectSetJson, @IsolatedInt, @LastIndexedAtMs, @Status, @StatusMessage)
+                INSERT INTO scopes(id, name, root, project_set_json, isolated, last_indexed_at, status, status_message, failed_projects_json, failed_files_json)
+                VALUES (@Id, @Name, @Root, @ProjectSetJson, @IsolatedInt, @LastIndexedAtMs, @Status, @StatusMessage, @FailedProjectsJson, @FailedFilesJson)
                 ON CONFLICT(id) DO UPDATE SET
-                    name             = excluded.name,
-                    root             = excluded.root,
-                    project_set_json = excluded.project_set_json,
-                    isolated         = excluded.isolated,
-                    last_indexed_at  = excluded.last_indexed_at,
-                    status           = excluded.status,
-                    status_message   = excluded.status_message;
+                    name                 = excluded.name,
+                    root                 = excluded.root,
+                    project_set_json     = excluded.project_set_json,
+                    isolated             = excluded.isolated,
+                    last_indexed_at      = excluded.last_indexed_at,
+                    status               = excluded.status,
+                    status_message       = excluded.status_message,
+                    failed_projects_json = excluded.failed_projects_json,
+                    failed_files_json    = excluded.failed_files_json;
                 """,
                 new
                 {
@@ -147,12 +160,59 @@ public sealed class SqliteScopeRegistry : IScopeRegistry
                     LastIndexedAtMs = row.LastIndexedAt.ToUnixTimeMilliseconds(),
                     row.Status,
                     row.StatusMessage,
+                    FailedProjectsJson = SerializeProjectFailures(row.FailedProjects),
+                    FailedFilesJson = SerializeFileFailures(row.FailedFiles),
                 },
                 cancellationToken: ct)).ConfigureAwait(false);
         }
         finally
         {
             _writeLock.Release();
+        }
+    }
+
+    private static readonly JsonSerializerOptions FailureJsonOptions = new()
+    {
+        WriteIndented = false,
+    };
+
+    private static string SerializeProjectFailures(IReadOnlyList<ProjectFailure>? failures)
+        => failures is null || failures.Count == 0
+            ? "[]"
+            : JsonSerializer.Serialize(failures, FailureJsonOptions);
+
+    private static string SerializeFileFailures(IReadOnlyList<FileFailure>? failures)
+        => failures is null || failures.Count == 0
+            ? "[]"
+            : JsonSerializer.Serialize(failures, FailureJsonOptions);
+
+    private static IReadOnlyList<ProjectFailure> DeserializeProjectFailures(string? json)
+    {
+        if (string.IsNullOrEmpty(json) || json == "[]") return Array.Empty<ProjectFailure>();
+        try
+        {
+            return JsonSerializer.Deserialize<List<ProjectFailure>>(json, FailureJsonOptions)
+                   ?? (IReadOnlyList<ProjectFailure>)Array.Empty<ProjectFailure>();
+        }
+        catch (JsonException)
+        {
+            // Corrupted row — treat as empty rather than failing the whole list call. The
+            // failures will repopulate on the next index pass.
+            return Array.Empty<ProjectFailure>();
+        }
+    }
+
+    private static IReadOnlyList<FileFailure> DeserializeFileFailures(string? json)
+    {
+        if (string.IsNullOrEmpty(json) || json == "[]") return Array.Empty<FileFailure>();
+        try
+        {
+            return JsonSerializer.Deserialize<List<FileFailure>>(json, FailureJsonOptions)
+                   ?? (IReadOnlyList<FileFailure>)Array.Empty<FileFailure>();
+        }
+        catch (JsonException)
+        {
+            return Array.Empty<FileFailure>();
         }
     }
 
@@ -178,10 +238,13 @@ public sealed class SqliteScopeRegistry : IScopeRegistry
     }
 
     private sealed record RawScopeRow(string Id, string Name, string Root, string ProjectSetJson,
-        long IsolatedInt, long LastIndexedAtMs, string Status, string? StatusMessage)
+        long IsolatedInt, long LastIndexedAtMs, string Status, string? StatusMessage,
+        string? FailedProjectsJson, string? FailedFilesJson)
     {
         public ScopeRow ToRow() => new(
             Id, Name, Root, ProjectSetJson, IsolatedInt != 0,
-            DateTimeOffset.FromUnixTimeMilliseconds(LastIndexedAtMs), Status, StatusMessage);
+            DateTimeOffset.FromUnixTimeMilliseconds(LastIndexedAtMs), Status, StatusMessage,
+            DeserializeProjectFailures(FailedProjectsJson),
+            DeserializeFileFailures(FailedFilesJson));
     }
 }

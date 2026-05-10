@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Deliberately broken project for the partial-failure fixture. The unresolvable
+    PackageReference forces `dotnet restore` to fail, which in turn prevents
+    MSBuildWorkspace from producing a usable Compilation for the project. The probe in
+    RoslynIndexer.ProbeProjectCompilationsAsync catches the failure and adds a
+    ProjectFailure record to IndexResult.FailedProjects.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="DefinitelyDoesNotExist.Package" Version="999.999.999" />
+  </ItemGroup>
+
+</Project>

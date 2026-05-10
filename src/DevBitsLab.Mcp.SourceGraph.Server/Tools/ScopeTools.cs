@@ -18,7 +18,7 @@ public static class ScopeTools
 {
     [McpServerTool(UseStructuredContent = true, OutputSchemaType = typeof(ListScopesResult))]
     [ToolTrigger("\"what scopes are configured?\" — call before passing the `scope` parameter to other tools, or after a 'no default_scope' error")]
-    [Description("List every registered scope: id, name, root directory, project count, last-indexed timestamp, status (ok | degraded | indexing), and isolation flag. Pair with the optional `scope` parameter on every other tool.")]
+    [Description("List every registered scope: id, name, root directory, project count, last-indexed timestamp, status (ok | partial | degraded | indexing), isolation flag, and any failed_projects / failed_files surfaced by the most recent index. Pair with the optional `scope` parameter on every other tool. A `partial` status means at least one project produced symbols and one or more failed; queries succeed but results may be incomplete.")]
     public static Task<CallToolResult> ListScopesAsync(ScopeRouter router) =>
         // Body is sync but tracking goes through the async overload that knows how to brand-mark
         // the first user-visible TextContentBlock and serialise StructuredContent. Wrap in
@@ -57,11 +57,35 @@ public static class ScopeTools
             var lastIndexed = host.LastIndexedAt == DateTimeOffset.MinValue
                 ? "_never_"
                 : host.LastIndexedAt.ToString("yyyy-MM-dd HH:mm:ss UTC");
-            var statusCell = host.Status == "degraded" && !string.IsNullOrEmpty(host.StatusMessage)
-                ? $"degraded ({host.StatusMessage})"
+            var statusCell = (host.Status == "degraded" || host.Status == "partial") && !string.IsNullOrEmpty(host.StatusMessage)
+                ? $"{host.Status} ({host.StatusMessage})"
                 : host.Status;
             sb.AppendLine($"| `{scope.Id}` | {scope.Name} | {statusCell} | {(scope.Isolated ? "yes" : "no")} | {projectCount} | {lastIndexed} | `{scope.Root}` |");
         }
+
+        // Per-scope failure detail: only emit when at least one scope has non-empty failure
+        // lists. Healthy installs see a clean table with no trailing failure section. The
+        // markdown rendering surfaces the same data carried in StructuredContent so operators
+        // reading the prose see the attribution without inspecting the typed shape.
+        if (hosts.Any(h => h.FailedProjects.Count > 0 || h.FailedFiles.Count > 0))
+        {
+            sb.AppendLine();
+            sb.AppendLine("**Failed projects / files (last index):**");
+            foreach (var host in hosts)
+            {
+                if (host.FailedProjects.Count == 0 && host.FailedFiles.Count == 0) continue;
+                sb.AppendLine($"- `{host.Scope.Id}`:");
+                foreach (var pf in host.FailedProjects)
+                {
+                    sb.AppendLine($"  - project `{pf.Name}` — {pf.Reason}");
+                }
+                foreach (var ff in host.FailedFiles)
+                {
+                    sb.AppendLine($"  - file `{ff.Path}` — {ff.Reason}");
+                }
+            }
+        }
+
         if (router.DefaultScope is not null)
         {
             sb.AppendLine();
@@ -103,7 +127,13 @@ public static class ScopeTools
                 LastIndexedAt: host.LastIndexedAt == DateTimeOffset.MinValue
                     ? null
                     : host.LastIndexedAt.ToString("o"),
-                ProjectCount: ProjectCount(host.Scope.ProjectSet)))
+                ProjectCount: ProjectCount(host.Scope.ProjectSet),
+                FailedProjects: host.FailedProjects
+                    .Select(pf => new ListScopesProjectFailure(pf.Name, pf.Reason))
+                    .ToList(),
+                FailedFiles: host.FailedFiles
+                    .Select(ff => new ListScopesFileFailure(ff.Path, ff.Reason))
+                    .ToList()))
             .ToList();
         var dto = new ListScopesResult(DefaultScope: defaultScope, Scopes: rows);
         return new CallToolResult

@@ -121,8 +121,10 @@ public sealed class LiveIndexService : BackgroundService
         var indexTasks = _preparedHosts.Select(host => RunInitialIndexAsync(host, stoppingToken)).ToArray();
         await Task.WhenAll(indexTasks).ConfigureAwait(false);
 
-        // Start watching every scope that finished cold-indexing cleanly.
-        foreach (var host in _preparedHosts.Where(h => h.Status == "ok"))
+        // Start watching every scope that finished cold-indexing with at least one project's
+        // worth of symbols — both `ok` and `partial`. `degraded` scopes have no usable graph,
+        // so a watcher is pointless; `indexing` shouldn't appear here (cold index has settled).
+        foreach (var host in _preparedHosts.Where(h => h.Status == "ok" || h.Status == "partial"))
         {
             StartWatcher(host, stoppingToken);
         }
@@ -275,6 +277,12 @@ public sealed class LiveIndexService : BackgroundService
             _logger.LogInformation("Scope `{Id}` initial index complete in {Elapsed}: {Files} files re-processed",
                 scope.Id, initial.Elapsed, initial.FilesIndexed);
 
+            // Capture per-project / per-file failures for surfacing via list_scopes. They feed
+            // into the status decision below and ride along on the registry row that gets
+            // persisted at the end of this method.
+            host.FailedProjects = initial.FailedProjects;
+            host.FailedFiles = initial.FailedFiles;
+
             // Carryover from open-language-contract task 5.3 / 6.1 / 6.2: build the per-scope
             // file → project lookup so IndexContext.Project is populated for every dispatched
             // document. The MSBuild factory needs the live workspace; build a per-scope dispatcher
@@ -319,9 +327,36 @@ public sealed class LiveIndexService : BackgroundService
                 await DispatchAnalyzersForScopeAsync(host, ct).ConfigureAwait(false);
             }
 
-            host.Status = "ok";
+            // Settle status per the decision matrix in design.md §Decision 3:
+            //   - degraded if FilesIndexed == 0 AND there were failures (every project failed)
+            //   - partial if any project or file failed but the scope produced something
+            //   - ok if everything indexed cleanly
+            // The "no resolvable solution" early return above and the catch block below cover
+            // the other degraded paths (workspace open threw, scope has no solution at all).
+            var hasFailures = initial.FailedProjects.Count > 0 || initial.FailedFiles.Count > 0;
+            if (initial.FilesIndexed == 0 && hasFailures)
+            {
+                host.Status = "degraded";
+                host.StatusMessage = $"All projects failed to compile ({initial.FailedProjects.Count} project(s)).";
+                _logger.LogWarning(
+                    "Scope `{Id}` cold index produced zero files; marking degraded ({ProjectFailures} project failures, {FileFailures} file failures)",
+                    scope.Id, initial.FailedProjects.Count, initial.FailedFiles.Count);
+            }
+            else if (hasFailures)
+            {
+                host.Status = "partial";
+                host.StatusMessage = $"{initial.FailedProjects.Count} project(s), {initial.FailedFiles.Count} file(s) failed to index.";
+                _logger.LogWarning(
+                    "Scope `{Id}` cold index settled to partial: {ProjectFailures} project failures, {FileFailures} file failures",
+                    scope.Id, initial.FailedProjects.Count, initial.FailedFiles.Count);
+            }
+            else
+            {
+                host.Status = "ok";
+                host.StatusMessage = null;
+            }
             host.LastIndexedAt = DateTimeOffset.UtcNow;
-            await _registry.UpsertAsync(ToRow(scope, host.Status, null), ct).ConfigureAwait(false);
+            await _registry.UpsertAsync(ToRow(scope, host.Status, host.StatusMessage, host.FailedProjects, host.FailedFiles), ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
@@ -329,7 +364,7 @@ public sealed class LiveIndexService : BackgroundService
             _logger.LogError(ex, "Scope `{Id}` initial indexing failed; marking degraded", scope.Id);
             host.Status = "degraded";
             host.StatusMessage = ex.Message;
-            await _registry.UpsertAsync(ToRow(scope, host.Status, host.StatusMessage), ct).ConfigureAwait(false);
+            await _registry.UpsertAsync(ToRow(scope, host.Status, host.StatusMessage, host.FailedProjects, host.FailedFiles), ct).ConfigureAwait(false);
         }
         finally
         {
@@ -507,7 +542,12 @@ public sealed class LiveIndexService : BackgroundService
         return null;
     }
 
-    private static ScopeRow ToRow(Scope scope, string status, string? statusMessage) =>
+    private static ScopeRow ToRow(
+        Scope scope,
+        string status,
+        string? statusMessage,
+        IReadOnlyList<ProjectFailure>? failedProjects = null,
+        IReadOnlyList<FileFailure>? failedFiles = null) =>
         new(
             Id: scope.Id,
             Name: scope.Name,
@@ -516,7 +556,9 @@ public sealed class LiveIndexService : BackgroundService
             Isolated: scope.Isolated,
             LastIndexedAt: DateTimeOffset.UtcNow,
             Status: status,
-            StatusMessage: statusMessage);
+            StatusMessage: statusMessage,
+            FailedProjects: failedProjects,
+            FailedFiles: failedFiles);
 }
 
 /// <summary>

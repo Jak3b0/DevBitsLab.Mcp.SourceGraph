@@ -187,16 +187,9 @@ public sealed class LeafChokepointInvariantTests
         }
     }
 
-    /// <summary>
-    /// Mirrors the user-visible predicate used by <see cref="LeafFormatter"/> and the structured
-    /// output tests: a block is user-visible when it has no audience annotation, an empty audience
-    /// list, or includes <see cref="Role.User"/>.
-    /// </summary>
-    private static bool IsUserVisible(TextContentBlock b)
-    {
-        var aud = b.Annotations?.Audience;
-        return aud is null || aud.Count == 0 || aud.Contains(Role.User);
-    }
+    // IsUserVisible lives on the shared CallToolResultHelpers helper so the predicate is
+    // consistent across every test class that exercises the multi-content shape.
+    private static bool IsUserVisible(TextContentBlock b) => CallToolResultHelpers.IsUserVisible(b);
 
     [Fact]
     public void PluginRegisteredTool_handlerOutput_bypassesChokepoint()

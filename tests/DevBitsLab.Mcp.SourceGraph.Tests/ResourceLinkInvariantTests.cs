@@ -205,9 +205,12 @@ public sealed class ResourceLinkInvariantTests : IAsyncLifetime, IDisposable
     public async Task WhoAuthored_emittedLinks_resolveCleanly()
     {
         // who_authored emits a singleton link to the resolved target symbol regardless of whether
-        // git history is present (the no-history path still ships the link). Drive with the
-        // history pipeline disabled so we exercise the "no history" branch but still assert link
-        // resolution.
+        // git history is present (the no-history path still ships the link). The fixture doesn't
+        // run the history pipeline at all, so no SymbolHistory row exists for Calculator.Add —
+        // that absence is what triggers the "no git history yet" branch in the tool body. Pass
+        // `Disabled: false` so the tool actually runs (Disabled: true short-circuits with an
+        // unrelated diagnostic before reaching the link-emitting code path); the missing history
+        // rows do the work of exercising the no-history branch.
         var options = new HistoryOptions(Disabled: false);
         var result = await HistoryTools.WhoAuthoredAsync(_router!, options, "Calculator.Add");
         await AssertEveryLinkResolves(result);

@@ -221,7 +221,7 @@ public static class HistoryTools
             Author: history?.LastAuthor,
             Sha: sha,
             AuthoredAt: authoredAtIso,
-            BlamedLines: history?.LineCount ?? 0);
+            BlamedLines: history?.LineCount);
         return new CallToolResult
         {
             Content = content,

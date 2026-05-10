@@ -256,7 +256,7 @@ public sealed class StructuredContentInvariantTests : IAsyncLifetime, IDisposabl
 
         // find_references prose declares "<n> references:" before the table. Pull n from prose,
         // assert the structured array length matches.
-        var prose = ProseText(result);
+        var prose = CallToolResultHelpers.ProseText(result);
         var match = System.Text.RegularExpressions.Regex.Match(prose, @"(\d+) references:");
         match.Success.Should().BeTrue($"prose should declare a reference count; got first line: {prose.Split('\n')[0]}");
         var proseCount = int.Parse(match.Groups[1].Value);
@@ -273,7 +273,7 @@ public sealed class StructuredContentInvariantTests : IAsyncLifetime, IDisposabl
         var result = await GraphTools.ListMembersAsync(_router!, "Sample.Domain.Calculator");
         result.StructuredContent.Should().NotBeNull("list_members opts into structuredContent");
 
-        var prose = ProseText(result);
+        var prose = CallToolResultHelpers.ProseText(result);
         var match = System.Text.RegularExpressions.Regex.Match(prose, @"(\d+) members of");
         match.Success.Should().BeTrue($"prose should declare a member count; got: {prose.Split('\n')[0]}");
         var proseCount = int.Parse(match.Groups[1].Value);
@@ -305,7 +305,7 @@ public sealed class StructuredContentInvariantTests : IAsyncLifetime, IDisposabl
     private static void AssertStructuredArrayMatchesProse(CallToolResult result, string hitWord, string proseHeader)
     {
         result.StructuredContent.Should().NotBeNull("the tool opts into structuredContent");
-        var prose = ProseText(result);
+        var prose = CallToolResultHelpers.ProseText(result);
         var pattern = @$"(\d+) {hitWord}";
         var match = System.Text.RegularExpressions.Regex.Match(prose, pattern);
         match.Success.Should().BeTrue($"prose should declare a {hitWord} count near the lead-in; got first line: {prose.Split('\n')[0]}");
@@ -318,17 +318,5 @@ public sealed class StructuredContentInvariantTests : IAsyncLifetime, IDisposabl
         hits.GetArrayLength().Should().Be(proseCount, $"structured array length must equal the {hitWord} count declared in prose");
     }
 
-    /// <summary>
-    /// Mirror of the helper in <see cref="TabularRenderingTests"/>: pull the user-visible prose
-    /// out of a <see cref="CallToolResult"/> by skipping audience-restricted text blocks.
-    /// </summary>
-    private static string ProseText(CallToolResult result) =>
-        result.Content?
-            .OfType<TextContentBlock>()
-            .FirstOrDefault(b =>
-            {
-                var aud = b.Annotations?.Audience;
-                return aud is null || aud.Count == 0 || aud.Contains(Role.User);
-            })?.Text
-        ?? string.Empty;
+    // ProseText / IsUserVisible live on the shared CallToolResultHelpers helper.
 }

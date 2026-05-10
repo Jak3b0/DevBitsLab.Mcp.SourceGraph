@@ -76,19 +76,12 @@ public sealed class PayloadToolingTests
             "SampleWpf MainWindow.xaml binds Text=\"{Binding User.Name, Mode=TwoWay}\" so at least one row should match");
 
         // At least one row's payload_json must round-trip the documented kebab-case keys.
-        var payloadFound = false;
-        foreach (var row in bindings.EnumerateArray())
-        {
-            if (row.TryGetProperty("payload_json", out var payloadProp)
-                && payloadProp.ValueKind == JsonValueKind.String
-                && payloadProp.GetString() is { } pj
-                && pj.Contains("\"path\":\"User.Name\"", StringComparison.Ordinal)
-                && pj.Contains("\"mode\":\"two-way\"", StringComparison.Ordinal))
-            {
-                payloadFound = true;
-                break;
-            }
-        }
+        var payloadFound = bindings.EnumerateArray().Any(row =>
+            row.TryGetProperty("payload_json", out var payloadProp)
+            && payloadProp.ValueKind == JsonValueKind.String
+            && payloadProp.GetString() is { } pj
+            && pj.Contains("\"path\":\"User.Name\"", StringComparison.Ordinal)
+            && pj.Contains("\"mode\":\"two-way\"", StringComparison.Ordinal));
         payloadFound.Should().BeTrue(
             "at least one bindings[].payload_json must carry the documented kebab path + mode keys");
     }

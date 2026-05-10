@@ -284,7 +284,10 @@ public sealed class PayloadToolingFixtureTests : IAsyncLifetime, IDisposable
             {
                 foreach (var path in p.FilePaths)
                 {
-                    if (!projectMap.ContainsKey(path)) projectMap[path] = p;
+                    // TryAdd is the dictionary primitive for "insert if absent"; it makes the
+                    // intent explicit and replaces a foreach + ContainsKey check that CodeQL
+                    // flagged as an implicit filter.
+                    projectMap.TryAdd(path, p);
                 }
             }
         }
@@ -294,9 +297,12 @@ public sealed class PayloadToolingFixtureTests : IAsyncLifetime, IDisposable
 
     private static string LocateFixture(string fixtureName)
     {
+        // Path.Join over Path.Combine — Combine silently drops earlier args when a later one
+        // looks absolute; Join always concatenates with a separator regardless. Matches the
+        // pattern in EdgeMetadataRoundTripTests / FindDefinitionStructuredOutputTests.
         for (var d = new DirectoryInfo(AppContext.BaseDirectory); d is not null; d = d.Parent)
         {
-            var candidate = Path.Combine(d.FullName, "tests", "fixtures", fixtureName);
+            var candidate = Path.Join(d.FullName, "tests", "fixtures", fixtureName);
             if (Directory.Exists(candidate)) return candidate;
         }
         throw new DirectoryNotFoundException("Could not locate tests/fixtures/" + fixtureName + " from " + AppContext.BaseDirectory);
@@ -304,7 +310,16 @@ public sealed class PayloadToolingFixtureTests : IAsyncLifetime, IDisposable
 
     private static void SafeDeleteWithDir(string path)
     {
-        try { if (File.Exists(path)) File.Delete(path); } catch { /* best-effort cleanup */ }
+        // Best-effort cleanup of both the SQLite DB file AND its parent temp directory so the
+        // sourcegraph-payload-* folders don't accumulate on developer machines / CI agents.
+        // Catch only the realistic disposal-path exceptions (file lock, ACL drift) — anything
+        // else (e.g. NRE indicating a bug) propagates so it surfaces in the test run.
+        try
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
+        catch (IOException) { /* best-effort cleanup; another handle may still hold the file */ }
+        catch (UnauthorizedAccessException) { /* best-effort cleanup; ACL drift / readonly bit */ }
         try
         {
             var dir = Path.GetDirectoryName(path);
@@ -313,6 +328,7 @@ public sealed class PayloadToolingFixtureTests : IAsyncLifetime, IDisposable
                 Directory.Delete(dir, recursive: true);
             }
         }
-        catch { /* best-effort cleanup */ }
+        catch (IOException) { /* best-effort cleanup; WAL/SHM sidecars sometimes linger */ }
+        catch (UnauthorizedAccessException) { /* best-effort cleanup; ACL drift / readonly bit */ }
     }
 }

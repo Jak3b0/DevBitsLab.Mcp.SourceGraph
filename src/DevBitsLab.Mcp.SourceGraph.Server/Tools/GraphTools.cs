@@ -1069,14 +1069,8 @@ public static class GraphTools
     /// </summary>
     private static readonly string[] CanonicalKeySchemes = { "csharp:", "xaml:" };
 
-    private static bool LooksLikeCanonicalKey(string identifier)
-    {
-        foreach (var scheme in CanonicalKeySchemes)
-        {
-            if (identifier.StartsWith(scheme, StringComparison.Ordinal)) return true;
-        }
-        return false;
-    }
+    private static bool LooksLikeCanonicalKey(string identifier) =>
+        CanonicalKeySchemes.Any(scheme => identifier.StartsWith(scheme, StringComparison.Ordinal));
 
     private const string EdgeKindBindsPath = "binds-path";
     private const string EdgeKindHandlesEvent = "handles-event";

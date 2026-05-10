@@ -320,14 +320,14 @@ public sealed class JinaCodeEmbeddingGenerator : ICodeEmbeddingGenerator
         var specialTokens = new Dictionary<string, int>(StringComparer.Ordinal);
         if (root.TryGetProperty("added_tokens", out var added) && added.ValueKind == JsonValueKind.Array)
         {
+            // Single Where with the full predicate so the body is unconditional. Avoids CodeQL's
+            // `cs/missed-where-opportunity` re-flagging when there's a body-level `if`.
             foreach (var t in added.EnumerateArray()
-                .Where(t => t.TryGetProperty("special", out var sp) && sp.GetBoolean()))
+                .Where(t => t.TryGetProperty("special", out var sp) && sp.GetBoolean()
+                    && t.TryGetProperty("content", out var ce) && ce.GetString() is not null
+                    && t.TryGetProperty("id", out _)))
             {
-                if (t.TryGetProperty("content", out var ce) && ce.GetString() is { } content
-                    && t.TryGetProperty("id", out var ie))
-                {
-                    specialTokens[content] = ie.GetInt32();
-                }
+                specialTokens[t.GetProperty("content").GetString()!] = t.GetProperty("id").GetInt32();
             }
         }
 
@@ -382,14 +382,15 @@ public sealed class JinaCodeEmbeddingGenerator : ICodeEmbeddingGenerator
         padId = 0;
         if (root.TryGetProperty("added_tokens", out var added) && added.ValueKind == JsonValueKind.Array)
         {
-            foreach (var t in added.EnumerateArray()
-                .Where(t => t.TryGetProperty("content", out var ce) && ce.GetString() is "[PAD]" or "<pad>"))
+            // Single Where with the full predicate so the body is unconditional. The outer `if`
+            // gate above + this Where together cover all the implicit filtering in one place.
+            var padToken = added.EnumerateArray()
+                .Where(t => t.TryGetProperty("content", out var ce) && ce.GetString() is "[PAD]" or "<pad>"
+                    && t.TryGetProperty("id", out _))
+                .FirstOrDefault();
+            if (padToken.ValueKind == JsonValueKind.Object)
             {
-                if (t.TryGetProperty("id", out var ie))
-                {
-                    padId = ie.GetInt32();
-                    break;
-                }
+                padId = padToken.GetProperty("id").GetInt32();
             }
         }
         if (padId == 0 && modelEl.TryGetProperty("vocab", out var vocabEl) && vocabEl.ValueKind == JsonValueKind.Object)

@@ -18,16 +18,16 @@ internal sealed class MultiScopeFixtureCopy : IDisposable
     public static MultiScopeFixtureCopy Create()
     {
         var sourceRoot = ServerHarness.LocateFixture("MultiScope");
-        var tempRoot = Path.Combine(Path.GetTempPath(), "live-scope-cfg-" + Guid.NewGuid().ToString("N"));
+        var tempRoot = Path.Join(Path.GetTempPath(), "live-scope-cfg-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempRoot);
         CopyTree(sourceRoot, tempRoot);
         return new MultiScopeFixtureCopy(tempRoot);
     }
 
-    public string ConfigPath => Path.Combine(Root, ".sourcegraph.json");
+    public string ConfigPath => Path.Join(Root, ".sourcegraph.json");
 
     public string ScopeDbPath(string scopeId) =>
-        Path.Combine(Root, ".sourcegraph", "scopes", scopeId + ".db");
+        Path.Join(Root, ".sourcegraph", "scopes", scopeId + ".db");
 
     public void WriteConfig(string json) => File.WriteAllText(ConfigPath, json);
 
@@ -39,13 +39,13 @@ internal sealed class MultiScopeFixtureCopy : IDisposable
         {
             var rel = Path.GetRelativePath(source, dir);
             if (ShouldSkip(rel)) continue;
-            Directory.CreateDirectory(Path.Combine(destination, rel));
+            Directory.CreateDirectory(Path.Join(destination, rel));
         }
         foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
         {
             var rel = Path.GetRelativePath(source, file);
             if (ShouldSkip(rel)) continue;
-            var target = Path.Combine(destination, rel);
+            var target = Path.Join(destination, rel);
             Directory.CreateDirectory(Path.GetDirectoryName(target)!);
             File.Copy(file, target, overwrite: true);
         }

@@ -22,7 +22,7 @@ public sealed class ScopeConfigWatcherTests
 
     private static string MakeTempRoot()
     {
-        var tmp = Path.Combine(Path.GetTempPath(), "scope-watcher-tests-" + Guid.NewGuid().ToString("N"));
+        var tmp = Path.Join(Path.GetTempPath(), "scope-watcher-tests-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tmp);
         return tmp;
     }
@@ -77,7 +77,7 @@ public sealed class ScopeConfigWatcherTests
         {
             await using var watcher = new ScopeConfigWatcher(root, debounce: ShortDebounce);
             File.WriteAllText(
-                Path.Combine(root, ScopeConfigLoader.FileName),
+                Path.Join(root, ScopeConfigLoader.FileName),
                 """{ "scopes": [ { "name": "foo", "solutions": ["foo.sln"] } ], "default_scope": "foo" }""");
 
             // The watcher emits a synthetic Reverted on its first poll (file didn't exist when
@@ -106,7 +106,7 @@ public sealed class ScopeConfigWatcherTests
             var initial = await ReadOneWithTimeoutAsync(watcher, TimeSpan.FromSeconds(2));
             initial.Should().BeOfType<ScopeConfigChange.Reverted>();
 
-            File.WriteAllText(Path.Combine(root, ScopeConfigLoader.FileName), "{ this is not json");
+            File.WriteAllText(Path.Join(root, ScopeConfigLoader.FileName), "{ this is not json");
             var change = await ReadOneWithTimeoutAsync(watcher, TimeSpan.FromSeconds(1));
             // Parse fails → log info, no event. The timeout path is the test pass.
             change.Should().BeNull();
@@ -124,7 +124,7 @@ public sealed class ScopeConfigWatcherTests
         try
         {
             File.WriteAllText(
-                Path.Combine(root, ScopeConfigLoader.FileName),
+                Path.Join(root, ScopeConfigLoader.FileName),
                 """{ "scopes": [ { "name": "foo", "solutions": ["foo.sln"] } ] }""");
 
             await using var watcher = new ScopeConfigWatcher(
@@ -135,7 +135,7 @@ public sealed class ScopeConfigWatcherTests
             // The watcher polls on each tick and emits a synthetic event on the first iteration
             // (an Updated, since the file is present at startup). We drain past that and look
             // specifically for the post-deletion Reverted event.
-            File.Delete(Path.Combine(root, ScopeConfigLoader.FileName));
+            File.Delete(Path.Join(root, ScopeConfigLoader.FileName));
             var change = await ReadUntilAsync(
                 watcher,
                 c => c is ScopeConfigChange.Reverted,

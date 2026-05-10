@@ -15,8 +15,9 @@ namespace DevBitsLab.Mcp.SourceGraph.Watcher;
 /// <para>Why polling instead of <see cref="FileSystemWatcher"/>: macOS's FSEventStream-backed
 /// implementation does not reliably deliver events for files at the root of the watched
 /// directory (only subdirectory events fire). Polling gives us cross-platform reliability with
-/// negligible cost — config files don't change fast enough that 1-2s of latency matters, and the
-/// poll itself is just an mtime comparison.</para>
+/// negligible cost — the default poll interval is 200ms (an mtime stat per tick), well below any
+/// human edit cadence, and config files don't change fast enough that even sub-second latency
+/// matters in practice.</para>
 /// </summary>
 public sealed class ScopeConfigWatcher : IAsyncDisposable
 {
@@ -57,7 +58,7 @@ public sealed class ScopeConfigWatcher : IAsyncDisposable
 
     private async Task PollAsync(CancellationToken ct)
     {
-        var path = Path.Combine(_repoRoot, ScopeConfigLoader.FileName);
+        var path = Path.Join(_repoRoot, ScopeConfigLoader.FileName);
         // Track last observed presence + mtime so we only emit on change. The very first iteration
         // fires unconditionally (sentinel `firstIteration` flag) so the diff-and-apply path
         // catches any change that landed between the server's startup-time
@@ -117,6 +118,21 @@ public sealed class ScopeConfigWatcher : IAsyncDisposable
                         catch (ScopeConfigException ex)
                         {
                             _logger.LogInformation(ex, ".sourcegraph.json save was malformed; ignoring (current scopes still active)");
+                        }
+                        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                        {
+                            // Transient / permission errors — file locked by an editor mid-save,
+                            // ACL flap, etc. Log and let the next tick retry. We must not let any
+                            // of these escape PollAsync, otherwise the loop dies and live reload
+                            // is silently disabled until restart.
+                            _logger.LogInformation(ex, ".sourcegraph.json read failed; will retry on next poll");
+                        }
+                        catch (Exception ex)
+                        {
+                            // Defence-in-depth: anything else escaping `Load` is unexpected, but
+                            // letting it kill the watcher loop is worse than logging loud and
+                            // retrying. Errors here will still be visible in the host's stderr.
+                            _logger.LogError(ex, ".sourcegraph.json load raised unexpectedly; continuing poll loop");
                         }
                     }
                 }

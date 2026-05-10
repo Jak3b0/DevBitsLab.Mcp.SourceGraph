@@ -43,12 +43,16 @@ public sealed class ScopeRouter
     }
 
     /// <summary>
-    /// Remove the host registered under <paramref name="id"/>. Returns <c>true</c> when a host
-    /// was removed. The caller is responsible for disposing the host — they hold the reference
-    /// already (from the diff or lookup that prompted the unregister), so this method
-    /// intentionally does not return the removed instance. Symmetric with <see cref="Register"/>;
-    /// for in-place atomic swaps use <see cref="Replace"/>, which returns the displaced host.
+    /// Remove the host registered under <paramref name="id"/>.
     /// </summary>
+    /// <returns>
+    /// <c>true</c> when a host was removed; <c>false</c> when no host was registered under
+    /// <paramref name="id"/>. Note that the removed host instance is <em>not</em> returned: the
+    /// caller is expected to already hold a reference to it (typically from the diff or
+    /// <see cref="TryGet"/> call that prompted the unregister) and is responsible for disposal.
+    /// For in-place atomic swaps where the displaced host needs to be captured, use
+    /// <see cref="Replace"/> instead, which does return the previous mapping.
+    /// </returns>
     public bool Unregister(string id)
     {
         lock (_lock) return _hosts.Remove(id);

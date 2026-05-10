@@ -176,7 +176,7 @@ public sealed class LiveIndexService : BackgroundService
             logger: _loggerFactory.CreateLogger<ScopeConfigWatcher>());
 
         _logger.LogInformation("Watching {Path} for scope-config edits",
-            Path.Combine(_config.RepoRoot, ".sourcegraph.json"));
+            Path.Join(_config.RepoRoot, ".sourcegraph.json"));
 
         _ = Task.Run(async () =>
         {

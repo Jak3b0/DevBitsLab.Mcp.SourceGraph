@@ -324,6 +324,30 @@ public sealed class ClientConfigWritersTests : IDisposable
         CommentDetector.HasJsonComments("{\"a\":1,\"b\":[1,2,3]}").Should().BeFalse();
     }
 
+    // ────────────────────────── Malformed-JSON degraded paths ──────────────────────────
+
+    [Fact]
+    public void ClaudeCode_existingMalformedJson_isSkip_withoutForce()
+    {
+        var existing = Encoding.UTF8.GetBytes("{ this is not json");
+        var w = new ClaudeCodeWriter();
+        var plan = w.Plan(MakeContext(w, existingContent: existing, force: false));
+        plan.Action.Should().Be(WriterAction.SkipExistingDiffers);
+        plan.Description.Should().Contain("not valid JSON");
+    }
+
+    [Fact]
+    public void ClaudeCode_existingMalformedJson_withForce_isReplace()
+    {
+        var existing = Encoding.UTF8.GetBytes("{ this is not json");
+        var w = new ClaudeCodeWriter();
+        var plan = w.Plan(MakeContext(w, existingContent: existing, force: true));
+        plan.Action.Should().Be(WriterAction.ReplaceOurs);
+        // The fresh document should be valid JSON with our entry.
+        var json = JsonNode.Parse(plan.ContentBytes)!.AsObject();
+        json["mcpServers"]!["sourcegraph"]!.Should().NotBeNull();
+    }
+
     // ────────────────────────── Comment-aware degraded path ──────────────────────────
 
     [Fact]

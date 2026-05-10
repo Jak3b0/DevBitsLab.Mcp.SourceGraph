@@ -87,7 +87,7 @@ internal static class DoctorCli
         else
         {
             checks.Add(new("embedding-cache", DoctorStatus.Warn,
-                $"embedding model cache absent at {modelCachePath} — first `semantic_search` will trigger a ~480 MB download (use --no-embeddings to skip)"));
+                $"embedding model cache absent at {modelCachePath} — `semantic_search` will return its disabled-message until model files are placed there (or pass --no-embeddings to silence)"));
         }
 
         // 7. Per-scope DB writability.
@@ -186,15 +186,12 @@ internal static class DoctorCli
 
     private static string ResolveModelCachePath()
     {
-        // Mirrors what ModelStore uses by default; see Embeddings/ModelStore.cs. We re-derive
-        // here rather than depending on it because doctor wants to be cheap to run with no
-        // workspace open.
-        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile,
-            Environment.SpecialFolderOption.DoNotVerify);
-        var cacheRoot = Environment.GetEnvironmentVariable("XDG_CACHE_HOME")
-            ?? Environment.GetEnvironmentVariable("LOCALAPPDATA")
-            ?? Path.Join(home, ".cache");
-        return Path.Join(cacheRoot, "sourcegraph-mcp", "models");
+        // Single source of truth: ModelStore.DefaultCacheDir() is a pure calculation that the
+        // generator's path resolution also goes through. Calling it directly keeps doctor and
+        // the live path in lockstep — duplicating the resolution let an earlier prefix mismatch
+        // (`sourcegraph-mcp/models` vs `devbitslab.sourcegraph/models`) make doctor warn even
+        // when the cache was actually present.
+        return DevBitsLab.Mcp.SourceGraph.Embeddings.ModelStore.DefaultCacheDir();
     }
 
     private static bool TestWritability(string dir)

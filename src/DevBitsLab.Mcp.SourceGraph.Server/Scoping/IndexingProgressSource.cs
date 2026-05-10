@@ -12,8 +12,10 @@ namespace DevBitsLab.Mcp.SourceGraph.Server.Scoping;
 internal interface IIndexingProgressSource
 {
     /// <summary>
-    /// Fires per phase checkpoint. Handlers SHOULD NOT block — the broadcaster's lock is held
-    /// across the dispatch loop, so a slow handler delays every subsequent emission.
+    /// Fires per phase checkpoint. The broadcaster takes a snapshot of the subscriber list under
+    /// its lock and then invokes handlers OUTSIDE the lock, so a slow handler does not block other
+    /// subscribers from running for the same emission. Handlers SHOULD still avoid blocking work
+    /// because subsequent <c>Emit</c> calls share the same dispatch thread (the indexer's pump).
     /// </summary>
     event Action<ProgressNotificationValue> Reported;
 

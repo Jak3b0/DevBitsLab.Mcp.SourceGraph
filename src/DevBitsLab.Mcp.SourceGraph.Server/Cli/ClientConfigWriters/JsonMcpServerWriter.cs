@@ -78,14 +78,17 @@ internal abstract class JsonMcpServerWriter : IClientConfigWriter
         }
         catch (System.Text.Json.JsonException)
         {
-            // Malformed JSON we don't have permission to silently overwrite. Skip and let the
-            // caller surface the warning.
+            // Malformed JSON: we can't safely merge into it, so the only options are skip (default)
+            // or overwrite with a fresh document (--force). The caller surfaces the warning either
+            // way; Force makes it actionable.
             var freshDoc = NewDocumentWithEntry(ourEntry);
             return new WriterPlan(
                 ctx.TargetPath,
-                WriterAction.SkipExistingDiffers,
+                ctx.Force ? WriterAction.ReplaceOurs : WriterAction.SkipExistingDiffers,
                 WriterJson.SerializeToBytes(freshDoc),
-                "existing config is not valid JSON; refusing to overwrite (use --force)");
+                ctx.Force
+                    ? "existing config is not valid JSON; force-replacing with a fresh document"
+                    : "existing config is not valid JSON; refusing to overwrite (use --force)");
         }
 
         if (root is not JsonObject topObj)

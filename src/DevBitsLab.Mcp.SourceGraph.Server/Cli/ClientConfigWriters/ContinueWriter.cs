@@ -92,20 +92,28 @@ internal sealed class ContinueWriter : IClientConfigWriter
         if (string.IsNullOrEmpty(value)) return "\"\"";
         // Plain scalars may contain ${...} placeholders, slashes, dots — but not colons,
         // hash marks, or quote characters. Be conservative and quote anything that looks
-        // dangerous. Letters, digits, and a small set of safe chars stay unquoted.
+        // dangerous, OR that begins with a YAML indicator (-, ?, ' ', etc.). Both branches
+        // share the same escape pass so a value like `-foo"bar` round-trips correctly when
+        // its trigger is the leading dash rather than the embedded quote.
+        if (NeedsQuoting(value))
+        {
+            return "\"" + value.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
+        }
+        return value;
+    }
+
+    private static bool NeedsQuoting(string value)
+    {
         foreach (var c in value)
         {
             if (c is ':' or '#' or '"' or '\'' or '[' or ']' or '{' or '}' or ',' or '&' or '*'
-                or '!' or '|' or '>' or '%' or '@' or '`' or '\n' or '\t')
+                or '!' or '|' or '>' or '%' or '@' or '`' or '\\' or '\n' or '\t')
             {
-                return "\"" + value.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
+                return true;
             }
         }
-        // Plain-scalar guards: leading "- " or "? " etc. are also unsafe.
-        if (value.Length > 0 && (value[0] == '-' || value[0] == '?' || value[0] == ' '))
-        {
-            return "\"" + value + "\"";
-        }
-        return value;
+        // Plain-scalar guards: a leading indicator character forces quoting even when the
+        // rest of the string is plain.
+        return value[0] is '-' or '?' or ' ';
     }
 }

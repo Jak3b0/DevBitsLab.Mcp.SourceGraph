@@ -12,10 +12,8 @@ namespace DevBitsLab.Mcp.SourceGraph.Server.Cli;
 /// </summary>
 internal static class InitCli
 {
-    /// <summary>
-    /// Maximum length of an interactive prompt's "default" hint to keep one-line prompts readable.
-    /// Not used for the solution picker which prints a numbered list anyway.
-    /// </summary>
+    /// <summary>Banner printed at the top of an interactive <c>init</c> session, immediately
+    /// before the detection summary.</summary>
     private const string Heading = "🌿 SourceGraph init";
 
     public static async Task<int> RunAsync(CommandLine cli)
@@ -369,12 +367,19 @@ internal static class InitCli
     }
 
     /// <summary>
-    /// Print the snippet a writer would emit, prefixed by a comment line naming the target path.
-    /// Used both for <c>--print-only</c> and the comment-aware degraded path.
+    /// Print the snippet a writer would emit, prefixed by a comment line naming the target path
+    /// and (when relevant) the writer's <see cref="WriterPlan.Description"/>. Used both for
+    /// <c>--print-only</c> and the comment-aware degraded path; in the latter case the
+    /// description carries the user-facing reason ("config has comments — paste manually") so
+    /// surfacing it is what tells the user why nothing got written.
     /// </summary>
     private static void PrintPlanToStdout(WriterPlan plan)
     {
         Console.WriteLine($"# would write to: {plan.TargetPath}");
+        if (plan.Action == WriterAction.SkipHasComments && !string.IsNullOrEmpty(plan.Description))
+        {
+            Console.WriteLine($"# {plan.Description}");
+        }
         Console.Write(System.Text.Encoding.UTF8.GetString(plan.ContentBytes));
         Console.WriteLine();
     }

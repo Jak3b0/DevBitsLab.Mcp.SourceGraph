@@ -31,10 +31,8 @@ internal static class ToolIdentityFormatter
     {
         if (LeafFormatter.Suppressed) return;
 
-        foreach (var tool in tools)
+        foreach (var tool in tools.Where(IsBuiltInTool))
         {
-            if (!IsBuiltInTool(tool)) continue;
-
             var protocolTool = tool.ProtocolTool;
 
             // Title: always set to "🌿 " + Name. The assignment is idempotent by construction —

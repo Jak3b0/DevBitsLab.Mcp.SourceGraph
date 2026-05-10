@@ -350,10 +350,23 @@ public sealed class RoslynIndexer : IAsyncDisposable, ILanguageIndexer
             var fileId = await _store.UpsertFileAsync(path, sha, DateTimeOffset.UtcNow, isGenerated, ct).ConfigureAwait(false);
             _fileIdByPath[path] = fileId;
 
-            if (unchanged && !fullReset && _keysByFileId.ContainsKey(fileId))
+            if (unchanged && !fullReset && _keysByFileId.TryGetValue(fileId, out var keysForFile))
             {
-                // DB and in-memory map are already consistent for this file — skip entirely.
-                continue;
+                // SHA matches and the in-memory symbol map is hydrated. Verify the store's
+                // refs are in agreement before we skip pass 2: a symbol-bearing file with
+                // zero outgoing refs is "zombied" (pass 1 cleared, pass 2 never repopulated).
+                // Without this check the SHA-skip would keep that file stranded forever.
+                if (keysForFile.Count == 0
+                    || await _store.HasOutgoingReferencesAsync(fileId, ct).ConfigureAwait(false))
+                {
+                    continue;
+                }
+
+                _logger.LogInformation(
+                    "Re-walking references for {Path}: file SHA matches but no outgoing edges in store " +
+                    "(likely zombied by a prior incomplete indexing pass; recovering)",
+                    path);
+                // Fall through to the changed-file path so pass 2 walks this file.
             }
 
             if (changedFileIds.Add(fileId))
@@ -549,9 +562,11 @@ public sealed class RoslynIndexer : IAsyncDisposable, ILanguageIndexer
             var path = document.FilePath;
             if (path is null || !_fileIdByPath.TryGetValue(path, out var fileId)) continue;
 
-            var tree = await document.GetSyntaxTreeAsync(ct).ConfigureAwait(false);
-            var model = await document.GetSemanticModelAsync(ct).ConfigureAwait(false);
-            if (tree is null || model is null) continue;
+            try
+            {
+                var tree = await document.GetSyntaxTreeAsync(ct).ConfigureAwait(false);
+                var model = await document.GetSemanticModelAsync(ct).ConfigureAwait(false);
+                if (tree is null || model is null) continue;
 
             var root = await tree.GetRootAsync(ct).ConfigureAwait(false);
             var refBatch = new List<SymbolReference>(capacity: 256);
@@ -760,6 +775,21 @@ public sealed class RoslynIndexer : IAsyncDisposable, ILanguageIndexer
             if (edgeBatch.Count > 0)
             {
                 await _store.BulkInsertEdgesAsync(edgeBatch, ct).ConfigureAwait(false);
+            }
+            }
+            catch (OperationCanceledException)
+            {
+                // User-driven cancellation must propagate so the caller learns the run aborted.
+                throw;
+            }
+            catch (Exception ex)
+            {
+                // One file's walk threw — log it and let the next file's walk proceed. The
+                // failed file's outgoing edges remain cleared from pass 1; the next index
+                // re-attempts the walk via pass 1's HasOutgoingReferencesAsync integrity check.
+                _logger.LogWarning(ex,
+                    "Pass 2 walk failed for {Path}; file's outgoing edges remain cleared this round and will be re-attempted on the next index",
+                    path);
             }
         }
 

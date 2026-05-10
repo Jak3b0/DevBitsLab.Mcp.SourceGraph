@@ -474,6 +474,21 @@ sourcegraph-mcp stats --db ./.sourcegraph/scopes/default.db
 - Each canonical symbol keeps a stable id across edits, so references from
   other files remain valid even after rapid local changes.
 
+### Recovery from incomplete indexing
+
+The indexer self-heals from incomplete prior passes on the next start; no
+operator action is needed. Pass 1's "unchanged file" SHA-skip path verifies
+that each symbol-bearing file's outgoing references are present in the store
+before skipping pass 2 — files whose references were cleared but never
+repopulated (transient compilation gaps, exceptions partway through a
+walk) are detected and re-walked automatically.
+
+When the integrity check forces a recovery, the indexer emits an info-level
+log line per affected file: `"Re-walking references for {Path}: file SHA
+matches but no outgoing edges in store …"`. Healthy installs never see this
+line. Repeated recoveries on the same files would indicate a regression in
+the upstream indexing flow worth investigating.
+
 ## Observability
 
 The server emits three signals you can hook into:

@@ -1205,6 +1205,15 @@ public sealed class SqliteGraphStore : IGraphStore
         return v is not null && v.Value != 0;
     }
 
+    public async Task<bool> HasOutgoingReferencesAsync(long fileId, CancellationToken ct = default)
+    {
+        // EXISTS short-circuits on the first hit; idx_refs_file makes the lookup O(log N).
+        var v = await _connection.ExecuteScalarAsync<long?>(new CommandDefinition(
+            "SELECT EXISTS (SELECT 1 FROM refs WHERE file_id = @id LIMIT 1);",
+            new { id = fileId }, cancellationToken: ct)).ConfigureAwait(false);
+        return v is not null && v.Value != 0;
+    }
+
     private sealed record RawDiagnosticHit(long Id, long? SymbolId, long FileId, string FilePath,
         long Severity, string Code, string Message, long Line, long Col)
     {

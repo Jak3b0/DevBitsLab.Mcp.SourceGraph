@@ -103,6 +103,18 @@ public interface IGraphStore : IAsyncDisposable
     Task<IReadOnlyList<SymbolKeyRow>> GetAllSymbolKeysAsync(CancellationToken ct = default);
     Task<IReadOnlyList<FileRow>> GetAllFilesAsync(CancellationToken ct = default);
 
+    /// <summary>
+    /// True when the store has at least one <c>symbol_references</c> row whose <c>file_id</c>
+    /// matches <paramref name="fileId"/>. Used by the indexer's pass-1 integrity check to
+    /// detect "zombied" files whose outgoing references were cleared by a prior pass-1
+    /// <see cref="ClearFileOutgoingAsync"/> but never repopulated by pass 2 (transient
+    /// compilation gap, exception in the per-file walk, etc.). The default implementation
+    /// returns <c>true</c> so legacy stores preserve today's "always trust SHA-skip"
+    /// behaviour; concrete stores should override with an indexed <c>EXISTS</c> probe.
+    /// </summary>
+    Task<bool> HasOutgoingReferencesAsync(long fileId, CancellationToken ct = default)
+        => Task.FromResult(true);
+
     Task<GraphStats> GetStatsAsync(CancellationToken ct = default);
 
     // Queries

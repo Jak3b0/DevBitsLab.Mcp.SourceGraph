@@ -40,33 +40,16 @@ public static class MultiScopeReadOnlyConnection
     /// </summary>
     private const int SqliteLimitAttached = 7;
 
-    /// <summary>
-    /// SQLite global config id for enabling URI handling (<c>SQLITE_CONFIG_URI</c>). Required
-    /// for <c>ATTACH DATABASE 'file:/path?mode=ro'</c> to be parsed as a URI rather than a
-    /// literal filename. Microsoft.Data.Sqlite has no connection-string property to enable
-    /// this, so we set it once at process scope via the shutdown / config / initialize dance.
-    /// </summary>
-    private const int SqliteConfigUri = 17;
-
-    /// <summary>
-    /// Process-wide one-shot: enable URI handling so <c>ATTACH DATABASE 'file:…?mode=ro'</c>
-    /// works. SQLite's <c>sqlite3_config</c> requires the engine to be uninitialised;
-    /// shutting down (a no-op if connections are open — internally ref-counted), configuring,
-    /// and reinitialising is the documented dance. Idempotent; cheap on the second-and-later
-    /// invocation because <see cref="Lazy{T}"/> caches the result.
-    /// </summary>
-    private static readonly Lazy<bool> UriConfigured = new(() =>
-    {
-        // Make sure the SQLitePCL provider is set; Microsoft.Data.Sqlite normally does this
-        // on first SqliteConnection touch, but we may be the first caller in a test process.
-        Batteries_V2.Init();
-        // shutdown() is safe to call even when other connections exist — sqlite reference-counts
-        // the global engine. The error code is informational; we just keep going.
-        _ = raw.sqlite3_shutdown();
-        _ = raw.sqlite3_config(SqliteConfigUri, 1);
-        _ = raw.sqlite3_initialize();
-        return true;
-    }, isThreadSafe: true);
+    // Note on read-only enforcement: prior revisions used `ATTACH DATABASE 'file:…?mode=ro' AS …`
+    // to make each attached scope DB read-only at the SQLite engine level. That required enabling
+    // SQLITE_CONFIG_URI globally via a sqlite3_shutdown / config / initialize dance, which raced
+    // with parallel xunit tests opening unrelated SqliteConnections (those connections occasionally
+    // saw the engine mid-reinitialise and failed to open). We now ATTACH with literal paths (no
+    // URI, no mode=ro) and enforce read-only via `PRAGMA query_only = 1` set on the connection
+    // after the TEMP VIEW DDL is applied. PRAGMA query_only is per-connection state, so it doesn't
+    // require any global config flip and never races. SQLite returns SQLITE_READONLY (error 8) on
+    // any write attempt under query_only, preserving the wire-error contract that
+    // `query_graph` tests assert on.
 
     /// <summary>
     /// Open a read-only SQLite connection that ATTACHes the resolved scope set's per-scope
@@ -119,13 +102,10 @@ public static class MultiScopeReadOnlyConnection
             throw new ScopeAttachLimitExceededException(resolved, maxAttached);
         }
 
-        // 3. Make sure the URI ATTACH form is enabled at the SQLite global config level.
-        _ = UriConfigured.Value;
-
-        // 4. Open the in-memory main DB. Read-only on the in-memory main is unsupported by
-        //    SQLite (mode=ro requires an existing file); the safety bound is the per-ATTACH
-        //    `mode=ro` on each scope DB plus the prepare-time check in query_graph (out of
-        //    scope here).
+        // 3. Open the in-memory main DB. Writable while we apply the TEMP VIEW DDL; we flip
+        //    `PRAGMA query_only = 1` afterward (step 9) so the agent's queries can SELECT but
+        //    cannot mutate any attached scope DB. Per-connection state — no global config flip,
+        //    no race with parallel SqliteConnections elsewhere in the process.
         var connection = new SqliteConnection("Data Source=:memory:");
         try
         {
@@ -147,24 +127,34 @@ public static class MultiScopeReadOnlyConnection
                 throw new ScopeAttachLimitExceededException(resolved, Math.Min(maxAttached, actualLimit - 1));
             }
 
-            // 6. ATTACH meta.db AS meta with mode=ro. Always attached, regardless of scope filter,
-            //    so v_scopes can read the registry within the same query.
+            // 6. ATTACH meta.db AS meta. Always attached, regardless of scope filter, so
+            //    v_scopes can read the registry within the same query.
             var metaPath = ScopeLayout.MetaDbPath(repoRoot);
-            await AttachReadOnlyAsync(connection, metaPath, "meta", ct).ConfigureAwait(false);
+            await AttachAsync(connection, metaPath, "meta", ct).ConfigureAwait(false);
 
-            // 7. ATTACH each per-scope DB AS "<scope_id>" with mode=ro. Aliases are double-quoted
-            //    so kebab-case ids with hyphens (e.g. my-scope) parse correctly.
+            // 7. ATTACH each per-scope DB AS "<scope_id>". Aliases are double-quoted so
+            //    kebab-case ids with hyphens (e.g. my-scope) parse correctly.
             foreach (var scopeId in resolved)
             {
                 var scopeDb = ScopeLayout.ScopeDbPath(repoRoot, scopeId);
-                await AttachReadOnlyAsync(connection, scopeDb, scopeId, ct).ConfigureAwait(false);
+                await AttachAsync(connection, scopeDb, scopeId, ct).ConfigureAwait(false);
             }
 
-            // 8. Build and execute the substituted view DDL.
+            // 8. Build and execute the substituted view DDL — needs main writable to create
+            //    the TEMP views. Must run BEFORE the query_only flip in step 9.
             var ddl = BuildViewDdl(resolved);
             await using (var cmd = connection.CreateCommand())
             {
                 cmd.CommandText = ddl;
+                await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            }
+
+            // 9. Flip the connection to read-only. From this point on, any INSERT/UPDATE/DELETE/
+            //    DROP/CREATE/REPLACE against any attached DB or the in-memory main returns
+            //    SQLITE_READONLY (error 8). TEMP views already created in step 8 remain queryable.
+            await using (var cmd = connection.CreateCommand())
+            {
+                cmd.CommandText = "PRAGMA query_only = 1;";
                 await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
             }
 
@@ -232,35 +222,26 @@ public static class MultiScopeReadOnlyConnection
     }
 
     /// <summary>
-    /// Issue an <c>ATTACH DATABASE 'file:&lt;path&gt;?mode=ro' AS "&lt;alias&gt;"</c>. The path
-    /// is bound as a SQL parameter (the URI string is data); the alias is inlined and
-    /// double-quoted because SQLite does not allow parameter binding for identifiers.
-    ///
-    /// The path is converted to an absolute, forward-slash form before being wrapped in the
-    /// <c>file:</c> URI — SQLite's URI parser is conservative about backslashes on Windows.
+    /// Issue an <c>ATTACH DATABASE @path AS "&lt;alias&gt;"</c> with a literal absolute path.
+    /// The path is bound as a SQL parameter; the alias is inlined and double-quoted because
+    /// SQLite does not allow parameter binding for identifiers. Read-only enforcement happens
+    /// later via <c>PRAGMA query_only = 1</c> on the connection — the URI <c>?mode=ro</c>
+    /// approach was retired because it required a global SQLite engine reconfigure that raced
+    /// with parallel SqliteConnections elsewhere in the process.
     /// </summary>
-    private static async Task AttachReadOnlyAsync(
+    private static async Task AttachAsync(
         SqliteConnection connection, string dbPath, string alias, CancellationToken ct)
     {
         var absolute = Path.GetFullPath(dbPath);
-        // SQLite URI: the leading triple slash (file:///abs/path) is the canonical absolute form.
-        // On Windows we may also have a drive letter; "/C:/foo" works as a URI path on the
-        // Windows VFS. Replace backslashes with forward slashes either way.
-        var uriPath = absolute.Replace('\\', '/');
-        if (!uriPath.StartsWith('/'))
-        {
-            uriPath = "/" + uriPath;
-        }
-        var uri = $"file://{uriPath}?mode=ro";
 
         await using var cmd = connection.CreateCommand();
         // Identifier (alias) cannot be parameterised; double-quote so kebab-case ids with
         // hyphens (e.g. my-scope) parse cleanly. ScopeIdValidator already restricted the
         // character set to [a-z0-9-], so there is no quote-escape concern.
-        cmd.CommandText = $"ATTACH DATABASE @uri AS \"{alias}\";";
+        cmd.CommandText = $"ATTACH DATABASE @path AS \"{alias}\";";
         var p = cmd.CreateParameter();
-        p.ParameterName = "@uri";
-        p.Value = uri;
+        p.ParameterName = "@path";
+        p.Value = absolute;
         cmd.Parameters.Add(p);
         await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }

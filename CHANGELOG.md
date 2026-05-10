@@ -175,15 +175,19 @@ below note which package the change applies to.
   (`fix-initialize-vocabulary-serialization` — landed independently from
   main's `harden-sdk-pre-xaml` change, which carries the same fix.)
 - **Self-heal stranded reference edges.** Pass 1's "unchanged file"
-  SHA-skip path now requires that a symbol-bearing file's outgoing
-  references are demonstrably present in the store before skipping
-  pass 2; files whose refs were cleared but never repopulated (transient
+  SHA-skip path now requires that a symbol-bearing file has at least one
+  outgoing pass-2 artifact in the store (a ref row, or an outgoing edge
+  from a symbol declared in the file) before skipping pass 2; files
+  whose refs and edges were cleared but never repopulated (transient
   compile gap, exception in the per-file walk) get re-walked
   automatically on the next index. Pass 2's per-file body is wrapped in
   a try/catch so one file's walk failure no longer aborts the whole
-  loop. New `IGraphStore.HasOutgoingReferencesAsync` storage method
-  (default `true`; `SqliteGraphStore` overrides with an indexed EXISTS
-  probe). Recovery emits an info-level log line per affected file.
+  loop, and a post-failure clear inside the catch drops any partial
+  refs-only commit so the next index detects the zombie state. New
+  `IGraphStore.HasOutgoingReferencesAsync` storage method (default
+  `true`; `SqliteGraphStore` overrides with an indexed `refs` OR
+  `edges JOIN symbols.file_id` EXISTS probe). Recovery emits an
+  info-level log line per affected file.
   (`fix-stranded-reference-edges`)
 
 ## [0.7.0] - 2026-05-06

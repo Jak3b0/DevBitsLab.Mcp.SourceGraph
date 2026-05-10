@@ -55,9 +55,11 @@ in a process (or after `fullReset`).
   `symbols` and `(path, id)` from `files`, logs
   `"Hydrated N symbol(s) and M file(s) from graph store"`, and every file
   whose SHA matches the stored value AND has either zero declared symbols
-  or at least one outgoing-reference row in the store is skipped in pass 1
-  (per the self-heal integrity check); files that match the SHA but have
-  declared symbols with zero outgoing references are bypassed and re-walked
+  or at least one outgoing pass-2 artifact (a `refs` row, or an outgoing
+  edge from a symbol declared in that file) is skipped in pass 1 (per the
+  self-heal integrity check); files that match the SHA but have declared
+  symbols with zero outgoing refs AND zero outgoing edges are bypassed
+  and re-walked
 
 ### Requirement: Multi-target and linked-file iterations don't double-count
 The indexer SHALL emit refs and edges from at most one document per fileId

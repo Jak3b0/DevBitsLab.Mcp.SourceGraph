@@ -478,10 +478,11 @@ sourcegraph-mcp stats --db ./.sourcegraph/scopes/default.db
 
 The indexer self-heals from incomplete prior passes on the next start; no
 operator action is needed. Pass 1's "unchanged file" SHA-skip path verifies
-that each symbol-bearing file's outgoing references are present in the store
-before skipping pass 2 — files whose references were cleared but never
-repopulated (transient compilation gaps, exceptions partway through a
-walk) are detected and re-walked automatically.
+that each symbol-bearing file has at least one pass-2 artifact in the store
+(an outgoing reference row, or an outgoing edge from a symbol declared in
+the file) before skipping pass 2 — files whose refs and edges were cleared
+but never repopulated (transient compilation gaps, exceptions partway
+through a walk) are detected and re-walked automatically.
 
 When the integrity check forces a recovery, the indexer emits an info-level
 log line per affected file: `"Re-walking references for {Path}: file SHA

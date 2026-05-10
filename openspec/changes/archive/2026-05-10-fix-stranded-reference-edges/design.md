@@ -47,7 +47,7 @@ if (unchanged && !fullReset && _keysByFileId.ContainsKey(fileId)
 }
 ```
 
-Files with declared symbols but zero outgoing refs fall through to pass 2 for re-walking. Files with no declared symbols don't need re-walking (an empty file has nothing to reference). The `HasOutgoingReferencesAsync` query is `SELECT EXISTS (SELECT 1 FROM refs WHERE file_id = ? LIMIT 1)` against the existing index on `file_id`.
+Files with declared symbols but zero outgoing refs AND zero outgoing edges fall through to pass 2 for re-walking. Files with no declared symbols don't need re-walking (an empty file has nothing to reference). The `HasOutgoingReferencesAsync` query is an `EXISTS (refs by file_id) OR EXISTS (edges joined to symbols.file_id)` probe — checking edges in addition to refs avoids spurious re-walks of files that legitimately produce zero refs but emit signature-only edges (`uses-type`, `inherits`, `implements-member`).
 
 **Rationale**: catches the zombie state with a single cheap query per unchanged file. No restructuring of the pass-1/pass-2 flow; no new persistent state.
 

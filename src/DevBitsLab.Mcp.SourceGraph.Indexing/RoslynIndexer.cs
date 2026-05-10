@@ -397,11 +397,9 @@ public sealed class RoslynIndexer : IAsyncDisposable, ILanguageIndexer
                 //
                 // Files with zero declared symbols (a usings-only file, an [assembly:]
                 // attribute file, etc.) take the early-out: pass 2 has nothing useful to
-                // walk for them. This relies on `_keysByFileId` faithfully reflecting what
-                // pass 1 declared — since pass 1 phase B always populates the map from the
-                // walked declarations of every changed file, and the hydrate path on cold
-                // start reads it from `symbols.file_id`, the assumption holds for the
-                // built-in C# indexer.
+                // walk for them. Hydration seeds `_keysByFileId[fileId] = []` for every
+                // file row regardless of whether the file has any symbol rows, so this
+                // branch fires on a process restart even for symbol-less files.
                 if (keysForFile.Count == 0)
                 {
                     continue;
@@ -1047,6 +1045,15 @@ public sealed class RoslynIndexer : IAsyncDisposable, ILanguageIndexer
         foreach (var fr in fileRows)
         {
             _fileIdByPath[fr.Path] = fr.Id;
+            // Seed `_keysByFileId` with an empty list for files that didn't contribute any
+            // symbol rows above (usings-only files, files containing only `[assembly:]` /
+            // `[module:]` attributes, etc.). Without this, the pass-1 SHA-skip path's
+            // TryGetValue check would miss those files after a process restart and fall
+            // through to a redundant pass-2 walk that emits nothing.
+            if (!_keysByFileId.ContainsKey(fr.Id))
+            {
+                _keysByFileId[fr.Id] = new List<string>();
+            }
         }
         if (hydrated > 0)
         {

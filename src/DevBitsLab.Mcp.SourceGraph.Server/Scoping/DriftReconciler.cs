@@ -22,15 +22,17 @@ internal static class DriftReconciler
     {
         // Walk the source tree under the scope's root. SourceTreeWalker uses the same exclusion
         // rules as SolutionWatcher (obj/, bin/, .git/, .sourcegraph/) so the file set matches.
+        // The walker's HitLimit flag is the authoritative "did the cap actually truncate the
+        // result" signal — distinguishes "tree had exactly maxFiles" from "tree had more"; a
+        // simple `scanned >= maxFiles` test would incorrectly report partial in the first case.
+        var outcome = await SourceTreeWalker.WalkAsync(host.Scope.Root, maxFiles, ct).ConfigureAwait(false);
         var disk = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
-        var partial = false;
-        var scanned = 0;
-        await foreach (var entry in SourceTreeWalker.WalkAsync(host.Scope.Root, maxFiles, ct).ConfigureAwait(false))
+        foreach (var entry in outcome.Entries)
         {
             disk[entry.Path] = entry.Sha256;
-            scanned++;
-            if (scanned >= maxFiles) partial = true;
         }
+        var scanned = outcome.Entries.Count;
+        var partial = outcome.HitLimit;
 
         // Read every (path, sha) row from the DB. Comparing case-insensitive paths to mirror
         // SqliteGraphStore's path-matching elsewhere.

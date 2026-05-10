@@ -39,54 +39,58 @@ public sealed class SourceTreeWalkerTests : IDisposable
         await Plant(Path.Join(_root, "obj/Debug/D.cs"), "class D {}");
         await Plant(Path.Join(_root, ".git/HEAD"), "ref: refs/heads/main");
 
-        var entries = new List<FileShaEntry>();
-        await foreach (var entry in SourceTreeWalker.WalkAsync(_root, maxFiles: 100))
-        {
-            entries.Add(entry);
-        }
+        var outcome = await SourceTreeWalker.WalkAsync(_root, maxFiles: 100);
 
-        entries.Should().HaveCount(3);
-        entries.Select(e => e.Path).Should().BeEquivalentTo(new[] { kept1, kept2, kept3 });
-        entries.Single(e => e.Path == kept1).Sha256.Should().Equal(kept1Sha);
-        entries.Single(e => e.Path == kept2).Sha256.Should().Equal(kept2Sha);
-        entries.Single(e => e.Path == kept3).Sha256.Should().Equal(kept3Sha);
+        outcome.HitLimit.Should().BeFalse();
+        outcome.Entries.Should().HaveCount(3);
+        outcome.Entries.Select(e => e.Path).Should().BeEquivalentTo(new[] { kept1, kept2, kept3 });
+        outcome.Entries.Single(e => e.Path == kept1).Sha256.Should().Equal(kept1Sha);
+        outcome.Entries.Single(e => e.Path == kept2).Sha256.Should().Equal(kept2Sha);
+        outcome.Entries.Single(e => e.Path == kept3).Sha256.Should().Equal(kept3Sha);
     }
 
     [Fact]
-    public async Task Walk_respects_maxFiles_cap()
+    public async Task Walk_respects_maxFiles_cap_and_setsHitLimit()
     {
         for (var i = 0; i < 5; i++)
         {
             await Plant(Path.Join(_root, $"F{i}.cs"), $"class F{i} {{}}");
         }
-        var entries = new List<FileShaEntry>();
-        await foreach (var entry in SourceTreeWalker.WalkAsync(_root, maxFiles: 2))
+        var outcome = await SourceTreeWalker.WalkAsync(_root, maxFiles: 2);
+
+        outcome.Entries.Should().HaveCount(2);
+        outcome.HitLimit.Should().BeTrue("the tree had 5 files but the cap was 2");
+    }
+
+    [Fact]
+    public async Task Walk_treeMatchesCapExactly_doesNotSetHitLimit()
+    {
+        // Regression for the partial-flag false-positive: a tree with exactly maxFiles entries
+        // is NOT truncated. Walker must distinguish "tree fit within cap" from "tree exceeded".
+        for (var i = 0; i < 3; i++)
         {
-            entries.Add(entry);
+            await Plant(Path.Join(_root, $"F{i}.cs"), $"class F{i} {{}}");
         }
-        entries.Should().HaveCount(2);
+        var outcome = await SourceTreeWalker.WalkAsync(_root, maxFiles: 3);
+
+        outcome.Entries.Should().HaveCount(3);
+        outcome.HitLimit.Should().BeFalse("the tree had exactly 3 files; the cap was reached but not exceeded");
     }
 
     [Fact]
     public async Task Walk_emptyDirectory_yieldsNothing()
     {
-        var entries = new List<FileShaEntry>();
-        await foreach (var entry in SourceTreeWalker.WalkAsync(_root, maxFiles: 100))
-        {
-            entries.Add(entry);
-        }
-        entries.Should().BeEmpty();
+        var outcome = await SourceTreeWalker.WalkAsync(_root, maxFiles: 100);
+        outcome.Entries.Should().BeEmpty();
+        outcome.HitLimit.Should().BeFalse();
     }
 
     [Fact]
     public async Task Walk_missingDirectory_yieldsNothing()
     {
-        var entries = new List<FileShaEntry>();
-        await foreach (var entry in SourceTreeWalker.WalkAsync(Path.Join(_root, "does-not-exist"), maxFiles: 100))
-        {
-            entries.Add(entry);
-        }
-        entries.Should().BeEmpty();
+        var outcome = await SourceTreeWalker.WalkAsync(Path.Join(_root, "does-not-exist"), maxFiles: 100);
+        outcome.Entries.Should().BeEmpty();
+        outcome.HitLimit.Should().BeFalse();
     }
 
     private static async Task<(string Path, byte[] Sha)> Plant(string path, string contents)

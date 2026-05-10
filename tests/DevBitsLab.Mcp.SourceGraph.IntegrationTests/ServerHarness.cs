@@ -303,13 +303,6 @@ internal sealed class ServerHarness : IAsyncDisposable
     }
 
     /// <summary>
-    /// Walk upward from <see cref="AppContext.BaseDirectory"/> to find the absolute path of a
-    /// fixture under <c>tests/fixtures/</c>. <paramref name="relativeFromFixtures"/> is the
-    /// trailing path segment, e.g. <c>"Sample.sln"</c> or <c>"MultiScope"</c>. Throws if no
-    /// matching path exists; the caller's `FileNotFoundException` / `DirectoryNotFoundException`
-    /// surfaces with a concrete pointer to the missing fixture.
-    /// </summary>
-    /// <summary>
     /// Best-effort clean of the <c>.sourcegraph/</c> directory next to the <c>--solution</c>
     /// argument the harness was invoked with, so prior-run state can't pollute the current
     /// spawn. Quietly skips when no <c>--solution</c> is in args, when the path doesn't exist,
@@ -333,6 +326,13 @@ internal sealed class ServerHarness : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Walk upward from <see cref="AppContext.BaseDirectory"/> to find the absolute path of a
+    /// fixture under <c>tests/fixtures/</c>. <paramref name="relativeFromFixtures"/> is the
+    /// trailing path segment, e.g. <c>"Sample.sln"</c> or <c>"MultiScope"</c>. Throws if no
+    /// matching path exists; the caller's `FileNotFoundException` / `DirectoryNotFoundException`
+    /// surfaces with a concrete pointer to the missing fixture.
+    /// </summary>
     public static string LocateFixture(string relativeFromFixtures)
     {
         for (var d = new DirectoryInfo(AppContext.BaseDirectory); d is not null; d = d.Parent)

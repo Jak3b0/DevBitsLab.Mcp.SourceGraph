@@ -205,6 +205,12 @@ public static class ScopedExecution
         CancellationToken ct,
         IProgress<ProgressNotificationValue>? progress = null)
     {
+        // A scope that has already settled out of `"indexing"` doesn't need to be waited on —
+        // even if the Ready TCS hasn't been signalled (test fixtures often build a host directly
+        // with Status = "ok" and skip MarkReady). Checking Status first keeps such fixtures from
+        // hanging forever; the Ready.IsCompleted check below is the production-path short-circuit
+        // for hosts whose lifecycle is driven by LiveIndexService.
+        if (host.Status != "indexing") return;
         if (host.Ready.IsCompleted) return;
         if (progress is null)
         {

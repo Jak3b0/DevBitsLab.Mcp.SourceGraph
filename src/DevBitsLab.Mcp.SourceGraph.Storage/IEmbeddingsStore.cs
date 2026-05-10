@@ -42,10 +42,14 @@ public interface IEmbeddingsStore
     Task<long> CountAsync(CancellationToken ct = default);
 
     /// <summary>
-    /// Deletes <c>symbol_embeddings</c> rows whose <c>rowid</c> no longer exists in the
-    /// <c>symbols</c> table. Returns the number of rows removed. Cheap (single DELETE), reversible
-    /// (embeddings regenerate on next semantic_search call). Safe to call when the underlying
-    /// vector extension is unavailable — the implementation MAY return 0 without error.
+    /// Deletes <c>symbol_embeddings</c> rows whose <c>symbol_id</c> no longer exists in the
+    /// <c>symbols</c> table — vec0's primary key is the <c>symbol_id</c> column we wrote it
+    /// with, not a synthetic rowid; matching by <c>symbol_id</c> is the correct invariant.
+    /// The companion <c>embedding_meta</c> bookkeeping table is pruned in the same round-trip
+    /// so a re-embed after later symbol resurrection doesn't see stale meta. Returns the number
+    /// of <c>symbol_embeddings</c> rows removed. Cheap (single DELETE), reversible (embeddings
+    /// regenerate on next semantic_search call). Safe to call when the underlying vector
+    /// extension is unavailable — the implementation MAY return 0 without error.
     /// </summary>
     Task<int> PruneOrphanedAsync(CancellationToken ct = default);
 }

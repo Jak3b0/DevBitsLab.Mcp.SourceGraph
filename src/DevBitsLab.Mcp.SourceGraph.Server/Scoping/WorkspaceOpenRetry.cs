@@ -17,11 +17,12 @@ namespace DevBitsLab.Mcp.SourceGraph.Server.Scoping;
 internal static class WorkspaceOpenRetry
 {
     /// <summary>
-    /// Default backoff schedule: <c>[1s, 5s, 25s]</c>. Three attempts total (the schedule has 2
-    /// entries because the first attempt runs immediately, then the schedule applies between the
-    /// remaining attempts). Worst-case wall-clock = sum = 31s before today's <c>degraded</c>
-    /// outcome. Sized for the failure profile (dotnet restore racing, MSBuild SDK upgrade in
-    /// flight, network-FS hiccup) — see <c>add-scope-repair-tools/design.md</c> Decision 1.
+    /// Default backoff schedule: <c>[1s, 5s, 25s]</c>. Drives 4 attempts total (1 initial + 3
+    /// retries) — the schedule has one entry per delay BETWEEN attempts, and
+    /// <see cref="RunAsync"/> computes <c>maxAttempts = backoffs.Count + 1</c>. Worst-case
+    /// wall-clock = 1s + 5s + 25s = 31s before today's <c>degraded</c> outcome. Sized for the
+    /// failure profile (dotnet restore racing, MSBuild SDK upgrade in flight, network-FS
+    /// hiccup) — see <c>add-scope-repair-tools/design.md</c> Decision 1.
     /// </summary>
     public static readonly IReadOnlyList<TimeSpan> DefaultBackoffs =
         new[] { TimeSpan.FromMilliseconds(1000), TimeSpan.FromMilliseconds(5000), TimeSpan.FromMilliseconds(25000) };

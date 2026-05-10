@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.ExceptionServices;
 using DevBitsLab.Mcp.SourceGraph.Indexing;
 using DevBitsLab.Mcp.SourceGraph.Server.Observability;
 using Microsoft.Extensions.Logging;
@@ -77,6 +78,10 @@ internal static class WorkspaceOpenRetry
         HealLog.Append(kind: "workspace-open-retried", scope: scopeId, ok: false,
             ms: sw.Elapsed.TotalMilliseconds,
             details: $"all {maxAttempts} attempts failed: {lastException!.Message}");
-        throw lastException;
+        // Preserve the original throw site's stack trace. A bare `throw lastException` would
+        // reset the stack to this line, which makes diagnosing the underlying workspace-open
+        // failure (Roslyn, MSBuild, file-system) much harder for the operator looking at logs.
+        ExceptionDispatchInfo.Capture(lastException).Throw();
+        throw lastException; // unreachable; satisfies the C# definite-return checker.
     }
 }

@@ -764,7 +764,7 @@ The server emits five signals you can hook into:
    | `orphan-db-archived` | Boot: scope DB file with no registry row, moved to `orphans/` | 1 |
    | `missing-db-detected` | Boot: registry row but DB file missing | 1 |
    | `stuck-indexing-detected` | Boot: prior process died with `status='indexing'` | 1 |
-   | `workspace-open-retried` | Cold-index: bounded retry succeeded (or all 3 attempts failed) | 2 |
+   | `workspace-open-retried` | Cold-index: bounded retry succeeded (or all 4 attempts failed — 1 initial + 3 retries at `[1s, 5s, 25s]`) | 2 |
    | `repair-scope-invoked` | `repair_scope` tool fired (mode + outcome in `details`) | 2 |
    | `reconcile-drift-invoked` | `reconcile_drift` tool fired (counts in `details`) | 2 |
    | `embeddings-pruned` | Orphan embedding rows removed (after cold-index, after `repair_scope minimal`) | 2/3 |

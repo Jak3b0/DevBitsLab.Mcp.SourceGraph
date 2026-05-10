@@ -124,11 +124,11 @@ The MCP tool-call wrapper SHALL, before awaiting `ScopeHost.Ready` on a tool cal
 
 ### Requirement: Bounded retry on initial workspace open
 
-`LiveIndexService` (and `ScopeHost.ColdIndexAsync` for the per-scope path) SHALL wrap the workspace-open + initial-index sequence in a bounded retry loop of up to 3 attempts, with exponential backoff `[1000ms, 5000ms, 25000ms]` between attempts. The first attempt runs immediately; subsequent attempts run after the corresponding backoff delay.
+`LiveIndexService` SHALL wrap the workspace-open + initial-index sequence in a bounded retry loop of up to 4 attempts (1 initial + 3 retries), with exponential backoff `[1000ms, 5000ms, 25000ms]` between attempts. The first attempt runs immediately; subsequent attempts run after the corresponding backoff delay.
 
 A retry SHALL fire when any attempt throws an exception other than `OperationCanceledException`. `OperationCanceledException` SHALL be rethrown immediately without retry — cooperative shutdown wins.
 
-When an attempt N > 1 succeeds, the service SHALL emit a heal event with `kind = "workspace-open-retried"`, `ok = true`, `details = "succeeded on attempt N"`. When all 3 attempts fail, the service SHALL emit a heal event with `kind = "workspace-open-retried"`, `ok = false`, `details = "all 3 attempts failed: <last exception message>"`, then proceed with today's path: log at error level and mark the scope `degraded` with the original exception's message.
+When an attempt N > 1 succeeds, the service SHALL emit a heal event with `kind = "workspace-open-retried"`, `ok = true`, `details = "succeeded on attempt N"`. When all 4 attempts fail, the service SHALL emit a heal event with `kind = "workspace-open-retried"`, `ok = false`, `details = "all 4 attempts failed: <last exception message>"`, then proceed with today's path: log at error level and mark the scope `degraded` with the original exception's message.
 
 The retry SHALL NOT fire on watcher-driven incremental reindexes (`IndexChangedFilesAsync`) — only on the cold-index path. Steady-state reindex failures continue to follow the existing per-batch logging path (`"Scope `{Id}`: failed to apply change batch"`).
 
@@ -138,9 +138,9 @@ The retry SHALL NOT fire on watcher-driven incremental reindexes (`IndexChangedF
 - **THEN** the second attempt's success is recorded; total wall-clock elapsed is at least 1000ms (the 1s backoff); `heals.jsonl` contains one line with `kind = "workspace-open-retried"`, `ok = true`, `details = "succeeded on attempt 2"`; the scope is marked `ok` in the registry; no other heal event is emitted
 
 #### Scenario: All retries exhausted, scope marked degraded
-- **GIVEN** `RoslynIndexer.OpenAsync` throws on all 3 attempts with the same exception message
+- **GIVEN** `RoslynIndexer.OpenAsync` throws on all 4 attempts with the same exception message
 - **WHEN** the cold-index path fires
-- **THEN** total wall-clock elapsed is at least 31000ms (1s + 5s + 25s backoffs); `heals.jsonl` contains one line with `kind = "workspace-open-retried"`, `ok = false`, `details = "all 3 attempts failed: <message>"`; the scope is marked `degraded` with the exception message in the registry's `status_message`; the host stays up
+- **THEN** total wall-clock elapsed is at least 31000ms (1s + 5s + 25s backoffs); `heals.jsonl` contains one line with `kind = "workspace-open-retried"`, `ok = false`, `details = "all 4 attempts failed: <message>"`; the scope is marked `degraded` with the exception message in the registry's `status_message`; the host stays up
 
 #### Scenario: Cancellation during backoff is honoured immediately
 - **GIVEN** the workspace open throws on the first attempt and the cancellation token is signalled mid-backoff (during the 1s wait)

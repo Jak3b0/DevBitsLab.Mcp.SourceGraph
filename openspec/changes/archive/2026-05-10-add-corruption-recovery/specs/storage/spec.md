@@ -1,5 +1,7 @@
 ## ADDED Requirements
 
+> **Implementation reconciliation note (post-archive)**: the original "Typed exception for SQLite corruption" requirement below described a storage-boundary wrapping contract — every `IGraphStore` method translating `SqliteException` codes 11/26 into `GraphStoreCorruptedException`. The shipped implementation does NOT wrap at the storage boundary; raw `SqliteException` propagates and the dispatch layer's `CorruptionGuard.IsCorruptionError` recognises both forms. Wrapping 46 `IGraphStore` methods would have been a high-churn rewrite; the dispatch-layer recognition delivers the same user-facing behaviour ("corrupt DB → first call fails → subsequent calls return degraded short-circuit") with much smaller diff. The live baseline at `openspec/specs/storage/spec.md` ("Typed exception type for SQLite corruption") describes the actual contract. The archived requirement text below is preserved for change-history fidelity but should be read as superseded by the live baseline.
+
 ### Requirement: Typed exception for SQLite corruption
 
 `SqliteGraphStore` SHALL wrap every `IGraphStore` public method body so that any `SqliteException` whose `SqliteErrorCode` is `11` (`SQLITE_CORRUPT`) or `26` (`SQLITE_NOTADB`) is rethrown as `GraphStoreCorruptedException`. The exception SHALL carry:

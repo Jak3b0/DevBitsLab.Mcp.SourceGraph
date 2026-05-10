@@ -25,6 +25,9 @@ internal sealed class CommandLine
     /// <summary>The scope id passed via <c>--scope &lt;id&gt;</c>; consumed by <c>vocabulary list</c>
     /// to filter the output to a single scope. Null means every scope.</summary>
     public string? ScopeId { get; private init; }
+    /// <summary>True when <c>--json</c> was passed; consumed by <c>scopes info</c> to emit a stable
+    /// JSON shape mirroring the markdown sections.</summary>
+    public bool Json { get; private init; }
     /// <summary>Positional rest args (used by `scopes add`, `scopes remove`, etc.).</summary>
     public IReadOnlyList<string> Positional { get; private init; } = Array.Empty<string>();
 
@@ -44,6 +47,7 @@ internal sealed class CommandLine
         var noLeaf = false;
         var strict = false;
         string? scopeId = null;
+        var json = false;
         var positional = new List<string>();
 
         for (var i = 1; i < args.Length; i++)
@@ -83,6 +87,9 @@ internal sealed class CommandLine
                 case "--scope":
                     scopeId = RequireArg(args, ref i, a);
                     break;
+                case "--json":
+                    json = true;
+                    break;
                 default:
                     if (subcommand == "index" && solution is null && !a.StartsWith('-'))
                     {
@@ -117,6 +124,7 @@ internal sealed class CommandLine
             NoLeaf = noLeaf,
             Strict = strict,
             ScopeId = scopeId,
+            Json = json,
             Positional = positional,
         };
     }
@@ -186,6 +194,11 @@ internal sealed class CommandLine
 
           sourcegraph-mcp scopes list [--root <path>]
               List the scopes declared in the repo's .sourcegraph.json (or the synthesised default).
+
+          sourcegraph-mcp scopes info <name> [--root <path>] [--json]
+              Detailed view of one scope: identity, project set, optional `language` field,
+              optional `enrichment` block. With --json, emits a stable shape mirroring the markdown
+              sections.
 
           sourcegraph-mcp scopes add <name> --solution <path> [--root <path>] [--isolated]
               Add a scope to .sourcegraph.json. <name> is the kebab-case id; --solution gives the

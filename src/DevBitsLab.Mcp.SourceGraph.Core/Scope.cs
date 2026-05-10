@@ -29,7 +29,40 @@ public sealed record Scope(
     string Root,
     ScopeProjectSet ProjectSet,
     bool Isolated,
-    DateTimeOffset LastIndexedAt);
+    DateTimeOffset LastIndexedAt)
+{
+    /// <summary>
+    /// Optional kebab-case language identifier (<c>"typescript"</c>, <c>"python"</c>, …). Hint
+    /// to indexer dispatch when the same file extension could plausibly be claimed by multiple
+    /// plugins. <c>null</c> means "no language hint" — the host falls back to extension-based
+    /// dispatch. Validated at load time as kebab-case if present; the loader does NOT enforce a
+    /// closed list (soft-registry posture).
+    /// </summary>
+    public string? Language { get; init; }
+
+    /// <summary>
+    /// Optional enrichment configuration block. Forward-declared at this version: the loader
+    /// parses and validates the shape, the host surfaces the configuration via
+    /// <c>scopes info</c>, but no first-party plugin consumes it yet. The first concrete
+    /// consumer is the TypeScript language indexer.
+    /// </summary>
+    public ScopeEnrichmentConfig? Enrichment { get; init; }
+}
+
+/// <summary>
+/// Optional per-scope enrichment configuration. Currently carries one nested <see cref="Lsp"/>
+/// block; future enrichment kinds (<c>embeddings</c>, <c>static-analysis</c>) hang off the
+/// same root when their indexers ship.
+/// </summary>
+public sealed record ScopeEnrichmentConfig(LspEnrichmentConfig? Lsp);
+
+/// <summary>
+/// LSP-server configuration for enrichment-aware language indexers. <see cref="Command"/> is the
+/// executable to launch (resolved against PATH); <see cref="Args"/> is the argument list.
+/// Loader validates that <see cref="Command"/> is non-empty when the block is present;
+/// <see cref="Args"/> defaults to an empty array.
+/// </summary>
+public sealed record LspEnrichmentConfig(string Command, IReadOnlyList<string> Args);
 
 /// <summary>
 /// Discriminated union over the three ways a scope can describe its source set: a list of

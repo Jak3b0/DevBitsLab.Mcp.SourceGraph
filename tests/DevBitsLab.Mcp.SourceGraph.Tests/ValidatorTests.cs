@@ -80,6 +80,10 @@ public sealed class CanonicalKeyValidatorTests
     [InlineData("csharp:M:Sample.Domain.Calculator.Add(System.Int32,System.Int32)")]
     [InlineData("xaml:element:Views/Main.xaml#X")]
     [InlineData("xaml:element:Views/Sub/Foo.xaml#binding")]
+    [InlineData("ts:M:src/foo.ts::greet")]                 // lifted by add-typescript-language-indexer
+    [InlineData("tsx:M:src/page.tsx::Page")]
+    [InlineData("js:M:src/foo.js::greet")]
+    [InlineData("jsx:M:src/page.jsx::Page")]
     public void IsValid_returnsTrue_forReservedSchemes(string key)
     {
         CanonicalKeyValidator.IsValid(key).Should().BeTrue();
@@ -88,7 +92,7 @@ public sealed class CanonicalKeyValidatorTests
     [Theory]
     [InlineData("python:M:foo")]                       // unknown scheme
     [InlineData("vbnet:T:Foo")]                        // reserved-but-not-enforced
-    [InlineData("ts:T:Foo")]                           // reserved-but-not-enforced
+    [InlineData("vue:component:Header.vue")]           // reserved-but-not-enforced (was previously ts:T:Foo before add-typescript-language-indexer lifted that scheme)
     [InlineData("xaml:element:Views\\Main.xaml#X")]    // backslash forbidden
     [InlineData("CSharp:T:Foo")]                       // uppercase scheme
     [InlineData("Csharp:T:Foo")]                       // mixed case scheme
@@ -152,11 +156,12 @@ public sealed class CanonicalKeyValidatorTests
     }
 
     [Fact]
-    public void EnforcedSchemes_containsCsharpAndXaml()
+    public void EnforcedSchemes_containsExpectedSet()
     {
-        // Surface property is documented; assert v1's two-scheme set. A future SDK release
-        // expands this; a deliberate update of the test set is the trip-wire for that.
-        CanonicalKeyValidator.EnforcedSchemes.Should().BeEquivalentTo(new[] { "csharp", "xaml" });
+        // Surface property is documented; assert the current scheme set. A future SDK release
+        // expands this when a new language indexer ships; a deliberate update of the test set is
+        // the trip-wire for that. add-typescript-language-indexer lifted js / ts / jsx / tsx.
+        CanonicalKeyValidator.EnforcedSchemes.Should().BeEquivalentTo(new[] { "csharp", "xaml", "js", "ts", "jsx", "tsx" });
     }
 
     [Fact]

@@ -10,7 +10,73 @@ below note which package the change applies to.
 
 ## [Unreleased]
 
+### Fixed
+- **Semantic search now actually works on a fresh checkout.** Three coordinated
+  changes that together close the gap between "documented as available" and
+  "actually loads":
+  - `wire-model-autodownload` — `ModelStore.EnsureAsync` is now invoked at
+    server startup so the embedding model is fetched from Hugging Face on
+    first run (the downloader had been written in the v0.4 semantic-search
+    change but never wired into `Program.cs`). Indexing runs concurrently
+    with the download via a `ModelDownloadGate` singleton; the embed worker
+    awaits the gate before probing `IsAvailable` (sticky), closing the race
+    that previously disabled embeddings permanently for the session. New
+    `--no-model-download` flag (and `SOURCEGRAPH_NO_MODEL_DOWNLOAD=1` env
+    var) lets air-gapped operators run against a pre-populated cache without
+    enabling the auto-fetch.
+  - `migrate-to-ml-tokenizers` — replaced the BERT-only `FastBertTokenizer`
+    with `Microsoft.ML.Tokenizers` 2.0 so the documented default model
+    `jinaai/jina-embeddings-v2-base-code` (RoBERTa-tokenized BPE) actually
+    loads. Previous library threw a `JsonException` on the upstream
+    `tokenizer.json`, silently disabling semantic search even when the model
+    file was on disk. New library handles both BPE (RoBERTa, Jina, BGE-M3)
+    and WordPiece (BERT) from one API surface — dispatch keys off the
+    `model.type` field of `tokenizer.json` at load time.
+  - Pinned SHA-256 hashes for the default model's `model.onnx` and
+    `tokenizer.json` so corrupted / tampered downloads fail loudly instead
+    of poisoning the cache. Override-model paths (`--model <id>`) remain
+    best-effort with no SHA verification.
+
 ### Added
+- **Embedding cache management surface.** New CLI subcommand group
+  `sourcegraph-mcp embeddings <status|pull|remove|verify>` and matching MCP
+  tools `embeddings_status` / `embeddings_pull` / `embeddings_remove` /
+  `embeddings_verify`. `status` reports the cache directory, model id +
+  dimension, per-file presence/size/SHA, and free disk on the cache volume
+  — first stop when the new `--no-model-download` warning fires. `remove`
+  defaults to the active model; `--all` wipes every cached model directory;
+  combining `--model X --all` is rejected. Mutating MCP tools carry MCP-spec
+  `destructiveHint` / `idempotentHint` annotations via a new `[ToolAnnotation]`
+  attribute + post-build walker so spec-aware hosts (Claude Code) prompt
+  before invocation. (`add-embeddings-cli-and-tools`)
+- **Cold-start progress visibility.** When a progress-aware tool
+  (`find_definition`, `semantic_search`, `impact_of_change`, `module_summary`)
+  is invoked with a `progressToken` against a scope whose initial indexing
+  isn't finished, the server forwards per-scope phase progress (`opening
+  workspace` → `indexing` → `ready`) as `notifications/progress` for the
+  duration of the wait. The previously silent 10–60 s pause on cold-start
+  now narrates itself in the chat panel. The mechanism is a per-scope
+  `IIndexingProgressSource` exposed by `LiveIndexService` and a forwarding
+  subscription inside `ScopedExecution.WaitUntilReadyAsync`. (`improve-first-run-progress`)
+- **Onboarding CLI: `init`, `doctor`, `demo`.** Three new subcommands handle
+  first-run setup end-to-end. `sourcegraph-mcp init` is interactive by default
+  (or `--yes`-driven for CI); detects environment, picks MCP clients, and
+  writes per-client config files with merge-by-name semantics — first-class
+  support for Claude Code, **GitHub Copilot** (distinct `servers` / `type:
+  "stdio"` schema in `.vscode/mcp.json`), Cursor, Continue, and Claude
+  Desktop. Project-scoped writes are the default; user-scope writes require
+  explicit `--user-<client>` opt-in (or `--claude-desktop` for Claude Desktop,
+  which has no project equivalent). Existing client config files are merged
+  into, never overwritten — only the `sourcegraph` server entry is touched,
+  and `--force` is required to replace a differing existing entry. `doctor`
+  runs a read-only environment diagnostic with `pass | warn | fail` exit
+  codes (0 / 2 / 1) and a `--json` machine-readable mode. `demo` runs four
+  canned operations (`ping`, `graph_stats`, `search_symbols`,
+  `find_definition`) against the active scope and prints leaf-stamped
+  markdown — the same shape an agent sees, providing the "ah, it works"
+  confidence moment without an agent loop. Comment-aware degraded mode keeps
+  hand-edited JSONC configs from being silently round-tripped through the
+  parser. (`add-onboarding-cli`)
 - **`partial` scope status with per-project + per-file failure isolation.** A
   single bad project in a multi-project solution no longer marks the whole
   scope `degraded`. The Roslyn indexer pre-flight-probes each project's
@@ -41,6 +107,64 @@ below note which package the change applies to.
   pass an explicit `limit=`. (`output-budget-cap`)
 
 ### Added
+- **Generic tree-sitter language-indexer host.** New in-tree
+  `DevBitsLab.Mcp.SourceGraph.Indexing.TreeSitter` assembly with an abstract
+  `TreeSitterLanguageIndexer<TGrammarConfig>` base that future per-language
+  plugins (TypeScript, Python, Go, Rust, …) subclass. SDK 2.1.0 → 2.2.0 adds
+  `INodeKindMapper`, `IModuleResolver`, `LanguageIndexerOptions`, and
+  `ITreeSitterGrammarConfig` — the four contracts a tree-sitter-backed plugin
+  sits on. `TreeSitter.DotNet 1.3.0` is brought in transitively, shipping
+  `libtree-sitter` plus 28+ language grammar binaries across every target RID
+  (no first-party native packaging in this repo). Scope-config gains optional
+  `language` (kebab-case identifier) and `enrichment` (forward-declared,
+  carries one nested `lsp: { command, args }` block) fields. New
+  `sourcegraph-mcp scopes info <name> [--json]` CLI subcommand surfaces
+  identity / project set / language / enrichment for a single scope. No
+  schema changes — the host emits no rows of its own; concrete languages do.
+  (`add-tree-sitter-language-indexer-host`)
+- **Built-in TypeScript / JavaScript / TSX / JSX indexer.** New in-tree
+  `DevBitsLab.Mcp.SourceGraph.Indexing.TypeScript` assembly registered for
+  `.ts` / `.tsx` / `.js` / `.jsx`. Per-extension grammar dispatch (TypeScript
+  / TSX / JavaScript). Emits the eight TypeScript symbol kinds documented in
+  the design (function / class / interface / type-alias / enum / method /
+  field / variable / constant / namespace), call-expression and type-identifier
+  references, and JSX `instantiates` edges for PascalCase components carrying
+  a JSON-encoded `props` payload. Edge sources prefer the nearest enclosing
+  named declaration (function / class / const) and fall back to a synthesised
+  file-namespace symbol so `GraphStoreEmitter` can resolve every JSX edge at
+  flush time. Default scope excludes for `node_modules` / `dist` / `.next` /
+  `build` / `coverage` / `.cache` / `.parcel-cache` / `out` keep a fresh
+  install from indexing dependency trees. Lifts the canonical-key schemes
+  `js` / `ts` / `jsx` / `tsx` from reserved-rejected to reserved-accepted in
+  the SDK validator. New `BuiltInIndexers.RegisterAll(...)` helper centralises
+  the in-tree indexer set across the `serve` and `index` CLI paths.
+  Cross-file ref resolution (tsconfig `paths`, re-export chase) and LSP
+  enrichment via `typescript-language-server` are deferred to follow-up
+  changes. (`add-typescript-language-indexer`)
+- **Live `.sourcegraph.json` reload — no restart required.** New
+  `ScopeConfigWatcher` (mtime-polled at 200ms) plus `ScopeDiff` +
+  `ScopeRouter.Replace`/`Unregister` primitives feed
+  `LiveIndexService.OnConfigChangedAsync`, which routes each save through the
+  four delta kinds: **add** (new scope passes through the existing
+  `PrepareScopeAsync` → `RunInitialIndexAsync` → `StartWatcher` chain),
+  **remove** (host disposed, registry row dropped, on-disk per-scope DB
+  preserved as a re-add cache), **modify** (atomic-swap via
+  `ScopeRouter.Replace` with a 5s deferred-disposal grace window so in-flight
+  tool calls against the old host complete cleanly), and **default-scope**
+  flip (router metadata only, no scope is reindexed). Malformed saves are
+  parse-tolerant: the watcher logs at info and emits nothing, leaving the
+  running scope set untouched until the next valid save. File deletion (or
+  rename away from the repo root) reverts to the synthesised default. Plugin
+  changes (`plugins[]`) are explicitly NOT live-reloadable: a save that
+  touches the array logs a warning and otherwise applies any concurrent
+  scope deltas. The `--solution` CLI override disables the watcher (the JSON
+  is bypassed at startup, so the live path follows suit). Watcher uses mtime
+  polling rather than `FileSystemWatcher` for cross-platform reliability —
+  macOS's FSEventStream backend doesn't deliver events for files at the
+  watched directory's root, and 200ms latency is below any human's edit
+  cadence. `SOURCEGRAPH_SCOPE_REPLACE_GRACE_MS` env var lets test harnesses
+  shrink the grace window. (`watch-scope-config`)
+
 - **Two new MCP tools for payload-aware edge walks: `find_data_bindings`
   and `find_event_handlers`.** Specialised tool surface over the
   `binds-path` and `handles-event` edge kinds, with named parameter knobs

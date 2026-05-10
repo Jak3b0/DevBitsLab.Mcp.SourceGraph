@@ -11,6 +11,10 @@ internal sealed class CommandLine
     public string? Model { get; private init; }
     /// <summary>Disable the embedding pipeline (no model download, no vec0 writes, semantic_search returns disabled-message).</summary>
     public bool NoEmbeddings { get; private init; }
+    /// <summary>True when <c>--no-model-download</c> was passed (or <c>SOURCEGRAPH_NO_MODEL_DOWNLOAD=1</c>);
+    /// disables auto-fetching the embedding model. With this flag the pipeline runs only if the cache is
+    /// already populated; otherwise it degrades to the same shape as <c>--no-embeddings</c>.</summary>
+    public bool NoModelDownload { get; private init; }
     /// <summary>True when <c>--no-history</c> was passed; disables the git-blame pipeline.</summary>
     public bool NoHistory { get; private init; }
     /// <summary>True when <c>--no-instructions</c> was passed; suppresses the server-published
@@ -22,6 +26,9 @@ internal sealed class CommandLine
     /// <summary>True when <c>--strict</c> was passed; consumed by <c>vocabulary list</c> to exit
     /// non-zero when drift candidates are reported.</summary>
     public bool Strict { get; private init; }
+    /// <summary>True when <c>--all</c> was passed; consumed by <c>embeddings remove</c> to wipe
+    /// every cached model directory rather than just the active one.</summary>
+    public bool All { get; private init; }
     /// <summary>The scope id passed via <c>--scope &lt;id&gt;</c>; consumed by <c>vocabulary list</c>
     /// to filter the output to a single scope. Null means every scope.</summary>
     public string? ScopeId { get; private init; }
@@ -33,6 +40,30 @@ internal sealed class CommandLine
     public int? QueryRowLimit { get; private init; }
     /// <summary>Positional rest args (used by `scopes add`, `scopes remove`, etc.).</summary>
     public IReadOnlyList<string> Positional { get; private init; } = Array.Empty<string>();
+    /// <summary>True when <c>--yes</c>/<c>-y</c> was passed; consumed by <c>init</c> to skip every interactive prompt.</summary>
+    public bool Yes { get; private init; }
+    /// <summary>True when <c>--force</c> was passed; consumed by <c>init</c> to overwrite an existing differing <c>sourcegraph</c> server entry without prompting.</summary>
+    public bool Force { get; private init; }
+    /// <summary>True when <c>--print-only</c> was passed; consumed by <c>init</c> to emit per-client config snippets to stdout without writing files.</summary>
+    public bool PrintOnly { get; private init; }
+    /// <summary>Tristate: <c>true</c> = <c>--prewarm</c>, <c>false</c> = <c>--no-prewarm</c>, <c>null</c> = unspecified (use the default for the active mode: on under interactive, off under <c>--yes</c>).</summary>
+    public bool? Prewarm { get; private init; }
+    /// <summary>Selected install mode for <c>init</c>'s emitted <c>command</c> + <c>args</c>: <c>global</c> (default), <c>local-tool</c>, or <c>in-repo</c>.</summary>
+    public string? InstallMode { get; private init; }
+    /// <summary>Every <c>--client &lt;id&gt;</c> value (init-only). Empty means "use auto-detected defaults".</summary>
+    public IReadOnlyList<string> Clients { get; private init; } = Array.Empty<string>();
+    /// <summary>Every <c>--no-&lt;client&gt;</c> flag (init-only). Used to drop clients from the auto-detected set.</summary>
+    public IReadOnlyCollection<string> NoClients { get; private init; } = Array.Empty<string>();
+    /// <summary>Every <c>--user-&lt;client&gt;</c> flag (init-only). Switches that client's target from its project-scoped path to its user-scoped path.</summary>
+    public IReadOnlyCollection<string> UserClients { get; private init; } = Array.Empty<string>();
+    /// <summary>True when <c>--claude-desktop</c> was passed; required to opt Claude Desktop into init since it has no project-scoped path.</summary>
+    public bool ClaudeDesktop { get; private init; }
+    /// <summary>Every <c>--solution</c> value, in order. <see cref="SolutionPath"/> mirrors the last entry for back-compat with single-valued consumers.</summary>
+    public IReadOnlyList<string> Solutions { get; private init; } = Array.Empty<string>();
+    /// <summary>True when <c>--json</c> was passed; consumed by <c>doctor</c> to emit a machine-readable structured document instead of glyph output, and by <c>scopes info</c> to emit a stable JSON shape mirroring the markdown sections.</summary>
+    public bool Json { get; private init; }
+    /// <summary>True when <c>--no-color</c> was passed; consumed by <c>demo</c> to suppress the green-leaf glyph on per-line output. Independent of <see cref="NoLeaf"/>, which is the server-wide opt-out.</summary>
+    public bool NoColor { get; private init; }
 
     public static CommandLine Parse(string[] args)
     {
@@ -45,14 +76,29 @@ internal sealed class CommandLine
         string? model = null;
         string? root = null;
         var noEmbeddings = false;
+        var noModelDownload = string.Equals(
+            Environment.GetEnvironmentVariable("SOURCEGRAPH_NO_MODEL_DOWNLOAD"), "1", StringComparison.Ordinal);
         var noHistory = false;
         var noInstructions = false;
         var noLeaf = false;
         var strict = false;
+        var all = false;
         string? scopeId = null;
         int? queryTimeoutSeconds = null;
         int? queryRowLimit = null;
         var positional = new List<string>();
+        var yes = false;
+        var force = false;
+        var printOnly = false;
+        bool? prewarm = null;
+        string? installMode = null;
+        var clients = new List<string>();
+        var noClients = new HashSet<string>(StringComparer.Ordinal);
+        var userClients = new HashSet<string>(StringComparer.Ordinal);
+        var claudeDesktop = false;
+        var solutions = new List<string>();
+        var json = false;
+        var noColor = false;
 
         for (var i = 1; i < args.Length; i++)
         {
@@ -63,6 +109,7 @@ internal sealed class CommandLine
                     return new CommandLine { Subcommand = subcommand, ShowHelp = true };
                 case "--solution" or "-s":
                     solution = ExpandTokens(RequireArg(args, ref i, a));
+                    solutions.Add(solution);
                     break;
                 case "--db":
                     db = ExpandTokens(RequireArg(args, ref i, a));
@@ -76,6 +123,9 @@ internal sealed class CommandLine
                 case "--no-embeddings":
                     noEmbeddings = true;
                     break;
+                case "--no-model-download":
+                    noModelDownload = true;
+                    break;
                 case "--no-history":
                     noHistory = true;
                     break;
@@ -88,6 +138,9 @@ internal sealed class CommandLine
                 case "--strict":
                     strict = true;
                     break;
+                case "--all":
+                    all = true;
+                    break;
                 case "--scope":
                     scopeId = RequireArg(args, ref i, a);
                     break;
@@ -96,6 +149,44 @@ internal sealed class CommandLine
                     break;
                 case "--query-row-limit":
                     queryRowLimit = RequirePositiveInt(args, ref i, a);
+                    break;
+                case "--yes" or "-y":
+                    yes = true;
+                    break;
+                case "--force":
+                    force = true;
+                    break;
+                case "--print-only":
+                    printOnly = true;
+                    break;
+                case "--prewarm":
+                    prewarm = true;
+                    break;
+                case "--no-prewarm":
+                    prewarm = false;
+                    break;
+                case "--install-mode":
+                    installMode = RequireArg(args, ref i, a);
+                    break;
+                case "--client":
+                    clients.Add(RequireArg(args, ref i, a));
+                    break;
+                case "--claude-desktop":
+                    claudeDesktop = true;
+                    break;
+                case "--no-claude-code" or "--no-copilot" or "--no-cursor"
+                    or "--no-continue" or "--no-claude-desktop":
+                    noClients.Add(a.Substring(5));
+                    break;
+                case "--user-claude-code" or "--user-copilot" or "--user-cursor"
+                    or "--user-continue":
+                    userClients.Add(a.Substring(7));
+                    break;
+                case "--json":
+                    json = true;
+                    break;
+                case "--no-color":
+                    noColor = true;
                     break;
                 default:
                     if (subcommand == "index" && solution is null && !a.StartsWith('-'))
@@ -126,14 +217,28 @@ internal sealed class CommandLine
             RepoRoot = root,
             Model = model,
             NoEmbeddings = noEmbeddings,
+            NoModelDownload = noModelDownload,
             NoHistory = noHistory,
             NoInstructions = noInstructions,
             NoLeaf = noLeaf,
             Strict = strict,
+            All = all,
             ScopeId = scopeId,
             QueryTimeoutSeconds = queryTimeoutSeconds,
             QueryRowLimit = queryRowLimit,
             Positional = positional,
+            Yes = yes,
+            Force = force,
+            PrintOnly = printOnly,
+            Prewarm = prewarm,
+            InstallMode = installMode,
+            Clients = clients,
+            NoClients = noClients,
+            UserClients = userClients,
+            ClaudeDesktop = claudeDesktop,
+            Solutions = solutions,
+            Json = json,
+            NoColor = noColor,
         };
     }
 
@@ -192,12 +297,12 @@ internal sealed class CommandLine
         sourcegraph-mcp — live code source graph MCP server for .NET
 
         Usage:
-          sourcegraph-mcp serve [--solution <path>] [--db <path>] [--root <repo>] [--model <id>] [--no-embeddings] [--no-history]
+          sourcegraph-mcp serve [--solution <path>] [--db <path>] [--root <repo>] [--model <id>] [--no-embeddings] [--no-model-download] [--no-history]
               Run the MCP stdio server. With --solution given, registers an implicit single-scope
               `default` mapped to that solution. Otherwise reads `.sourcegraph.json` from --root
               (or CWD) for multi-scope configuration.
 
-          sourcegraph-mcp index <solution-path> [--db <path>] [--model <id>] [--no-embeddings] [--no-history]
+          sourcegraph-mcp index <solution-path> [--db <path>] [--model <id>] [--no-embeddings] [--no-model-download] [--no-history]
               Build/refresh the graph database from the given .sln file, then exit.
 
           sourcegraph-mcp stats [--db <path>]
@@ -206,12 +311,37 @@ internal sealed class CommandLine
           sourcegraph-mcp clear [--db <path>]
               Delete all rows from the graph database (schema preserved).
 
+          sourcegraph-mcp init [--yes] [--client <id>] [--no-<client>] [--user-<client>]
+                                [--claude-desktop] [--solution <path>] [--install-mode <mode>]
+                                [--print-only] [--force] [--prewarm | --no-prewarm]
+                                [--no-embeddings] [--no-history] [--root <path>]
+              Interactive (default) or flag-driven onboarding flow. Detects environment, picks
+              MCP clients, writes per-client config files (project-scoped by default), and
+              optionally pre-warms the index. First-class clients: claude-code, copilot, cursor,
+              continue, claude-desktop. Use --print-only for a CI-friendly preview that writes
+              nothing.
+
+          sourcegraph-mcp doctor [--root <path>] [--json]
+              Read-only environment diagnostic. Reports SDK/git/solution/config/per-client status.
+              Exit 0 = all-pass; 2 = at least one warning; 1 = hard failure. --json emits a
+              machine-readable {checks, exit_code} document instead of glyph output.
+
+          sourcegraph-mcp demo [--scope <id>] [--root <path>] [--no-color]
+              Run four canned operations (ping, graph_stats, search_symbols, find_definition)
+              against the active scope's DB and print leaf-stamped markdown — the same shape
+              an MCP client would see. Provides the "ah, it works" confidence moment.
+
           sourcegraph-mcp init-scopes [--root <path>]
               Discover .slnx (or .sln) files at <root> (default: cwd) and write a .sourcegraph.json
               listing one scope per discovered solution.
 
           sourcegraph-mcp scopes list [--root <path>]
               List the scopes declared in the repo's .sourcegraph.json (or the synthesised default).
+
+          sourcegraph-mcp scopes info <name> [--root <path>] [--json]
+              Detailed view of one scope: identity, project set, optional `language` field,
+              optional `enrichment` block. With --json, emits a stable shape mirroring the markdown
+              sections.
 
           sourcegraph-mcp scopes add <name> --solution <path> [--root <path>] [--isolated]
               Add a scope to .sourcegraph.json. <name> is the kebab-case id; --solution gives the
@@ -228,6 +358,25 @@ internal sealed class CommandLine
               indexers emitting near-duplicate identifiers (e.g. `bind-path` vs `binds-path`).
               Exits 0 by default; with --strict, exits 2 when any drift candidate is reported.
 
+          sourcegraph-mcp embeddings status [--model <id>]
+              Print the cache directory, active model id and dimension, per-file presence/size/
+              SHA-256, and the free disk on the cache volume. Useful as a first stop when
+              `--no-model-download` warned the cache was empty.
+
+          sourcegraph-mcp embeddings pull [--model <id>]
+              Synchronously download the active (or --model) manifest into the cache. Idempotent:
+              a populated cache is a no-op.
+
+          sourcegraph-mcp embeddings remove [--model <id>] [--all]
+              Clear the cache for the active model (default), one specific --model, or every
+              cached model with --all. Combining --model with --all is rejected.
+
+          sourcegraph-mcp embeddings verify [--model <id>]
+              Recompute SHAs of every cached file. The default model ships with pinned SHAs —
+              exits 2 on mismatch. Override `--model <id>` paths use a best-effort manifest with
+              no pinned SHAs; in that case prints the computed SHA with an "informational only"
+              note and exits 0.
+
         Common flags:
           --root <path>     Repository root used for `.sourcegraph.json` discovery and scope DBs.
                             Defaults to the directory holding `--solution`, then CWD.
@@ -235,6 +384,12 @@ internal sealed class CommandLine
                             jinaai/jina-embeddings-v2-base-code). Applies to serve/index.
           --no-embeddings   Skip the embedding pipeline entirely. semantic_search returns the
                             disabled-message; every other tool works as before.
+          --no-model-download
+                            Disable auto-fetching the embedding model from Hugging Face. With this
+                            flag the pipeline runs only when the cache is already populated;
+                            otherwise it degrades to the same shape as --no-embeddings. Use in
+                            air-gapped environments where outbound network is denied. Equivalent
+                            to setting SOURCEGRAPH_NO_MODEL_DOWNLOAD=1.
           --no-history      Disable the git-blame history pipeline. Use in environments without
                             git on PATH or in CI runs where per-symbol history isn't needed.
           --no-instructions Don't publish server-side usage guidance in the MCP `initialize`

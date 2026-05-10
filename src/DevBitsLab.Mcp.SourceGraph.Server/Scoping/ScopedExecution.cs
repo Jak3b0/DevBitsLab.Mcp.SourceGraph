@@ -1,6 +1,7 @@
 using System.Text;
 using DevBitsLab.Mcp.SourceGraph.Server.Tools.Output;
 using DevBitsLab.Mcp.SourceGraph.Storage;
+using ModelContextProtocol;
 using ModelContextProtocol.Protocol;
 
 namespace DevBitsLab.Mcp.SourceGraph.Server.Scoping;
@@ -21,7 +22,8 @@ public static class ScopedExecution
         ScopeRouter router,
         object? scope,
         Func<ScopeHost, Task<string>> onResolved,
-        CancellationToken ct)
+        CancellationToken ct,
+        IProgress<ProgressNotificationValue>? progress = null)
     {
         var resolution = router.Resolve(scope);
         if (resolution.IsError) return resolution.ErrorMessage!;
@@ -43,7 +45,7 @@ public static class ScopedExecution
         if (hosts.Count == 1)
         {
             var host = hosts[0];
-            await WaitUntilReadyAsync(host, ct).ConfigureAwait(false);
+            await WaitUntilReadyAsync(host, ct, progress).ConfigureAwait(false);
             if (host.Status == "degraded")
             {
                 return $"scope `{host.Scope.Id}` is degraded: {host.StatusMessage ?? "(no message)"}";
@@ -57,7 +59,7 @@ public static class ScopedExecution
         var sb = new StringBuilder();
         var results = await Task.WhenAll(hosts.Select(async h =>
         {
-            await WaitUntilReadyAsync(h, ct).ConfigureAwait(false);
+            await WaitUntilReadyAsync(h, ct, progress).ConfigureAwait(false);
             if (h.Status == "degraded")
             {
                 return (h.Scope.Id, $"scope is degraded: {h.StatusMessage ?? "(no message)"}");
@@ -107,7 +109,8 @@ public static class ScopedExecution
         ScopeRouter router,
         object? scope,
         Func<ScopeHost, Task<CallToolResult>> onResolved,
-        CancellationToken ct)
+        CancellationToken ct,
+        IProgress<ProgressNotificationValue>? progress = null)
     {
         var resolution = router.Resolve(scope);
         if (resolution.IsError) return DiagnosticResult.Error(resolution.ErrorMessage!);
@@ -118,20 +121,32 @@ public static class ScopedExecution
         if (hosts.Count == 1)
         {
             var host = hosts[0];
-            await WaitUntilReadyAsync(host, ct).ConfigureAwait(false);
+            await WaitUntilReadyAsync(host, ct, progress).ConfigureAwait(false);
             if (host.Status == "degraded")
             {
                 return DiagnosticResult.Error(
                     $"scope `{host.Scope.Id}` is degraded: {host.StatusMessage ?? "(no message)"}");
             }
-            return await onResolved(host).ConfigureAwait(false);
+            try
+            {
+                return await onResolved(host).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (CorruptionGuard.IsCorruptionError(ex) && CorruptionPolicy.Registry is not null)
+            {
+                // Reactive verification: run integrity_check, mark degraded if confirmed,
+                // optionally fire autonomous rebuild. Original exception still rethrown so the
+                // agent sees the failure once; subsequent calls hit the degraded short-circuit.
+                await CorruptionGuard.VerifyAndMarkAsync(host, CorruptionPolicy.Registry,
+                    ex, CorruptionPolicy.Logger, ct).ConfigureAwait(false);
+                throw;
+            }
         }
 
         // Multi-host fan-out: parallel-run, then concatenate Content lists with a per-scope header.
         // Structured content is dropped in the merge — we don't have a typed merge strategy yet.
         var perHost = await Task.WhenAll(hosts.Select(async h =>
         {
-            await WaitUntilReadyAsync(h, ct).ConfigureAwait(false);
+            await WaitUntilReadyAsync(h, ct, progress).ConfigureAwait(false);
             if (h.Status == "degraded")
             {
                 return (h.Scope.Id, DiagnosticResult.Error($"scope is degraded: {h.StatusMessage ?? "(no message)"}"));
@@ -144,6 +159,13 @@ public static class ScopedExecution
             catch (OperationCanceledException) { throw; }
             catch (Exception ex)
             {
+                if (CorruptionGuard.IsCorruptionError(ex) && CorruptionPolicy.Registry is not null)
+                {
+                    // Don't bring down the whole multi-host fan-out on one corrupt scope —
+                    // verify, mark degraded, and continue with the structured per-scope error.
+                    await CorruptionGuard.VerifyAndMarkAsync(h, CorruptionPolicy.Registry,
+                        ex, CorruptionPolicy.Logger, ct).ConfigureAwait(false);
+                }
                 return (h.Scope.Id, DiagnosticResult.Error($"scope query failed: {ex.Message}"));
             }
         })).ConfigureAwait(false);
@@ -178,10 +200,40 @@ public static class ScopedExecution
     /// <c>"indexing"</c>; the wait is bounded by the caller's <see cref="CancellationToken"/> so a
     /// stuck index can't hang a tool call indefinitely. No-op when the scope already settled.
     /// </summary>
-    private static async Task WaitUntilReadyAsync(ScopeHost host, CancellationToken ct)
+    private static async Task WaitUntilReadyAsync(
+        ScopeHost host,
+        CancellationToken ct,
+        IProgress<ProgressNotificationValue>? progress = null)
     {
+        // A scope that has already settled out of `"indexing"` doesn't need to be waited on —
+        // even if the Ready TCS hasn't been signalled (test fixtures often build a host directly
+        // with Status = "ok" and skip MarkReady). Checking Status first keeps such fixtures from
+        // hanging forever; the Ready.IsCompleted check below is the production-path short-circuit
+        // for hosts whose lifecycle is driven by LiveIndexService.
         if (host.Status != "indexing") return;
-        await host.Ready.WaitAsync(ct).ConfigureAwait(false);
+        if (host.Ready.IsCompleted) return;
+        if (progress is null)
+        {
+            // No-op forwarder: the SDK injects a non-null IProgress for every tool call (including
+            // the no-op for clients that didn't request progress). Tools that aren't yet
+            // progress-aware pass `null` here — fall back to today's silent wait.
+            await host.Ready.WaitAsync(ct).ConfigureAwait(false);
+            return;
+        }
+        // Cold-start forwarding: subscribe to the scope's progress source so each phase
+        // emission is forwarded as a wire-level notifications/progress message tagged with the
+        // request's progressToken. Unsubscribe in finally so a subsequent emission (e.g. from a
+        // late MarkReady) doesn't fire on this call's IProgress after the wait completes.
+        Action<ProgressNotificationValue> handler = progress.Report;
+        host.ProgressSource.Reported += handler;
+        try
+        {
+            await host.Ready.WaitAsync(ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            host.ProgressSource.Reported -= handler;
+        }
     }
 
     /// <summary>

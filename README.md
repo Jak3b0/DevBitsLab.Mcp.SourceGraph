@@ -25,6 +25,7 @@ calls with a single structured tool call:
 - [Why not just use Roslyn directly?](#why-not-just-use-roslyn-directly)
 - [Requirements](#requirements)
 - [Installation](#installation)
+- [Quickstart (60 seconds)](#quickstart-60-seconds)
 - [Wiring it into an MCP client](#wiring-it-into-an-mcp-client)
 - [MCP tools](#mcp-tools)
 - [Structured output and resource links](#structured-output-and-resource-links)
@@ -52,12 +53,27 @@ calls with a single structured tool call:
   Five XAML symbol kinds, eight cross-language edge kinds, plus
   `xaml-attached-property` annotations for `Grid.Row` / `DockPanel.Dock` /
   etc.
+- **TypeScript / JavaScript / TSX / JSX indexing.** Built-in tree-sitter-backed
+  indexer for `.ts` / `.tsx` / `.js` / `.jsx`, covering function / class /
+  interface / type-alias / enum / namespace / const / let declarations, call-site
+  references, and JSX `instantiates` edges (with prop-list payload) for
+  PascalCase components. Default excludes (`node_modules`, `dist`, `.next`,
+  `build`, `coverage`, `.cache`, `.parcel-cache`, `out`) keep a fresh
+  install from indexing dependency trees. Cross-file ref resolution is
+  intra-file at this version; tsconfig `paths`-aware module resolution +
+  optional `typescript-language-server` enrichment ship as follow-ups.
 - **FTS5 name search.** Trigram fragment matching for cases where you only
   remember "`…Greet…Async`".
 - **Optional code-aware semantic search.** ONNX embeddings (default model:
   `jinaai/jina-embeddings-v2-base-code`) stored in `sqlite-vec` for
-  natural-language queries like *"find the rate-limiting code"*. Disable with
-  `--no-embeddings` to skip the model download entirely.
+  natural-language queries like *"find the rate-limiting code"*. The model
+  (~640 MB) is auto-fetched from Hugging Face on first start into a per-user cache
+  directory resolved by `ModelStore.DefaultCacheDir()` (honours `XDG_CACHE_HOME` /
+  `LOCALAPPDATA` / `~/.cache` per platform — e.g. `~/.cache/devbitslab.sourcegraph/models/`
+  on Linux/macOS, `%LOCALAPPDATA%\devbitslab.sourcegraph\models\` on Windows); subsequent
+  starts use the cache.
+  Disable with `--no-embeddings` to skip the pipeline entirely, or
+  `--no-model-download` to stay offline once the cache is pre-populated.
 - **Attribute search.** Find every symbol carrying a given attribute, optionally
   filtered by serialised argument substring.
 - **Roslyn diagnostics indexing.** Query analyzer warnings/errors captured at
@@ -89,7 +105,7 @@ cheap structural queries against a stable solution.
 | **Initial indexing** | `MSBuildWorkspace` load (10–60 s on a real solution), paid in every consumer process | Scope open + full indexing on host start (and after `clear` or workspace reloads); tool calls await `ScopeHost.Ready` until the pass completes. Borne once by the host, shared across every connected client. |
 | **Steady-state query** | Fast in-memory queries against the loaded workspace | Milliseconds — SQLite query against the warm DB; incremental re-indexing handled by the watcher (see *Freshness* below) |
 | **Search shape** | Exact-identity lookups (`SymbolFinder.FindReferencesAsync`) | Same exact lookups *plus* FTS5 fragment search and ONNX semantic search |
-| **Languages** | C# / VB only | C# + XAML today, with cross-language joins; plugin SDK for more |
+| **Languages** | C# / VB only | C# + XAML + TypeScript / JavaScript / TSX / JSX today, with cross-language joins; plugin SDK for more |
 | **Multi-solution** | One workspace per solution | Native scope router with isolation flags for vendored / generated code |
 | **Freshness** | Caller's problem | File watcher + `.git/HEAD` watcher with 200 ms debounce |
 | **Semantic accuracy** | 100% live | Snapshot-accurate, refreshed on file changes |
@@ -116,7 +132,36 @@ Make sure `~/.dotnet/tools` is on your `PATH`. The installed command is
 `sourcegraph-mcp`. You can also pin a version per repository — see
 [Pin a version per repo](#pin-a-version-per-repo) below.
 
+## Quickstart (60 seconds)
+
+From a fresh clone of any .NET solution:
+
+```bash
+dotnet tool install -g DevBitsLab.Mcp.SourceGraph.Tool
+sourcegraph-mcp init        # interactive: detects clients, writes .mcp.json / .vscode/mcp.json / etc.
+sourcegraph-mcp demo        # canned probe: ping → graph_stats → search_symbols → find_definition
+```
+
+`init` writes only **project-scoped** files by default (`.mcp.json`,
+`.vscode/mcp.json`, `.cursor/mcp.json`, `.continue/mcp/sourcegraph.yaml`).
+User-scope writes (or Claude Desktop) require explicit per-client flags.
+`demo` reads the indexed scope and prints the same leaf-stamped markdown
+your agent will see — instant verification.
+
+Other useful first-run commands:
+
+```bash
+sourcegraph-mcp init --yes --client copilot,claude-code --print-only   # CI-friendly preview
+sourcegraph-mcp doctor                                                  # environment diagnostic
+sourcegraph-mcp init --prewarm                                          # also pre-build the index
+```
+
 ## Wiring it into an MCP client
+
+`sourcegraph-mcp init` writes the right config for each client below
+automatically. The snippets here document what each writer produces — useful
+if you'd rather paste manually, or if you want to understand the schema delta
+between clients.
 
 ### Claude Code (project-scoped, committed to the repo)
 
@@ -140,6 +185,86 @@ server falls back to the `WORKSPACE_FOLDER`, `CLAUDE_PROJECT_DIR`, or
 expanded against the process environment, so paths like
 `${HOME}/repos/my.slnx` work too.
 
+### GitHub Copilot (`.vscode/mcp.json`)
+
+Copilot's VS Code MCP integration uses a **distinct schema** from Claude Code's
+— top-level key is `servers` (not `mcpServers`), and each server entry carries
+an explicit `type: "stdio"` field:
+
+```json
+{
+  "servers": {
+    "sourcegraph": {
+      "type": "stdio",
+      "command": "sourcegraph-mcp",
+      "args": ["serve", "--solution", "${workspaceFolder}/MySolution.slnx"]
+    }
+  }
+}
+```
+
+Place this at `.vscode/mcp.json` at the repo root. Pasting the Claude Code
+snippet here would not work — Copilot silently ignores files that don't match
+its schema.
+
+### Cursor
+
+Cursor uses Claude Code's `mcpServers` shape. Place at `.cursor/mcp.json`
+(project-scope) or `~/.cursor/mcp.json` (user-scope):
+
+```json
+{
+  "mcpServers": {
+    "sourcegraph": {
+      "command": "sourcegraph-mcp",
+      "args": ["serve", "--solution", "${workspaceFolder}/MySolution.slnx"]
+    }
+  }
+}
+```
+
+### Continue
+
+Continue uses YAML, one server per file. Place at
+`.continue/mcp/sourcegraph.yaml`:
+
+```yaml
+name: sourcegraph
+command: sourcegraph-mcp
+args:
+  - serve
+  - --solution
+  - ${workspaceFolder}/MySolution.slnx
+```
+
+### Claude Desktop
+
+Claude Desktop has no project-scoped config — all MCP servers live in the
+platform-specific user config:
+
+| OS | Path |
+|---|---|
+| macOS | `~/Library/Application Support/Claude/claude_desktop_config.json` |
+| Windows | `%APPDATA%\Claude\claude_desktop_config.json` |
+| Linux | `~/.config/Claude/claude_desktop_config.json` |
+
+The shape matches Claude Code:
+
+```json
+{
+  "mcpServers": {
+    "sourcegraph": {
+      "command": "sourcegraph-mcp",
+      "args": ["serve", "--solution", "/abs/path/to/MySolution.slnx"]
+    }
+  }
+}
+```
+
+Note: `${workspaceFolder}` doesn't apply at the user-scope; use absolute paths
+or set `MCP_WORKSPACE_FOLDER` in your shell init. `init --claude-desktop`
+generates the correct file for you.
+
 ### Pin a version per repo
 
 ```bash
@@ -148,14 +273,9 @@ dotnet tool install DevBitsLab.Mcp.SourceGraph.Tool
 git add .config/dotnet-tools.json
 ```
 
-Collaborators run `dotnet tool restore` once. Your `.mcp.json` then invokes
-`dotnet sourcegraph-mcp serve …` — no global install required.
-
-### Cursor / Claude Desktop / Continue
-
-Use the same `command` + `args` shape inside each client's configuration file
-(for example `~/.cursor/mcp.json`, `claude_desktop_config.json`, or
-Continue's MCP block).
+Collaborators run `dotnet tool restore` once. Pass `--install-mode local-tool`
+to `init` to have the writers emit `command: "dotnet"` + `args: ["sourcegraph-mcp", ...]`
+instead of the global-install shape.
 
 ### Multi-scope monorepo
 
@@ -222,8 +342,15 @@ to the client at handshake time.
 | Tool | Purpose |
 |---|---|
 | `list_scopes` | Enumerate registered scopes (id, name, root, project count, last-indexed time, status, isolation flag) |
+| `verify_scope` | Read-only per-scope health snapshot: schema version, status + message, row counts, `PRAGMA integrity_check` result, and a 20-file drift sample (count of files whose on-disk SHA-256 differs from the DB). Call before invoking repair tools. |
+| `repair_scope` | Recover one named scope. `mode = "minimal"` runs integrity check (refusing on corruption), prunes orphan embeddings, and retry-wraps a workspace reload. `mode = "rebuild"` archives the current DB to `orphans/<id>-rebuild-<ts>.db` and cold-indexes from sources. Single-scope only. |
+| `reconcile_drift` | Walk a scope's source tree, compare each file's on-disk SHA-256 to the DB, and apply the symmetric difference (reindex changed + index added + remove vanished). Use when results look stale or after a long offline period. `dry_run` previews without applying. |
 | `graph_stats` | Counts of files / symbols / references / edges — confirm the index is populated |
 | `usage_stats` | Per-tool call count, error count, latency, average response size, last-called time for the current process |
+| `embeddings_status` | Inspect the embedding model cache (read-only): cache directory, model id + dimension, per-file presence/size/SHA, free disk |
+| `embeddings_pull` | Synchronously download the embedding model manifest into the cache (idempotent; mutating tool — host should confirm) |
+| `embeddings_remove` | Delete the cache directory for the active model (default), one specific model, or every cached model with `all=true` (**destructive** — host should confirm) |
+| `embeddings_verify` | Recompute SHAs of every cached file and compare against the manifest. Default model has pinned SHAs (mismatch → `isError=true`); override `--model` paths report `match=null` (informational only) |
 | `ping` | Health check — returns `pong @ <UTC ISO-8601>` |
 
 ### Ad-hoc queries (escape hatch)
@@ -451,6 +578,14 @@ A `.sourcegraph.json` at the repo root opts a project into multi-scope mode:
 - `isolated: true` excludes a scope from `scope = "*"` fan-out — useful for
   vendored or generated code that shouldn't pollute references on production
   symbols.
+- `language` (string, optional, kebab-case) declares the primary language
+  for scopes whose project-set is glob-based; hint to indexer dispatch when
+  the same file extension could plausibly be claimed by multiple plugins.
+  No closed-list enforcement (soft-registry posture).
+- `enrichment` (object, optional) is a forward-declared block carrying one
+  nested `lsp: { command, args }` field. Loaded and surfaced via
+  `scopes info`, but no first-party plugin consumes it at this version —
+  the first runtime use lands with the TypeScript indexer.
 - Without a `.sourcegraph.json` and without `--solution`, a synthesised
   `default` scope keeps single-solution users working unchanged.
 - The legacy single-database layout (`.sourcegraph/graph.db`) is migrated to
@@ -459,6 +594,10 @@ A `.sourcegraph.json` at the repo root opts a project into multi-scope mode:
   `solutions`-based scopes. Scopes declared via `projects` or `paths` are
   accepted by the config loader but are not indexed by the live server yet —
   prefer `solutions` for now.
+- A running server picks up `.sourcegraph.json` edits live (no restart). Adds,
+  removes, modifications, and `default_scope` changes flow through immediately;
+  malformed saves are tolerated and never tear down working scopes. Plugin
+  entries (`plugins[]`) still require a restart to apply.
 
 Every tool accepts an optional `scope` parameter — pass an id, a
 comma-separated list, or `"*"` to fan out.
@@ -509,13 +648,21 @@ sourcegraph-mcp <subcommand> [options]
 | `index <solution>` | Build/refresh the database for a single solution, then exit. Useful in CI. |
 | `stats` | Print counts of files / symbols / references / edges in the database. |
 | `clear` | Delete all rows from the database (schema preserved). |
-| `init-scopes` | Discover `.slnx`/`.sln` files at `--root` (default: CWD) and write a starter `.sourcegraph.json`. |
+| `init [--yes] [--client <id>] [--no-<client>] [--user-<client>] [--claude-desktop] [--print-only] [--force] [--prewarm] [--install-mode <mode>]` | Interactive (default) or flag-driven onboarding flow. Detects environment, picks MCP clients, writes per-client config files (project-scoped by default), and optionally pre-warms the index. First-class clients: `claude-code`, `copilot`, `cursor`, `continue`, `claude-desktop`. Use `--print-only` for a CI-friendly preview that writes nothing. |
+| `doctor [--json]` | Read-only environment diagnostic. Reports SDK / git / solution / config / per-client status. Exit `0` = all-pass; `2` = at least one warning; `1` = hard failure. `--json` emits a machine-readable `{checks, exit_code}` document. |
+| `demo [--scope <id>] [--no-color]` | Run four canned operations (`ping`, `graph_stats`, `search_symbols`, `find_definition`) against the active scope and print leaf-stamped markdown — the same shape an MCP client would see. Provides the "ah, it works" confidence moment without an agent loop. Exits `2` if the scope has zero symbols indexed. |
+| `init-scopes` | Discover `.slnx`/`.sln` files at `--root` (default: CWD) and write a starter `.sourcegraph.json`. Continues to work standalone; `init` invokes the same scaffolding internally when multi-solution is detected. |
 | `scopes list [--root <path>]` | List the scopes declared in `.sourcegraph.json`. |
+| `scopes info <name> [--root <path>] [--json]` | Detailed view of one scope: identity, project set, optional `language` field, optional `enrichment` block. With `--json`, emits a stable JSON shape. |
 | `scopes add <name> --solution <path> [--root <path>] [--isolated]` | Add a scope. The file is created on first use. |
 | `scopes remove <name> [--root <path>]` | Remove a scope. |
 | `plugins list [--root <path>]` | List plugins declared in `.sourcegraph.json` with their version, status, registered contracts, and source path. |
 | `plugins info <name> [--root <path>]` | Show the full record for one plugin: status reason, declared interfaces, registered tool names. |
 | `vocabulary list [--root <path>] [--scope <id>] [--strict]` | Per-scope diagnostic over the soft-registry kind vocabulary. Lists `edge_kinds` / `symbol_kinds` / `annotation_flavors` with each entry tagged by source (`sdk` constant vs `plugin: <id>@<version>` vs `unknown`) and live emission count, plus a "Drift candidates" section flagging Levenshtein-near pairs (`bind-path` ~ `binds-path`) within the same scope. Default exit `0`; `--strict` exits `2` on any drift candidate so CI can wire it as a gate. |
+| `embeddings status [--model <id>]` | Inspect the embedding model cache: cache directory, active model + dimension, per-file presence/size/SHA-256, free disk on the cache volume. First stop when `--no-model-download` warned the cache was empty. |
+| `embeddings pull [--model <id>]` | Synchronously download the active (or `--model`) manifest into the cache. Idempotent — a populated cache is a no-op. Useful as a pre-flight before air-gapping. |
+| `embeddings remove [--model <id>] [--all]` | Clear the cache for the active model (default), one specific `--model`, or every cached model with `--all`. Combining `--model` and `--all` is rejected. |
+| `embeddings verify [--model <id>]` | Recompute SHA-256 of every cached file and compare against the manifest. Default model has pinned SHAs — exits `2` on mismatch. Override `--model <id>` paths use a best-effort manifest with no pinned SHAs; in that case prints "informational only" beside each computed hash and exits `0`. |
 
 Common flags:
 
@@ -526,6 +673,7 @@ Common flags:
 | `--root <path>` | Repository root used for `.sourcegraph.json` discovery and scope databases. Defaults to the directory holding `--solution`, then CWD. |
 | `--model <id>` | Override the embedding model identity (default `jinaai/jina-embeddings-v2-base-code`). Applies to `serve` and `index`. |
 | `--no-embeddings` | Skip the embedding pipeline entirely (no model download, no `vec0` writes). `semantic_search` returns a disabled message; every other tool works as before. |
+| `--no-model-download` | Disable auto-fetching the embedding model from Hugging Face. With this flag the pipeline runs only when the cache is already populated; otherwise it degrades to the same shape as `--no-embeddings`. Use in air-gapped environments where outbound network is denied. Equivalent to setting `SOURCEGRAPH_NO_MODEL_DOWNLOAD=1`. |
 | `--no-history` | Disable the git-blame history pipeline. Use in environments without `git` on `PATH` or in CI where per-symbol history isn't needed. |
 | `--no-instructions` | Don't publish server-side usage guidance in the MCP `initialize` response. By default the server tells the connected model to prefer source-graph tools over `Grep` + `Read` for symbol-level questions and to call `usage_stats` at end-of-turn to verify. Equivalent to setting `SOURCEGRAPH_NO_INSTRUCTIONS=1`. |
 | `--no-leaf` | Don't prefix the brand mark `🌿` onto any of the three surfaces the server stamps: per-call response prose (the first user-visible text block of every built-in tool's result), the published `ServerInstructions` string, and the per-tool catalog identity (`Tool.Title` becomes `🌿 <name>` and `Tool.Description` is prefixed with `🌿 ` in `tools/list`). By default the brand mark surfaces in all three places so the agent (and the human reading the chat) can tell at a glance that the answer came from this server. Use this knob if your terminal renders emoji as monospaced fallback boxes or if you simply prefer unbranded output. Equivalent to setting `SOURCEGRAPH_NO_LEAF=1`. Independent of `--no-instructions`. |
@@ -567,9 +715,38 @@ matches but no outgoing references in store …"`. Healthy installs never see
 this line. Repeated recoveries on the same files would indicate a regression
 in the upstream indexing flow worth investigating.
 
+## Corruption recovery
+
+When SQLite reports an on-disk corruption error (codes `11 = SQLITE_CORRUPT`
+or `26 = SQLITE_NOTADB`) during a tool call, the dispatch layer's
+`CorruptionGuard` runs `PRAGMA integrity_check` to verify. Three outcomes:
+
+- **Integrity check returns `"ok"`** — false alarm (transient I/O or VACUUM
+  race). Records `corruption-suspected-but-clean` and rethrows; the scope is
+  not marked degraded. The next call may succeed.
+- **Integrity check returns a failure string** — corruption confirmed. Records
+  `corruption-detected`, marks the scope `degraded` with status_message
+  `"corruption detected: <result>; call repair_scope mode=rebuild"`, rethrows.
+  Subsequent calls hit the degraded short-circuit until `repair_scope` runs.
+- **Integrity check itself throws** — DB so broken even the check fails.
+  Records `corruption-detected` with `ok=false` and the verification
+  exception, marks degraded, rethrows.
+
+By default the agent decides whether to recover (via `repair_scope mode=rebuild`).
+Setting `SOURCEGRAPH_AUTOREBUILD_CORRUPT_DBS=1` (or `true` / `yes`) opts into
+**autonomous rebuild**: on confirmed corruption the server fires
+`LiveIndexService.RebuildScopeAsync` on a background task, archiving the
+corrupt DB to `orphans/<id>-corrupt-<utc-iso>.db` and cold-indexing from
+sources. The original tool call still fails (the rebuild runs after), but the
+scope recovers without agent intervention. Heal log records
+`corrupt-db-rebuild-started` and `corrupt-db-rebuilt` (with `ok=true|false`)
+for the lifecycle. Off by default: an autonomous rebuild on a misclassified
+corruption silently destroys index state, so production deployments leave it
+off and let the agent escalate.
+
 ## Observability
 
-The server emits three signals you can hook into:
+The server emits five signals you can hook into:
 
 1. **JSONL audit log** — every tool call appends one line to
    `<root>/.sourcegraph/usage.jsonl`, capturing timestamp, tool name, args,
@@ -582,15 +759,45 @@ The server emits three signals you can hook into:
 3. **OpenTelemetry signals** — the server emits spans on
    `ActivitySource("DevBitsLab.Mcp.SourceGraph")` and metrics on
    `Meter("DevBitsLab.Mcp.SourceGraph")`. Counters: `sourcegraph.tool.calls`,
-   `sourcegraph.tool.errors`. Histograms: `sourcegraph.tool.duration` (ms),
-   `sourcegraph.tool.response_size` (bytes). Tags: `mcp.tool`, `mcp.tool.ok`,
-   `mcp.tool.scope`. Both signals are zero-cost when no listener is attached;
+   `sourcegraph.tool.errors`, `sourcegraph.heal.fired`. Histograms:
+   `sourcegraph.tool.duration` (ms), `sourcegraph.tool.response_size` (bytes).
+   Tool tags: `mcp.tool`, `mcp.tool.ok`, `mcp.tool.scope`. Heal tags: `kind`
+   (e.g. `orphan-db-archived`, `missing-db-detected`, `stuck-indexing-detected`),
+   `scope`, `ok`. All signals are zero-cost when no listener is attached;
    pick them up with the OpenTelemetry SDK or `dotnet-counters monitor --name
    sourcegraph-mcp DevBitsLab.Mcp.SourceGraph`.
-4. **MCP `notifications/progress`** — three tools opt in to live progress
-   reporting on their slow paths: `semantic_search` (three checkpoints around
-   ONNX-model load + vector search + formatting), `impact_of_change`, and
-   `module_summary` (one starting checkpoint each). Clients opt in by sending
+4. **Heal-event JSONL log** — internal state changes (boot reconciliation,
+   repair-tool invocations, corruption detection, embeddings prune) append
+   one line to `<root>/.sourcegraph/heals.jsonl` with shape
+   `{"ts","kind","scope","ok","ms","details"}`. Separate from `usage.jsonl`
+   (which tracks tool calls) to keep the two streams independently scannable.
+   Best-effort: write failures are swallowed and never surface to the agent.
+
+   Heal kinds across the three self-healing phases:
+
+   | Kind | Trigger | Phase |
+   |---|---|---|
+   | `orphan-db-archived` | Boot: scope DB file with no registry row, moved to `orphans/` | 1 |
+   | `missing-db-detected` | Boot: registry row but DB file missing | 1 |
+   | `stuck-indexing-detected` | Boot: prior process died with `status='indexing'` | 1 |
+   | `workspace-open-retried` | Cold-index: bounded retry succeeded (or all 4 attempts failed — 1 initial + 3 retries at `[1s, 5s, 25s]`) | 2 |
+   | `repair-scope-invoked` | `repair_scope` tool fired (mode + outcome in `details`) | 2 |
+   | `reconcile-drift-invoked` | `reconcile_drift` tool fired (counts in `details`) | 2 |
+   | `embeddings-pruned` | Orphan embedding rows removed (after cold-index, after `repair_scope minimal`) | 2/3 |
+   | `corruption-suspected-but-clean` | SQLite error code 11/26 surfaced but `integrity_check` passed (false alarm) | 3 |
+   | `corruption-detected` | SQLite error code 11/26 confirmed by `integrity_check`; scope marked degraded | 3 |
+   | `corrupt-db-rebuild-started` | Autonomous rebuild kicked off (env var enabled) | 3 |
+   | `corrupt-db-rebuilt` | Autonomous rebuild completed (success or failure in `ok`) | 3 |
+5. **MCP `notifications/progress`** — four tools opt in to live progress
+   reporting: `semantic_search` (three checkpoints around ONNX-model load +
+   vector search + formatting), `impact_of_change`, `module_summary` (one
+   starting checkpoint each), and `find_definition` (cold-start phase
+   progress only — see below). **Cold-start visibility**: when one of the
+   progress-aware tools is invoked against a scope whose initial indexing
+   isn't finished, the server forwards per-scope `IIndexingProgressSource`
+   events as `notifications/progress` for the duration of the wait — three
+   coarse phases (`opening workspace` → `indexing` → `ready`) so the chat
+   panel sees motion instead of a silent spinner. Clients opt in by sending
    a `progressToken` field on the originating `tools/call` request:
 
    ```json
@@ -622,7 +829,7 @@ database per scope. The current limits are:
 | Default `SearchSymbols` / `find_references` / `list_members` result limit | 25 / 50 / 100 rows | Pass `limit` on the MCP tool call. A soft serialized-size cap (~50K chars) trims further if a larger `limit` would exceed Claude Code's per-call ceiling; trim is signalled via `omitted_size=N` in the audience-restricted `_meta:` block. |
 | `impact_of_change` max depth | 4 hops | Pass `maxDepth` on the tool call. |
 | `semantic_search` top-k default | 10 | Pass `k` on the tool call. |
-| Embedding model download | ~480 MB | Disable with `--no-embeddings`. |
+| Embedding model download | ~640 MB | Disable the pipeline with `--no-embeddings`, or stay offline against a pre-populated cache with `--no-model-download`. |
 | Per-symbol `git blame` shellout | enabled | Disable with `--no-history`. |
 | MCP `initialize` instructions payload | enabled | Disable with `--no-instructions` or `SOURCEGRAPH_NO_INSTRUCTIONS=1`. |
 | Green-leaf brand mark on tool responses, `ServerInstructions`, and per-tool `Title`/`Description` in `tools/list` | enabled | Disable with `--no-leaf` or `SOURCEGRAPH_NO_LEAF=1`. |

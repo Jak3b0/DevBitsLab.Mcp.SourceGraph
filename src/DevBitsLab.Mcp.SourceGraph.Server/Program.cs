@@ -41,10 +41,14 @@ return cli.Subcommand switch
     "index" => await RunIndexAsync(cli).ConfigureAwait(false),
     "stats" => await RunStatsAsync(cli).ConfigureAwait(false),
     "clear" => await RunClearAsync(cli).ConfigureAwait(false),
+    "init" => await InitCli.RunAsync(cli).ConfigureAwait(false),
+    "doctor" => await DoctorCli.RunAsync(cli).ConfigureAwait(false),
+    "demo" => await DemoCli.RunAsync(cli).ConfigureAwait(false),
     "init-scopes" => await ScopesCli.RunInitAsync(cli).ConfigureAwait(false),
     "scopes" => await ScopesCli.RunSubcommandAsync(cli).ConfigureAwait(false),
     "plugins" => await PluginsCli.RunSubcommandAsync(cli).ConfigureAwait(false),
     "vocabulary" => await VocabularyCli.RunSubcommandAsync(cli).ConfigureAwait(false),
+    "embeddings" => await EmbeddingsCli.RunSubcommandAsync(cli).ConfigureAwait(false),
     _ => Unknown(cli.Subcommand),
 };
 
@@ -113,6 +117,7 @@ static async Task<int> RunServeAsync(CommandLine cli)
     var dbDir = ScopeLayout.SourcegraphDir(repoRoot);
     Directory.CreateDirectory(dbDir);
     ToolMetrics.Configure(Path.Join(dbDir, "usage.jsonl"));
+    HealLog.Configure(Path.Join(dbDir, "heals.jsonl"));
 
     var embeddingsEnabled = !cli.NoEmbeddings;
     // Always know the active model identity so the vec0 table can be sized consistently
@@ -143,6 +148,33 @@ static async Task<int> RunServeAsync(CommandLine cli)
         builder.Services.AddSingleton<ICodeEmbeddingGenerator>(_ => new DisabledEmbeddingGenerator(modelInfo));
     }
 
+    // Auto-download gate. Resolves to a pre-completed gate when embeddings are off, or when
+    // --no-model-download is set against an empty cache (the worker will see IsAvailable=false
+    // anyway). Otherwise fires ModelStore.EnsureAsync as a background task — fire-and-don't-await
+    // so the indexer's bulk pass runs concurrently with the download. The gate factory catches
+    // every non-cancellation exception from EnsureAsync (network/IO/SHA mismatch/etc.) and logs
+    // it at warning so the gate task always completes for awaiters in LiveIndexService and
+    // EmbeddingsHostedService. See ModelDownloadGateFactory for the decision matrix.
+    var noModelDownload = cli.NoModelDownload;
+    builder.Services.AddSingleton<ModelDownloadGate>(sp =>
+        ModelDownloadGateFactory.Build(
+            sp.GetRequiredService<ModelStore>(),
+            sp.GetRequiredService<EmbeddingModelInfo>(),
+            embeddingsEnabled,
+            noModelDownload,
+            sp.GetRequiredService<ILogger<ModelStore>>(),
+            // Plumb the host's shutdown signal so an in-flight download is cancelled when the
+            // host stops, instead of holding shutdown until HTTP completes.
+            sp.GetRequiredService<Microsoft.Extensions.Hosting.IHostApplicationLifetime>().ApplicationStopping));
+
+    // Shared call site for the embedding-cache configuration verbs. Both the long-running MCP
+    // tools (resolved from DI here) and the one-shot CLI router (which builds its own instance)
+    // call into this manager so the two surfaces stay in lock-step.
+    builder.Services.AddSingleton<EmbeddingsManager>(sp => new EmbeddingsManager(
+        sp.GetRequiredService<ModelStore>(),
+        sp.GetRequiredService<EmbeddingModelInfo>(),
+        sp.GetRequiredService<ILogger<EmbeddingsManager>>()));
+
     // Scope registry (lives in `_meta.db`). Wired up first so list_scopes can reflect the
     // pre-scope-host status while initial indexing is still running.
     builder.Services.AddSingleton<IScopeRegistry>(sp =>
@@ -167,14 +199,43 @@ static async Task<int> RunServeAsync(CommandLine cli)
     // per-scope DB files via ScopeLayout.
     builder.Services.AddSingleton(new RepoRootInfo(repoRoot));
 
-    builder.Services.AddSingleton(new LiveIndexConfig(scopeConfig.Scopes));
+    // The scope-config watcher is started by LiveIndexService when WatchConfig is true. We skip
+    // it when --solution is set: --solution is a runtime override that bypasses .sourcegraph.json
+    // entirely (Synthesise above), so an edit to the JSON shouldn't override the user's explicit
+    // CLI argument. Without --solution, the watcher's deletion-revert path uses the same empty
+    // discoveredSolutions Synthesise was called with at startup, which is the symmetry we want.
+    var watchConfig = string.IsNullOrEmpty(cli.SolutionPath);
+    var discoveredSolutions = string.IsNullOrEmpty(cli.SolutionPath)
+        ? Array.Empty<string>()
+        : new[] { Path.GetFullPath(cli.SolutionPath) };
+    // Test harnesses pass SOURCEGRAPH_SCOPE_REPLACE_GRACE_MS=50 to avoid waiting the full
+    // production 5s grace window during a live-modify integration test. Production users never
+    // set it; the default (5000) is the right shape for real workloads.
+    var graceMs = 5000;
+    var graceEnv = Environment.GetEnvironmentVariable("SOURCEGRAPH_SCOPE_REPLACE_GRACE_MS");
+    if (!string.IsNullOrEmpty(graceEnv) && int.TryParse(graceEnv, out var parsedGrace) && parsedGrace > 0)
+    {
+        graceMs = parsedGrace;
+    }
+    builder.Services.AddSingleton(new LiveIndexConfig(
+        Scopes: scopeConfig.Scopes,
+        RepoRoot: repoRoot,
+        DiscoveredSolutions: discoveredSolutions,
+        StartupPlugins: scopeConfig.Plugins,
+        DefaultScope: scopeConfig.DefaultScope,
+        WatchConfig: watchConfig,
+        ScopeReplaceGraceMs: graceMs));
     builder.Services.AddHostedService<HistoryHostedService>(sp => new HistoryHostedService(
         sp.GetRequiredService<HistoryQueue>(),
         sp.GetRequiredService<ScopeRouter>(),
         sp.GetRequiredService<GitBlameRunner>(),
         sp.GetRequiredService<HistoryOptions>(),
         sp.GetRequiredService<ILogger<HistoryHostedService>>()));
-    builder.Services.AddHostedService<LiveIndexService>();
+    // Register as singleton so MCP tools (repair_scope, future repair tools) can resolve the
+    // service to drive scope-level rebuild operations. The same instance is also routed through
+    // the IHostedService factory below — there's only ever one LiveIndexService in the host.
+    builder.Services.AddSingleton<LiveIndexService>();
+    builder.Services.AddHostedService(sp => sp.GetRequiredService<LiveIndexService>());
 
     // Plugin host: discover plugins via .sourcegraph.json's plugins[] array. With NO entry the
     // host is a no-op and single-solution v0.5.0 behaviour is preserved exactly. The built-in
@@ -195,20 +256,15 @@ static async Task<int> RunServeAsync(CommandLine cli)
     // routed through here for actual indexing — `LiveIndexService` keeps the workspace-aware
     // bulk path for back-compat — but registering it here makes the seam visible to `plugins
     // list` and to the analyzer pipeline.
+    // Single source of truth for the in-tree indexer set; collapses what used to be three
+    // ad-hoc registration sites in this file. See BuiltInIndexers.cs for the current list.
     var langRegistry = new LanguageIndexerRegistry();
-    var rejectedExt = langRegistry.Register(new BuiltInRoslynLanguageIndexerStub());
-    if (rejectedExt.Count > 0)
+    foreach (var (name, rejected) in BuiltInIndexers.RegisterAll(langRegistry))
     {
-        await Console.Error.WriteLineAsync($"[sourcegraph-mcp] built-in indexer extension(s) rejected: {string.Join(", ", rejectedExt)}").ConfigureAwait(false);
-    }
-    // Built-in XAML indexer ships with the server (in-tree). Registered here alongside the C#
-    // stub so `LanguageIndexerRegistry` reports the .xaml claim and so the dispatcher routes
-    // .xaml files to the indexer at scope startup. The matching XamlLanguageProjectFactory is
-    // registered in the project-factory registry below.
-    var xamlRejected = langRegistry.Register(new DevBitsLab.Mcp.SourceGraph.Indexing.Xaml.XamlLanguageIndexer());
-    if (xamlRejected.Count > 0)
-    {
-        await Console.Error.WriteLineAsync($"[sourcegraph-mcp] XAML indexer extension(s) rejected: {string.Join(", ", xamlRejected)}").ConfigureAwait(false);
+        if (rejected.Count > 0)
+        {
+            await Console.Error.WriteLineAsync($"[sourcegraph-mcp] {name} extension(s) rejected: {string.Join(", ", rejected)}").ConfigureAwait(false);
+        }
     }
     foreach (var record in pluginHost.Plugins.Where(p => p.Status == PluginStatus.Loaded))
     {
@@ -350,10 +406,45 @@ static async Task<int> RunServeAsync(CommandLine cli)
 
     var host = builder.Build();
 
+    // Corruption-recovery wiring: read SOURCEGRAPH_AUTOREBUILD_CORRUPT_DBS, set the static
+    // CorruptionPolicy hooks the dispatch layer (ScopedExecution → CorruptionGuard) reads on
+    // every wrapped tool call. These are static fields rather than DI-injected because every
+    // existing tool body resolves through `ScopedExecution.RunAsync(...)` without an awareness
+    // of the corruption-recovery pathway; static state keeps the change invisible to those bodies.
+    var autoRebuildEnv = Environment.GetEnvironmentVariable("SOURCEGRAPH_AUTOREBUILD_CORRUPT_DBS");
+    CorruptionPolicy.AutoRebuildEnabled = CorruptionPolicy.ParseEnvVar(autoRebuildEnv);
+    if (CorruptionPolicy.AutoRebuildEnabled)
+    {
+        await Console.Error.WriteLineAsync(
+            "[sourcegraph-mcp] Autonomous corrupt-DB rebuild is ENABLED via SOURCEGRAPH_AUTOREBUILD_CORRUPT_DBS").ConfigureAwait(false);
+    }
+    CorruptionPolicy.Registry = host.Services.GetRequiredService<IScopeRegistry>();
+    CorruptionPolicy.Logger = host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("CorruptionGuard");
+    var liveIndexForRebuild = host.Services.GetRequiredService<LiveIndexService>();
+    // Ignore the ct passed by CorruptionGuard — it's the MCP request's token, which completes
+    // when the failed tool call's response is sent. The autonomous rebuild is fire-and-forget
+    // and must outlive the request; bind it to the host's lifetime instead. The host's
+    // stopping token is `default(CancellationToken)` until ExecuteAsync runs (host start-up is
+    // not yet complete by this point in Program.cs), at which point HostStoppingToken returns
+    // the live token; corruption can't trigger before tool calls dispatch through ScopedExecution
+    // anyway, so a default token in the brief startup window is harmless.
+    CorruptionPolicy.RebuildDelegate = async (scopeId, _) =>
+    {
+        await liveIndexForRebuild.RebuildScopeAsync(
+            scopeId,
+            archiveDiscriminator: "corrupt",
+            liveIndexForRebuild.HostStoppingToken).ConfigureAwait(false);
+    };
+
     // Walk the registered McpServerTool collection and rewrite ProtocolTool.Description to append
     // `Use when: <trigger>` for every method carrying [ToolTrigger]. Done after Build() so we see
     // both built-in tools (registered via WithToolsFromAssembly) and any tools added by plugins.
     ToolDescriptionFormatter.ApplyTriggersFromAttributes(host.Services.GetServices<McpServerTool>());
+
+    // Apply MCP-spec tool annotations (destructiveHint / idempotentHint / readOnlyHint) for every
+    // method carrying [ToolAnnotation]. Spec-aware hosts use these to require explicit user
+    // confirmation before invoking destructive tools (e.g. embeddings_remove).
+    ToolDescriptionFormatter.ApplyAnnotationsFromAttributes(host.Services.GetServices<McpServerTool>());
 
     // Stamp the brand mark on every built-in tool's catalog identity (Title + Description). Same
     // post-build mutation pattern as ApplyTriggersFromAttributes; reads LeafFormatter.Suppressed
@@ -419,14 +510,21 @@ static async Task<int> RunIndexAsync(CommandLine cli)
     {
         channelSink = new ChannelEmbeddingsRequestSink();
         sink = channelSink;
-        var ms = new ModelStore(loggerFactory.CreateLogger<ModelStore>());
+        var msLogger = loggerFactory.CreateLogger<ModelStore>();
+        var ms = new ModelStore(msLogger);
         generator = new JinaCodeEmbeddingGenerator(
             ms.FilePath(modelInfo.ModelId, "model.onnx"),
             ms.FilePath(modelInfo.ModelId, "tokenizer.json"),
             modelInfo,
             logger: loggerFactory.CreateLogger<JinaCodeEmbeddingGenerator>());
         var embStore = store.CreateEmbeddingsStore(modelInfo.Dimension, loggerFactory.CreateLogger<SqliteEmbeddingsStore>());
-        embedService = new EmbeddingsHostedService(channelSink, generator, embStore, loggerFactory.CreateLogger<EmbeddingsHostedService>());
+
+        // Build the auto-download gate matching the serve path's semantics, then pass it to the
+        // hosted service so its IsAvailable probe waits for the download to settle.
+        var gate = ModelDownloadGateFactory.Build(
+            ms, modelInfo, embeddingsEnabled: true, noModelDownload: cli.NoModelDownload, logger: msLogger);
+
+        embedService = new EmbeddingsHostedService(channelSink, generator, embStore, gate, loggerFactory.CreateLogger<EmbeddingsHostedService>());
         embedDrain = embedService.StartAsync(CancellationToken.None);
     }
 
@@ -478,10 +576,10 @@ static async Task<int> RunIndexAsync(CommandLine cli)
             await Console.Error.WriteLineAsync($"[sourcegraph-mcp] plugin host startup failed: {ex.Message}").ConfigureAwait(false);
         }
 
-        // Build the language indexer registry — same shape as the serve path.
+        // Build the language indexer registry — same shape as the serve path. The in-tree
+        // indexer list lives in BuiltInIndexers.RegisterAll so the two paths can't drift.
         var langRegistry = new LanguageIndexerRegistry();
-        langRegistry.Register(new BuiltInRoslynLanguageIndexerStub());
-        langRegistry.Register(new DevBitsLab.Mcp.SourceGraph.Indexing.Xaml.XamlLanguageIndexer());
+        BuiltInIndexers.RegisterAll(langRegistry);
         foreach (var record in pluginHost.Plugins.Where(p => p.Status == PluginStatus.Loaded))
         {
             foreach (var li in record.LanguageIndexers)

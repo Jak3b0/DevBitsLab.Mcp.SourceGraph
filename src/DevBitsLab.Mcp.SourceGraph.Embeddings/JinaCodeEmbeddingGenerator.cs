@@ -410,7 +410,12 @@ public sealed class JinaCodeEmbeddingGenerator : ICodeEmbeddingGenerator
         }
         finally
         {
-            try { File.Delete(vocabPath); } catch (IOException) { /* best-effort cleanup */ }
+            // Best-effort cleanup of the temp vocab file. Catch every non-cancellation
+            // exception (IOException, UnauthorizedAccessException, anything else): the temp file
+            // has already done its job feeding `WordPieceTokenizer.Create`, so a failed Delete
+            // shouldn't take down the tokenizer load.
+            try { File.Delete(vocabPath); }
+            catch (Exception ex) when (ex is not OperationCanceledException) { /* best-effort cleanup */ }
         }
     }
 

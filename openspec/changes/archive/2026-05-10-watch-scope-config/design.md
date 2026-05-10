@@ -28,7 +28,7 @@ The compatibility constraint is hard: a server that never sees a `.sourcegraph.j
 - Hot-reloading plugin assemblies. `plugins[]` deltas are logged-and-ignored. `AssemblyLoadContext` collectible-unload is a separate, larger problem.
 - Live-watching solutions outside the scope's solution directory. Today `SolutionWatcher` only watches `Path.GetDirectoryName(solutionPath)`; a `paths`-kind scope rooted elsewhere is silently un-watched. That's a known but separate gap (logged in [ROADMAP.md](openspec/ROADMAP.md) as a follow-up — call it out here so the live-config feature isn't blamed for it).
 - Atomic config-and-DB rename when a scope id changes. Renaming a scope is treated as remove + add; the user pays a re-cold-index cost.
-- Cross-process notification. No filesystem signal beyond what `FileSystemWatcher` provides; specifically no Unix domain socket / IPC surface for the CLI to "ping" a running server.
+- Cross-process notification. No filesystem signal beyond what mtime polling can pick up; specifically no Unix domain socket / IPC surface for the CLI to "ping" a running server.
 - Watching `.sourcegraph.json` files that aren't at the resolved repo root. The path is fixed by `ScopeConfigLoader.FileName` at the same root the server was launched against.
 
 ## Decisions
@@ -44,13 +44,14 @@ src/DevBitsLab.Mcp.SourceGraph.Watcher/
 └── ScopeConfigWatcher.cs     (new, single instance per process)
 ```
 
-`ScopeConfigWatcher` mirrors `SolutionWatcher`'s shape:
-- One `FileSystemWatcher` rooted at `<repoRoot>` with `Filter = ".sourcegraph.json"`, `IncludeSubdirectories = false`.
-- Same debounce-and-coalesce loop on a `Channel<RawEvent>` → `Channel<ScopeConfigChange>`.
-- `ReadAllAsync` async stream pattern.
-- `IAsyncDisposable` with the same orderly shutdown.
+`ScopeConfigWatcher` shape:
+- A single mtime-polling loop over `<repoRoot>/.sourcegraph.json`, observing presence + `File.GetLastWriteTimeUtc`. The poll interval doubles as the debounce window (default 200ms).
+- The very first iteration fires unconditionally so the diff catches any save that landed between the server's startup-time `ScopeConfigLoader.Load` and the watcher actually starting (the watcher boots after the cold-index `WhenAll` settles, which can race with a config edit). The diff returns "no-op" when on-disk content matches what's already live.
+- Subsequent iterations emit only on presence flips or mtime advances.
+- Single `Channel<ScopeConfigChange>` exposed via `ReadAllAsync`.
+- `IAsyncDisposable` with orderly shutdown (cancel CTS, await processor, `TryComplete` in `finally`).
 
-The handler events of interest: `Changed`, `Created`, `Renamed` (atomic-rename saves arrive as Renamed). `Deleted` is handled separately — see *Decision 6*.
+**Why polling, not `FileSystemWatcher`** (changed during implementation): macOS's FSEventStream-backed `FileSystemWatcher` does not reliably deliver events for files at the *root* of the watched directory — only subdirectory events fire. `IncludeSubdirectories = true` doesn't help (events for `.sourcegraph.json` itself still don't fire on macOS, while sibling `.sourcegraph/` subtree events do). Polling at 200ms costs a `stat()` per tick, which is cheap, and "did the config change?" doesn't need sub-second latency. Renames in either direction (away from or into the repo root) are detected the same way — the mtime/presence check is symmetric. A separate `Deleted` code path is not needed; absence is just `exists == false` on the next poll.
 
 ### 2. Diff-and-apply lives on `LiveIndexService`
 
@@ -147,7 +148,7 @@ The new plugin list is *not* persisted into runtime state — the next plugin di
 `ScopeConfigWatcher` is started inside `LiveIndexService.ExecuteAsync`, after the initial cold index of all startup scopes finishes. Two reasons:
 
 - A config save during cold-indexing would race the very setup we're trying to bring up. Easier to start watching once the host is steady-state.
-- The watcher's debounce window (200ms) is small enough that any save during the sub-200ms window between "last cold index settles" and "watcher starts" will arrive as the first event the watcher sees, since `FileSystemWatcher` only delivers events from the moment `EnableRaisingEvents = true`. We lose at most one save's worth of pre-startup edits; not worth the synchronisation complexity to capture.
+- The poll loop's first iteration emits unconditionally with the current on-disk state. So any save that landed during cold-indexing is still picked up via the diff (which returns "no-op" when the on-disk content matches what the server already loaded at startup). No edits are dropped on the floor.
 
 ### 9. CLI / running-server interaction
 
@@ -167,16 +168,14 @@ The per-scope `<id>.db` file on disk is *not* deleted. Re-adding the same scope 
 
 `IScopeRegistry.RemoveAsync(string id, CancellationToken ct)` already exists ([IScopeRegistry.cs:22](src/DevBitsLab.Mcp.SourceGraph.Storage/IScopeRegistry.cs:22)) and the SQLite implementation is a `DELETE FROM scopes WHERE id = @id;` — exactly the contract this change needs. It's idempotent (deleting a missing id is a no-op SQL DELETE), so the live tear-down doesn't have to check first. No new registry primitive required; we just use it.
 
-### 11. `Renamed` events trigger a presence re-check, in both directions
+### 11. Renames are handled symmetrically by the polling loop
 
-`FileSystemWatcher` fires `Renamed` for any rename involving the watched filter. Two directions are possible:
+Two rename directions are possible:
 
 - `git mv .sourcegraph.json other.json` — the watched file is gone
 - `git mv other.json .sourcegraph.json` — the watched file just appeared
 
-Treating `Renamed` as a hard `Deleted` would handle the first case but lose the second; treating it as a no-op would lose the first. We instead **always re-evaluate** `<repoRoot>/.sourcegraph.json` on `Renamed` (and on `Deleted`, and on `Created`) and load whatever's actually there. If the file is present, parse and emit; if absent, synthesise the default and emit.
-
-Symmetric handling means a rename-and-rename-back round-trip can't leave the server with stale state. The cost is one extra `File.Exists` check per renamed event, which is trivial.
+The polling loop handles both naturally because it observes presence + mtime on every tick. A rename-away flips `exists` from `true` to `false` and emits a `Reverted` (synthesised default). A rename-into flips it from `false` to `true` and emits an `Updated`. A rename-and-rename-back round-trip leaves no stale state because both transitions are observed independently. No special "rename" code path is needed.
 
 ### 12. Out-of-band: the "paths-kind scope is un-watched" gap
 
@@ -184,9 +183,9 @@ Independent of this change, scopes declared with `paths: [...]` (csproj globs ou
 
 ## Risks
 
-**Editor save patterns.** Different editors save `.sourcegraph.json` differently — some atomic-rename (vim, modern VS Code), some write-through, some create temp `.sourcegraph.json~`/`.swp` siblings. `FileSystemWatcher` covers the common cases via `Changed | Created | Renamed`, but there's a long tail. Mitigation: the parse-tolerance path (Decision 5) is the primary defense — anything that arrives mid-write fails parse and is ignored. Tests cover the three main save shapes.
+**Editor save patterns.** Different editors save `.sourcegraph.json` differently — some atomic-rename (vim, modern VS Code), some write-through, some create temp `.sourcegraph.json~`/`.swp` siblings. The mtime-polling watcher sidesteps the kernel-event idiosyncrasies entirely: it just looks at the file as it exists on disk at each poll. Mitigation for partial writes: the parse-tolerance path (Decision 5) — anything that arrives mid-write fails parse and is ignored.
 
-**Filesystem watcher reliability on macOS / Linux.** `FileSystemWatcher` relies on `kqueue` / `inotify` and has known edge cases (network mounts, deep symlinks). The existing `SolutionWatcher` already lives with this; we inherit the same trade-offs and the same fallbacks (none — the user gets stale state until next save). Acceptable.
+**Filesystem reliability on macOS / Linux.** Polling avoids the per-OS event-delivery quirks that motivated the pivot away from `FileSystemWatcher` in the first place (FSEventStream not delivering for files at the watched directory's root on macOS, inotify limits on Linux, etc.). The trade-off is up to one poll-interval (default 200ms) of latency before a change is observed, which is well below any human's edit cadence.
 
 **Tear-down racing in-flight tool calls.** Mitigated by Decision 4 (deferred disposal). The remaining risk is a single tool call exceeding the 5-second grace window. In practice the only candidate is a slow `semantic_search` against a cold ONNX model load; we accept that as a one-shot retryable error.
 

@@ -1,9 +1,9 @@
 ## 1. Watcher
 
-- [x] 1.1 Add `ScopeConfigWatcher` in `src/DevBitsLab.Mcp.SourceGraph.Watcher/ScopeConfigWatcher.cs`. Mirrors `SolutionWatcher` shape: single `FileSystemWatcher` on `<repoRoot>` with `Filter = ".sourcegraph.json"`, `IncludeSubdirectories = false`, hooked on `Changed`/`Created`/`Renamed`/`Deleted`.
-- [x] 1.2 Debounce + coalesce raw events (200ms default) into `ScopeConfigChange` records. Each emitted change carries either the parsed `ScopeConfig` or a `Reverted` marker (file deleted → synthesised default).
-- [x] 1.3 On parse failure, log at `info` level and emit nothing — the running host set stays as-is. Verify by unit test (write malformed JSON → no event).
-- [x] 1.4 Implement `IAsyncDisposable` with the same orderly shutdown as `SolutionWatcher` (cancel processor, drain channel, dispose underlying watcher).
+- [x] 1.1 Add `ScopeConfigWatcher` in `src/DevBitsLab.Mcp.SourceGraph.Watcher/ScopeConfigWatcher.cs`. Single mtime-polling loop over `<repoRoot>/.sourcegraph.json` (presence + `LastWriteTimeUtc`). *Pivoted from `FileSystemWatcher` during implementation: macOS's FSEventStream backend doesn't reliably deliver events for files at the watched directory's root, so polling is the cross-platform reliable choice. 200ms latency is below any human's edit cadence.*
+- [x] 1.2 Emit `ScopeConfigChange` records (200ms poll cadence is also the debounce window). Each emitted change carries either the parsed `ScopeConfig` (`Updated`) or the synthesised default (`Reverted` — fired when the file is absent or deleted).
+- [x] 1.3 On parse failure (`ScopeConfigException`), log at `info` level and emit nothing — the running host set stays as-is. Verify by unit test (write malformed JSON → no event).
+- [x] 1.4 Implement `IAsyncDisposable` with orderly shutdown: cancel the poll loop's CTS, await the processor, complete the channel writer in a `finally` so consumers' `ReadAllAsync` always terminates.
 
 ## 2. Diff helper
 

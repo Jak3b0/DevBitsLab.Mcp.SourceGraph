@@ -69,57 +69,67 @@ public sealed class ScopeConfigWatcher : IAsyncDisposable
         DateTime lastWriteUtc = DateTime.MinValue;
         bool firstIteration = true;
 
-        while (!ct.IsCancellationRequested)
+        // Wrap the entire loop in try/finally so `TryComplete` always fires, even when
+        // `WriteAsync(..., ct)` throws `OperationCanceledException` mid-write during disposal.
+        // Without this, `ReadAllAsync` consumers would hang waiting for completion that never
+        // arrives, breaking the "stops when disposed" contract.
+        try
         {
-            bool exists;
-            DateTime writeUtc;
-            try
+            while (!ct.IsCancellationRequested)
             {
-                exists = File.Exists(path);
-                writeUtc = exists ? File.GetLastWriteTimeUtc(path) : DateTime.MinValue;
-            }
-            catch (IOException ex)
-            {
-                _logger.LogDebug(ex, "Polling .sourcegraph.json failed; will retry on next tick");
-                exists = lastExists;
-                writeUtc = lastWriteUtc;
-            }
-
-            var presenceChanged = exists != lastExists;
-            var mtimeChanged = exists && writeUtc != lastWriteUtc;
-
-            if (firstIteration || presenceChanged || mtimeChanged)
-            {
-                lastExists = exists;
-                lastWriteUtc = writeUtc;
-                firstIteration = false;
-
-                if (!exists)
+                bool exists;
+                DateTime writeUtc;
+                try
                 {
-                    var synthesised = ScopeConfigLoader.Synthesise(_repoRoot, _discoveredSolutions);
-                    _logger.LogInformation(".sourcegraph.json is absent; reverting to synthesised default scope");
-                    await _changes.Writer.WriteAsync(new ScopeConfigChange.Reverted(synthesised), ct).ConfigureAwait(false);
+                    exists = File.Exists(path);
+                    writeUtc = exists ? File.GetLastWriteTimeUtc(path) : DateTime.MinValue;
                 }
-                else
+                catch (IOException ex)
                 {
-                    ScopeConfig parsed;
-                    try
+                    _logger.LogDebug(ex, "Polling .sourcegraph.json failed; will retry on next tick");
+                    exists = lastExists;
+                    writeUtc = lastWriteUtc;
+                }
+
+                var presenceChanged = exists != lastExists;
+                var mtimeChanged = exists && writeUtc != lastWriteUtc;
+
+                if (firstIteration || presenceChanged || mtimeChanged)
+                {
+                    lastExists = exists;
+                    lastWriteUtc = writeUtc;
+                    firstIteration = false;
+
+                    if (!exists)
                     {
-                        parsed = ScopeConfigLoader.Load(_repoRoot, _discoveredSolutions);
-                        await _changes.Writer.WriteAsync(new ScopeConfigChange.Updated(parsed), ct).ConfigureAwait(false);
+                        var synthesised = ScopeConfigLoader.Synthesise(_repoRoot, _discoveredSolutions);
+                        _logger.LogInformation(".sourcegraph.json is absent; reverting to synthesised default scope");
+                        await _changes.Writer.WriteAsync(new ScopeConfigChange.Reverted(synthesised), ct).ConfigureAwait(false);
                     }
-                    catch (ScopeConfigException ex)
+                    else
                     {
-                        _logger.LogInformation(ex, ".sourcegraph.json save was malformed; ignoring (current scopes still active)");
+                        ScopeConfig parsed;
+                        try
+                        {
+                            parsed = ScopeConfigLoader.Load(_repoRoot, _discoveredSolutions);
+                            await _changes.Writer.WriteAsync(new ScopeConfigChange.Updated(parsed), ct).ConfigureAwait(false);
+                        }
+                        catch (ScopeConfigException ex)
+                        {
+                            _logger.LogInformation(ex, ".sourcegraph.json save was malformed; ignoring (current scopes still active)");
+                        }
                     }
                 }
-            }
 
-            try { await Task.Delay(_pollInterval, ct).ConfigureAwait(false); }
-            catch (OperationCanceledException) { break; }
+                try { await Task.Delay(_pollInterval, ct).ConfigureAwait(false); }
+                catch (OperationCanceledException) { break; }
+            }
         }
-
-        _changes.Writer.TryComplete();
+        catch (OperationCanceledException) { /* WriteAsync cancelled mid-disposal */ }
+        finally
+        {
+            _changes.Writer.TryComplete();
+        }
     }
 
     public async ValueTask DisposeAsync()

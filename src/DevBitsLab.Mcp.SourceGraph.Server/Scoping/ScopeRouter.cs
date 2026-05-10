@@ -43,8 +43,11 @@ public sealed class ScopeRouter
     }
 
     /// <summary>
-    /// Remove the host registered under <paramref name="id"/>. Returns whether anything was
-    /// removed; the caller owns the returned host's disposal. Symmetric with <see cref="Register"/>.
+    /// Remove the host registered under <paramref name="id"/>. Returns <c>true</c> when a host
+    /// was removed. The caller is responsible for disposing the host — they hold the reference
+    /// already (from the diff or lookup that prompted the unregister), so this method
+    /// intentionally does not return the removed instance. Symmetric with <see cref="Register"/>;
+    /// for in-place atomic swaps use <see cref="Replace"/>, which returns the displaced host.
     /// </summary>
     public bool Unregister(string id)
     {

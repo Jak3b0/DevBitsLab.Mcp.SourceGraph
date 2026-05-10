@@ -45,6 +45,30 @@ public sealed class ScopeConfigWatcherTests
         }
     }
 
+    /// <summary>
+    /// Read events until one matching <paramref name="predicate"/> appears, or the timeout
+    /// fires. Used by tests that need to look past the watcher's synthetic-init emit (which
+    /// fires unconditionally on the first poll iteration so the diff-and-apply path catches a
+    /// race with cold-index startup).
+    /// </summary>
+    private static async Task<ScopeConfigChange?> ReadUntilAsync(
+        ScopeConfigWatcher watcher, Func<ScopeConfigChange, bool> predicate, TimeSpan timeout)
+    {
+        using var cts = new CancellationTokenSource(timeout);
+        try
+        {
+            await foreach (var change in watcher.ReadAllAsync(cts.Token))
+            {
+                if (predicate(change)) return change;
+            }
+            return null;
+        }
+        catch (OperationCanceledException)
+        {
+            return null;
+        }
+    }
+
     [Fact]
     public async Task ValidSave_emitsUpdated()
     {
@@ -56,9 +80,13 @@ public sealed class ScopeConfigWatcherTests
                 Path.Combine(root, ScopeConfigLoader.FileName),
                 """{ "scopes": [ { "name": "foo", "solutions": ["foo.sln"] } ], "default_scope": "foo" }""");
 
-            var change = await ReadOneWithTimeoutAsync(watcher, TimeSpan.FromSeconds(2));
+            // The watcher emits a synthetic Reverted on its first poll (file didn't exist when
+            // the watcher started); we look past that for the post-write Updated event.
+            var change = await ReadUntilAsync(
+                watcher,
+                c => c is ScopeConfigChange.Updated,
+                TimeSpan.FromSeconds(2));
             change.Should().NotBeNull();
-            change.Should().BeOfType<ScopeConfigChange.Updated>();
             change!.Config.Scopes.Should().ContainSingle().Which.Id.Should().Be("foo");
         }
         finally
@@ -74,6 +102,10 @@ public sealed class ScopeConfigWatcherTests
         try
         {
             await using var watcher = new ScopeConfigWatcher(root, debounce: ShortDebounce);
+            // Drain the synthetic-init Reverted (the file didn't exist when the watcher started).
+            var initial = await ReadOneWithTimeoutAsync(watcher, TimeSpan.FromSeconds(2));
+            initial.Should().BeOfType<ScopeConfigChange.Reverted>();
+
             File.WriteAllText(Path.Combine(root, ScopeConfigLoader.FileName), "{ this is not json");
             var change = await ReadOneWithTimeoutAsync(watcher, TimeSpan.FromSeconds(1));
             // Parse fails → log info, no event. The timeout path is the test pass.
@@ -100,20 +132,15 @@ public sealed class ScopeConfigWatcherTests
                 discoveredSolutions: Array.Empty<string>(),
                 debounce: ShortDebounce);
 
-            // Drain the initial create event (the file was already there when the watcher started
-            // — actually it should NOT trigger anything because EnableRaisingEvents flips on
-            // *after* the file write happens above. The OS won't replay history. To force an event
-            // we modify the file once, then delete, and look for the deletion-driven change.)
-            File.WriteAllText(
-                Path.Combine(root, ScopeConfigLoader.FileName),
-                """{ "scopes": [ { "name": "foo", "solutions": ["foo.sln"] }, { "name": "bar", "solutions": ["bar.sln"] } ] }""");
-            var firstChange = await ReadOneWithTimeoutAsync(watcher, TimeSpan.FromSeconds(2));
-            firstChange.Should().NotBeNull();
-
+            // The watcher polls on each tick and emits a synthetic event on the first iteration
+            // (an Updated, since the file is present at startup). We drain past that and look
+            // specifically for the post-deletion Reverted event.
             File.Delete(Path.Combine(root, ScopeConfigLoader.FileName));
-            var change = await ReadOneWithTimeoutAsync(watcher, TimeSpan.FromSeconds(2));
+            var change = await ReadUntilAsync(
+                watcher,
+                c => c is ScopeConfigChange.Reverted,
+                TimeSpan.FromSeconds(3));
             change.Should().NotBeNull();
-            change.Should().BeOfType<ScopeConfigChange.Reverted>();
             change!.Config.Scopes.Should().ContainSingle().Which.Id.Should().Be("default");
         }
         finally

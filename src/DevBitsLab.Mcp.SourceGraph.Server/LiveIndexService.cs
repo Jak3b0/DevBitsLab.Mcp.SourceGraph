@@ -30,6 +30,7 @@ public sealed class LiveIndexService : BackgroundService
     private readonly HistoryQueue _historyQueue;
     private readonly HistoryOptions _historyOptions;
     private readonly ICodeEmbeddingGenerator _embeddingGenerator;
+    private readonly ModelDownloadGate _modelDownloadGate;
     private readonly EmbeddingModelInfo _modelInfo;
     private readonly AnalyzerPipeline _analyzerPipeline;
     private readonly LanguageIndexerDispatcher _languageDispatcher;
@@ -48,6 +49,7 @@ public sealed class LiveIndexService : BackgroundService
         HistoryQueue historyQueue,
         HistoryOptions historyOptions,
         ICodeEmbeddingGenerator embeddingGenerator,
+        ModelDownloadGate modelDownloadGate,
         EmbeddingModelInfo modelInfo,
         AnalyzerPipeline analyzerPipeline,
         LanguageIndexerDispatcher languageDispatcher,
@@ -61,6 +63,7 @@ public sealed class LiveIndexService : BackgroundService
         _historyQueue = historyQueue;
         _historyOptions = historyOptions;
         _embeddingGenerator = embeddingGenerator;
+        _modelDownloadGate = modelDownloadGate;
         _modelInfo = modelInfo;
         _analyzerPipeline = analyzerPipeline;
         _languageDispatcher = languageDispatcher;
@@ -170,6 +173,13 @@ public sealed class LiveIndexService : BackgroundService
             // Probe the cheap store flag first: ICodeEmbeddingGenerator.IsAvailable lazy-loads
             // the ~280 MB ONNX session on first access, so checking it is only worthwhile when
             // we actually have a vec0-backed store to write into.
+            //
+            // Await the model-download gate before checking IsAvailable. The generator's first
+            // IsAvailable probe is sticky (it caches the answer of its initial cache check), so
+            // probing before the download lands would permanently disable embeddings for this
+            // session. Bypassed installs (--no-embeddings or --no-model-download with empty
+            // cache) wire an already-completed gate, so this await is free.
+            await _modelDownloadGate.Ready.ConfigureAwait(false);
             IEmbeddingsRequestSink indexerSink;
             if (embeddingsStore.IsAvailable && _embeddingGenerator.IsAvailable)
             {
@@ -178,6 +188,7 @@ public sealed class LiveIndexService : BackgroundService
                     scopeSink,
                     _embeddingGenerator,
                     embeddingsStore,
+                    _modelDownloadGate,
                     _loggerFactory.CreateLogger<EmbeddingsHostedService>());
                 await scopeEmbeddings.StartAsync(ct).ConfigureAwait(false);
                 indexerSink = scopeSink;

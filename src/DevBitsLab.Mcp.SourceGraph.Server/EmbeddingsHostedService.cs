@@ -21,6 +21,7 @@ public sealed class EmbeddingsHostedService : BackgroundService
     private readonly ChannelEmbeddingsRequestSink _sink;
     private readonly ICodeEmbeddingGenerator _generator;
     private readonly IEmbeddingsStore _store;
+    private readonly ModelDownloadGate _modelDownloadGate;
     private readonly ILogger<EmbeddingsHostedService> _logger;
 
     private const int MinBatch = 1;
@@ -31,16 +32,22 @@ public sealed class EmbeddingsHostedService : BackgroundService
         ChannelEmbeddingsRequestSink sink,
         ICodeEmbeddingGenerator generator,
         IEmbeddingsStore store,
+        ModelDownloadGate modelDownloadGate,
         ILogger<EmbeddingsHostedService> logger)
     {
         _sink = sink;
         _generator = generator;
         _store = store;
+        _modelDownloadGate = modelDownloadGate;
         _logger = logger;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        // Wait for the auto-downloader to finish before probing IsAvailable (the probe is sticky).
+        // For bypassed installs the gate is pre-completed, so this is free.
+        await _modelDownloadGate.Ready.ConfigureAwait(false);
+
         if (!_store.IsAvailable)
         {
             _logger.LogInformation("Embeddings store unavailable; embedding worker is idle.");

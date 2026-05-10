@@ -45,6 +45,7 @@ return cli.Subcommand switch
     "scopes" => await ScopesCli.RunSubcommandAsync(cli).ConfigureAwait(false),
     "plugins" => await PluginsCli.RunSubcommandAsync(cli).ConfigureAwait(false),
     "vocabulary" => await VocabularyCli.RunSubcommandAsync(cli).ConfigureAwait(false),
+    "embeddings" => await EmbeddingsCli.RunSubcommandAsync(cli).ConfigureAwait(false),
     _ => Unknown(cli.Subcommand),
 };
 
@@ -142,6 +143,29 @@ static async Task<int> RunServeAsync(CommandLine cli)
     {
         builder.Services.AddSingleton<ICodeEmbeddingGenerator>(_ => new DisabledEmbeddingGenerator(modelInfo));
     }
+
+    // Auto-download gate. Resolves to a pre-completed gate when embeddings are off, or when
+    // --no-model-download is set against an empty cache (the worker will see IsAvailable=false
+    // anyway). Otherwise fires ModelStore.EnsureAsync as a background task — fire-and-don't-await
+    // so the indexer's bulk pass runs concurrently with the download. EnsureAsync swallows its
+    // own exception path: ModelDownloadException is logged at warning, no rethrow, so the gate
+    // task never throws to its awaiters. See ModelDownloadGateFactory for the decision matrix.
+    var noModelDownload = cli.NoModelDownload;
+    builder.Services.AddSingleton<ModelDownloadGate>(sp =>
+        ModelDownloadGateFactory.Build(
+            sp.GetRequiredService<ModelStore>(),
+            sp.GetRequiredService<EmbeddingModelInfo>(),
+            embeddingsEnabled,
+            noModelDownload,
+            sp.GetRequiredService<ILogger<ModelStore>>()));
+
+    // Shared call site for the embedding-cache configuration verbs. Both the long-running MCP
+    // tools (resolved from DI here) and the one-shot CLI router (which builds its own instance)
+    // call into this manager so the two surfaces stay in lock-step.
+    builder.Services.AddSingleton<EmbeddingsManager>(sp => new EmbeddingsManager(
+        sp.GetRequiredService<ModelStore>(),
+        sp.GetRequiredService<EmbeddingModelInfo>(),
+        sp.GetRequiredService<ILogger<EmbeddingsManager>>()));
 
     // Scope registry (lives in `_meta.db`). Wired up first so list_scopes can reflect the
     // pre-scope-host status while initial indexing is still running.
@@ -355,6 +379,11 @@ static async Task<int> RunServeAsync(CommandLine cli)
     // both built-in tools (registered via WithToolsFromAssembly) and any tools added by plugins.
     ToolDescriptionFormatter.ApplyTriggersFromAttributes(host.Services.GetServices<McpServerTool>());
 
+    // Apply MCP-spec tool annotations (destructiveHint / idempotentHint / readOnlyHint) for every
+    // method carrying [ToolAnnotation]. Spec-aware hosts use these to require explicit user
+    // confirmation before invoking destructive tools (e.g. embeddings_remove).
+    ToolDescriptionFormatter.ApplyAnnotationsFromAttributes(host.Services.GetServices<McpServerTool>());
+
     // Stamp the brand mark on every built-in tool's catalog identity (Title + Description). Same
     // post-build mutation pattern as ApplyTriggersFromAttributes; reads LeafFormatter.Suppressed
     // (set above ~line 255) to short-circuit when --no-leaf is in effect. Plugin tools are skipped
@@ -419,14 +448,21 @@ static async Task<int> RunIndexAsync(CommandLine cli)
     {
         channelSink = new ChannelEmbeddingsRequestSink();
         sink = channelSink;
-        var ms = new ModelStore(loggerFactory.CreateLogger<ModelStore>());
+        var msLogger = loggerFactory.CreateLogger<ModelStore>();
+        var ms = new ModelStore(msLogger);
         generator = new JinaCodeEmbeddingGenerator(
             ms.FilePath(modelInfo.ModelId, "model.onnx"),
             ms.FilePath(modelInfo.ModelId, "tokenizer.json"),
             modelInfo,
             logger: loggerFactory.CreateLogger<JinaCodeEmbeddingGenerator>());
         var embStore = store.CreateEmbeddingsStore(modelInfo.Dimension, loggerFactory.CreateLogger<SqliteEmbeddingsStore>());
-        embedService = new EmbeddingsHostedService(channelSink, generator, embStore, loggerFactory.CreateLogger<EmbeddingsHostedService>());
+
+        // Build the auto-download gate matching the serve path's semantics, then pass it to the
+        // hosted service so its IsAvailable probe waits for the download to settle.
+        var gate = ModelDownloadGateFactory.Build(
+            ms, modelInfo, embeddingsEnabled: true, noModelDownload: cli.NoModelDownload, logger: msLogger);
+
+        embedService = new EmbeddingsHostedService(channelSink, generator, embStore, gate, loggerFactory.CreateLogger<EmbeddingsHostedService>());
         embedDrain = embedService.StartAsync(CancellationToken.None);
     }
 

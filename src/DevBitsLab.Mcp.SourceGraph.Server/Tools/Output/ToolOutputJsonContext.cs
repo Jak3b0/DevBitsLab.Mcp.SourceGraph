@@ -38,6 +38,8 @@ namespace DevBitsLab.Mcp.SourceGraph.Server.Tools.Output;
 [JsonSerializable(typeof(GraphStatsResult))]
 [JsonSerializable(typeof(DescribeSchemaResult))]
 [JsonSerializable(typeof(QueryGraphResult))]
+[JsonSerializable(typeof(EmbeddingsStatusResult))]
+[JsonSerializable(typeof(EmbeddingsRemoveResult))]
 internal partial class ToolOutputJsonContext : JsonSerializerContext
 {
 }

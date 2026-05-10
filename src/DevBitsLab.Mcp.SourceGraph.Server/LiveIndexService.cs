@@ -412,7 +412,7 @@ public sealed class LiveIndexService : BackgroundService
             // unconditional.
             //
             // Probe the cheap store flag first: ICodeEmbeddingGenerator.IsAvailable lazy-loads
-            // the ~280 MB ONNX session on first access, so checking it is only worthwhile when
+            // the ~640 MB ONNX session on first access, so checking it is only worthwhile when
             // we actually have a vec0-backed store to write into.
             //
             // Await the model-download gate before checking IsAvailable. The generator's first

@@ -205,7 +205,7 @@ The CLI SHALL accept a `sourcegraph-mcp embeddings <verb>` top-level subcommand 
 - **THEN** the command prints an `ArgumentException` message naming both flags, prints the `embeddings remove` usage line, and exits `2` without touching disk
 
 #### Scenario: Verify, no pinned SHA in manifest
-- **WHEN** `sourcegraph-mcp embeddings verify` is invoked against a populated cache and the active model's manifest has no pinned SHA-256 strings (today's state)
+- **WHEN** `sourcegraph-mcp embeddings verify --model someorg/custom-model` is invoked against a populated cache for a non-default model whose manifest has no pinned SHA-256 strings (the override-model path uses a best-effort manifest)
 - **THEN** the command prints the computed SHA of every cached file alongside a `(no pinned SHA — informational only)` note and exits `0`
 
 #### Scenario: Verify, pinned SHA matches

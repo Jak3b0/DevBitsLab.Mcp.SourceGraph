@@ -78,7 +78,7 @@ public static class EmbeddingsTools
 
     [McpServerTool(UseStructuredContent = true, OutputSchemaType = typeof(EmbeddingsRemoveResult))]
     [ToolAnnotation(DestructiveHint = true, IdempotentHint = true)]
-    [ToolTrigger("user explicitly asked to free disk or swap models — never as a side-effect of debugging. Re-downloading the default model takes minutes and ~280 MB of egress.")]
+    [ToolTrigger("user explicitly asked to free disk or swap models — never as a side-effect of debugging. Re-downloading the default model takes minutes and ~640 MB of egress.")]
     [Description("Delete the embedding model cache directory. Defaults to the active model. Pass `all = true` to wipe every cached model, or `modelId` to target a specific one. Combining `modelId` with `all = true` is rejected.")]
     public static Task<CallToolResult> EmbeddingsRemoveAsync(
         EmbeddingsManager manager,
@@ -110,8 +110,8 @@ public static class EmbeddingsTools
 
     [McpServerTool(UseStructuredContent = true, OutputSchemaType = typeof(EmbeddingsStatusResult))]
     [ToolAnnotation(ReadOnlyHint = true, IdempotentHint = true)]
-    [ToolTrigger("\"do my cached files match the pinned hashes?\" — recomputes SHAs and compares against the manifest. Pre-pin (no manifest SHAs yet) the result is informational only.")]
-    [Description("Recompute SHA-256 of every cached file and compare against the manifest's pinned SHAs. When a manifest entry has no pinned SHA (today's state pre-pin), `match` stays null. When pinned and mismatched, the response is flagged with isError=true.")]
+    [ToolTrigger("\"do my cached files match the pinned hashes?\" — recomputes SHAs and compares against the manifest. Default model has pinned SHAs and reports match=true|false; override `--model` paths use a best-effort manifest with no pin and report match=null (informational only).")]
+    [Description("Recompute SHA-256 of every cached file and compare against the manifest's pinned SHAs. The default model ships with pinned SHAs — `match` is true on a healthy cache and false on tampered/corrupt files. Override `--model <id>` paths use a best-effort manifest with no pinned SHAs, so `match` stays null (informational only). When pinned and mismatched, the response is flagged with isError=true.")]
     public static Task<CallToolResult> EmbeddingsVerifyAsync(
         EmbeddingsManager manager,
         string? modelId = null) =>

@@ -372,9 +372,10 @@ internal sealed class CommandLine
               cached model with --all. Combining --model with --all is rejected.
 
           sourcegraph-mcp embeddings verify [--model <id>]
-              Recompute SHAs of every cached file. When the manifest pins SHAs, exits 2 on
-              mismatch. When the manifest has no pinned SHAs (today's state), prints the computed
-              SHA with an "informational only" note and exits 0.
+              Recompute SHAs of every cached file. The default model ships with pinned SHAs —
+              exits 2 on mismatch. Override `--model <id>` paths use a best-effort manifest with
+              no pinned SHAs; in that case prints the computed SHA with an "informational only"
+              note and exits 0.
 
         Common flags:
           --root <path>     Repository root used for `.sourcegraph.json` discovery and scope DBs.

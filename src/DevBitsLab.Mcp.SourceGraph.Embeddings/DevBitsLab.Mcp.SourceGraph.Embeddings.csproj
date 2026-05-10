@@ -5,8 +5,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- ONNX Runtime: embedding generator native dependency. Quantised models (~280 MB) run
-         on CPU on every developer laptop in single-digit ms per chunk. -->
+    <!-- ONNX Runtime: embedding generator native dependency. The default Jina v2 base code
+         FP32 graph is ~640 MB, runs on CPU on every developer laptop in single-digit ms per
+         chunk after the first load. -->
     <PackageReference Include="Microsoft.ML.OnnxRuntime" />
 
     <!-- Microsoft.Extensions.AI provides the IEmbeddingGenerator&lt;TInput, TEmbedding&gt; surface

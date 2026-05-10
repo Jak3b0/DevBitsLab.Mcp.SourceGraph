@@ -66,8 +66,11 @@ calls with a single structured tool call:
 - **Optional code-aware semantic search.** ONNX embeddings (default model:
   `jinaai/jina-embeddings-v2-base-code`) stored in `sqlite-vec` for
   natural-language queries like *"find the rate-limiting code"*. The model
-  (~640 MB) is auto-fetched from Hugging Face on first start into
-  `~/.cache/devbitslab.sourcegraph/models/`; subsequent starts use the cache.
+  (~640 MB) is auto-fetched from Hugging Face on first start into a per-user cache
+  directory resolved by `ModelStore.DefaultCacheDir()` (honours `XDG_CACHE_HOME` /
+  `LOCALAPPDATA` / `~/.cache` per platform — e.g. `~/.cache/devbitslab.sourcegraph/models/`
+  on Linux/macOS, `%LOCALAPPDATA%\devbitslab.sourcegraph\models\` on Windows); subsequent
+  starts use the cache.
   Disable with `--no-embeddings` to skip the pipeline entirely, or
   `--no-model-download` to stay offline once the cache is pre-populated.
 - **Attribute search.** Find every symbol carrying a given attribute, optionally
@@ -343,7 +346,7 @@ to the client at handshake time.
 | `embeddings_status` | Inspect the embedding model cache (read-only): cache directory, model id + dimension, per-file presence/size/SHA, free disk |
 | `embeddings_pull` | Synchronously download the embedding model manifest into the cache (idempotent; mutating tool — host should confirm) |
 | `embeddings_remove` | Delete the cache directory for the active model (default), one specific model, or every cached model with `all=true` (**destructive** — host should confirm) |
-| `embeddings_verify` | Recompute SHAs of every cached file and compare against the manifest. Pre-pin: informational only |
+| `embeddings_verify` | Recompute SHAs of every cached file and compare against the manifest. Default model has pinned SHAs (mismatch → `isError=true`); override `--model` paths report `match=null` (informational only) |
 | `ping` | Health check — returns `pong @ <UTC ISO-8601>` |
 
 ### Ad-hoc queries (escape hatch)
@@ -655,7 +658,7 @@ sourcegraph-mcp <subcommand> [options]
 | `embeddings status [--model <id>]` | Inspect the embedding model cache: cache directory, active model + dimension, per-file presence/size/SHA-256, free disk on the cache volume. First stop when `--no-model-download` warned the cache was empty. |
 | `embeddings pull [--model <id>]` | Synchronously download the active (or `--model`) manifest into the cache. Idempotent — a populated cache is a no-op. Useful as a pre-flight before air-gapping. |
 | `embeddings remove [--model <id>] [--all]` | Clear the cache for the active model (default), one specific `--model`, or every cached model with `--all`. Combining `--model` and `--all` is rejected. |
-| `embeddings verify [--model <id>]` | Recompute SHA-256 of every cached file and compare against the manifest. Pre-pin (today): exits `0`, prints "informational only" beside each computed hash. Post-pin: exits `2` on mismatch. |
+| `embeddings verify [--model <id>]` | Recompute SHA-256 of every cached file and compare against the manifest. Default model has pinned SHAs — exits `2` on mismatch. Override `--model <id>` paths use a best-effort manifest with no pinned SHAs; in that case prints "informational only" beside each computed hash and exits `0`. |
 
 Common flags:
 

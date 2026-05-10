@@ -19,7 +19,8 @@ public sealed record EmbeddingsStatusResult(
 /// <summary>
 /// One file row inside <see cref="EmbeddingsStatusResult.Files"/>. <see cref="Match"/> is null
 /// when verification mode wasn't requested, the file is missing, or the manifest has no pinned
-/// SHA for this entry (informational mode pre-pin).
+/// SHA for this entry (informational mode — the override-model path uses a best-effort
+/// manifest with no pinned SHAs, so `Match` stays null while `ComputedSha` is reported).
 /// </summary>
 public sealed record EmbeddingsFileRow(
     [property: JsonPropertyName("local_name")] string LocalName,

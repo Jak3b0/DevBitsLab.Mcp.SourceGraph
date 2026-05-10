@@ -25,7 +25,8 @@ public sealed record EmbeddingModelInfo(string ModelId, int Dimension)
 
 /// <summary>
 /// Default embedding model identity used when no <c>--model</c> override is supplied.
-/// 768-dim, code-trained, ~280 MB INT8-quantised ONNX from Hugging Face.
+/// 768-dim, code-trained, ~640 MB FP32 ONNX (the upstream `onnx/model.onnx` file at HF) —
+/// not the smaller INT8-quantised variant. Subsequent runs hit the local cache.
 /// </summary>
 public static class DefaultEmbeddingModel
 {

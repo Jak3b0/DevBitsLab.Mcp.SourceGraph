@@ -117,8 +117,8 @@ public sealed class MultiScopeReadOnlyConnectionTests : IAsyncLifetime
         var act = async () => await cmd.ExecuteNonQueryAsync();
         var ex = await act.Should().ThrowAsync<SqliteException>();
         // SqliteErrorCode 8 = SQLITE_READONLY ("attempt to write a readonly database").
-        ((int)ex.Which.SqliteErrorCode).Should().Be(8,
-            "the per-scope ATTACH was opened with ?mode=ro");
+        ex.Which.SqliteErrorCode.Should().Be(8,
+            "PRAGMA query_only = 1 makes the connection refuse writes against any attached scope DB");
     }
 
     [Fact]

@@ -200,13 +200,11 @@ public static class MultiScopeReadOnlyConnection
         }
 
         // De-duplicate while preserving caller order (so the resulting UNION ALL branches
-        // are deterministic per call).
-        var seen = new HashSet<string>(StringComparer.Ordinal);
+        // are deterministic per call). Distinct preserves first-occurrence order under LINQ-to-Objects.
         var byId = registered.ToDictionary(r => r.Id, StringComparer.Ordinal);
         var result = new List<string>(requested.Count);
-        foreach (var id in requested)
+        foreach (var id in requested.Distinct(StringComparer.Ordinal))
         {
-            if (!seen.Add(id)) continue;
             if (!byId.ContainsKey(id))
             {
                 throw new ArgumentException(

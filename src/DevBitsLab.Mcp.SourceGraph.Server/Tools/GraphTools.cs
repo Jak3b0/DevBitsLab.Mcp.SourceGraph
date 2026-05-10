@@ -2887,14 +2887,7 @@ public static class GraphTools
                 var values = new object?[reader.FieldCount];
                 for (var i = 0; i < reader.FieldCount; i++)
                 {
-                    if (reader.IsDBNull(i))
-                    {
-                        values[i] = null;
-                    }
-                    else
-                    {
-                        values[i] = reader.GetValue(i);
-                    }
+                    values[i] = reader.IsDBNull(i) ? null : reader.GetValue(i);
                 }
                 // Pre-serialize each row to a JsonElement (a JSON array). The reflection-based
                 // serializer is acceptable here because (a) it's the only path that handles the
@@ -3003,7 +2996,7 @@ public static class GraphTools
                 hint: "check your SQL against describe_schema",
                 scope: scope,
                 elapsedMs: sw.ElapsedMilliseconds,
-                extras: new Dictionary<string, object?> { ["code"] = (int)ex.SqliteErrorCode });
+                extras: new Dictionary<string, object?> { ["code"] = ex.SqliteErrorCode });
         }
         finally
         {

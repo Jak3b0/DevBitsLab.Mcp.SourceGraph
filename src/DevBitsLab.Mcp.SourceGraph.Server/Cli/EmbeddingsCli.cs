@@ -45,9 +45,20 @@ internal static class EmbeddingsCli
         var mgr = BuildManager(cli, out var loggerFactory);
         using (loggerFactory)
         {
-            var status = await mgr.GetStatusAsync(cli.Model).ConfigureAwait(false);
-            PrintStatus(status, verifying: false);
-            return 0;
+            try
+            {
+                var status = await mgr.GetStatusAsync(cli.Model).ConfigureAwait(false);
+                PrintStatus(status, verifying: false);
+                return 0;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // FileInfo.Length / SHA computation can throw on locked or unreadable cache
+                // files. Surface as a clean stderr error + exit-1 rather than an unhandled
+                // stack trace. Cancellation still propagates.
+                await Console.Error.WriteLineAsync($"error: status read failed: {ex.Message}").ConfigureAwait(false);
+                return 1;
+            }
         }
     }
 
@@ -119,12 +130,24 @@ internal static class EmbeddingsCli
         var mgr = BuildManager(cli, out var loggerFactory);
         using (loggerFactory)
         {
-            var status = await mgr.VerifyAsync(cli.Model).ConfigureAwait(false);
-            PrintStatus(status, verifying: true);
-            // Exit non-zero only when at least one file has Match = false (genuine mismatch);
-            // Match = null is informational mode (no pinned SHA), exit 0.
-            var anyMismatch = status.Files.Any(f => f.Match == false);
-            return anyMismatch ? 2 : 0;
+            try
+            {
+                var status = await mgr.VerifyAsync(cli.Model).ConfigureAwait(false);
+                PrintStatus(status, verifying: true);
+                // Exit non-zero only when at least one file has Match = false (genuine mismatch);
+                // Match = null is informational mode (no pinned SHA), exit 0.
+                var anyMismatch = status.Files.Any(f => f.Match == false);
+                return anyMismatch ? 2 : 0;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // SHA recomputation reads every cached file — a locked / unreadable file
+                // surfaces as IOException / UnauthorizedAccessException. Surface as a clean
+                // stderr error + exit-1 rather than an unhandled stack trace. Cancellation
+                // still propagates.
+                await Console.Error.WriteLineAsync($"error: verify failed: {ex.Message}").ConfigureAwait(false);
+                return 1;
+            }
         }
     }
 

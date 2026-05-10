@@ -69,7 +69,17 @@ public sealed class ModelStore
         // Strict subdirectory: the resolved path must START WITH `_baseDir<sep>`, not equal it.
         // A bare `.` would resolve to `_baseDir` itself, which `Directory.Delete(..., recursive)`
         // would happily wipe — that's still a privilege escalation against the cache root.
-        if (!resolved.StartsWith(baseWithSep, StringComparison.Ordinal))
+        //
+        // Use case-insensitive comparison on platforms where the file system is
+        // case-insensitive (Windows, macOS HFS+/APFS-default). Otherwise a drive-letter or
+        // directory casing mismatch (e.g. `C:\Users\...` vs `c:\users\...`) would falsely
+        // reject a valid path. Linux's case-sensitive default keeps OrdinalIgnoreCase from
+        // weakening the security property because path resolution there is itself
+        // case-sensitive — `_baseDir` and `resolved` will always have matching casing.
+        var pathComparison = OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+        if (!resolved.StartsWith(baseWithSep, pathComparison))
         {
             throw new ArgumentException(
                 $"modelId '{modelId}' resolves to '{resolved}', which is not a subdirectory of '{baseResolved}'.",

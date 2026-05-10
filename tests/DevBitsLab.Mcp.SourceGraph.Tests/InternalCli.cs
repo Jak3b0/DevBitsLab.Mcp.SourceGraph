@@ -10,6 +10,13 @@ namespace DevBitsLab.Mcp.SourceGraph.Tests;
 /// types themselves still don't satisfy <c>typeof(...)</c> from outside the project's
 /// namespace tree without a fully-qualified path. This helper centralises the
 /// `Type.GetType` + method dispatch + stdout capture so individual CLI tests stay tight.
+///
+/// <para><b>Threading:</b> <see cref="RunSubcommandAsync"/> redirects
+/// <see cref="Console.Out"/> globally via <see cref="Console.SetOut"/>. Callers MUST be in
+/// the <c>CliConsole</c> xUnit collection (see <c>OnboardingCliTests</c>,
+/// <c>ScopesInfoCliTests</c>) so xUnit serialises every Console redirection across the
+/// affected test classes. Without that, parallel test runs racing on
+/// <c>Console.SetOut</c> can interleave or restore the wrong writer.</para>
 /// </summary>
 internal static class InternalCli
 {

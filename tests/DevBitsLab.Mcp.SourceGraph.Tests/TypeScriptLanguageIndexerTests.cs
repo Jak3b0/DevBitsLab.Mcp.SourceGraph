@@ -176,6 +176,30 @@ public sealed class TypeScriptLanguageIndexerTests
     }
 
     [Fact]
+    public async Task New_expression_emits_instantiates_edge_to_constructor()
+    {
+        var indexer = new TypeScriptLanguageIndexer();
+        // `new Foo()` — Foo is the constructor target. Same M/T/V candidate emission as JSX
+        // since tree-sitter doesn't tell us whether Foo is declared as a class, function, or
+        // arrow-bound const. GraphStoreEmitter drops unmatched candidates at flush time.
+        var bytes = Encoding.UTF8.GetBytes(
+            "function build() { return new Counter(); }");
+        var ctx = new IndexContext("/repo/src/factory.ts", bytes, "test", "/repo");
+
+        var events = await indexer.IndexAsync(ctx, CancellationToken.None);
+
+        var counterEdges = events.OfType<IndexEvent.EdgeEmitted>()
+            .Where(e => e.EdgeKindName == "instantiates" && e.TargetCanonicalKey.Contains("Counter"))
+            .ToList();
+        counterEdges.Should().HaveCount(3, "one EdgeEmitted candidate per likely kind prefix (M, T, V)");
+        counterEdges.Should().AllSatisfy(e => e.SourceCanonicalKey.Should().EndWith("::build",
+            "the parent-walk picks the enclosing function as edge source"));
+        // No props payload for new_expression — constructor args don't have a stable "name"
+        // shape we'd attach to the edge.
+        counterEdges[0].Metadata.Should().BeNull();
+    }
+
+    [Fact]
     public async Task Member_expression_call_targets_rightmost_property()
     {
         var indexer = new TypeScriptLanguageIndexer();

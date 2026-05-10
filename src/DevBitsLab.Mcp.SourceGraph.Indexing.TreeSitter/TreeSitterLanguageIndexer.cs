@@ -82,9 +82,11 @@ public abstract class TreeSitterLanguageIndexer<TGrammarConfig> : ILanguageIndex
         var source = Encoding.UTF8.GetString(ctx.Contents);
         var events = new List<IndexEvent>();
 
-        // Per the design's "malformed source = debug log + empty events" posture (mirroring
-        // XamlLanguageIndexer): the parser returning null is the only "malformed" signal we
-        // expect from TreeSitter.DotNet; subclass / SDK-validator exceptions propagate up so
+        // Per the design's malformed-source posture (mirroring XamlLanguageIndexer): a null
+        // tree or a tree whose root reports HasError skips the walk and emits no symbol/ref/
+        // edge events. FileScanned still fires below regardless — that sentinel is what the
+        // watcher uses to record the SHA, so suppressing it would force re-scans of unchanged
+        // malformed content on every pass. Subclass / SDK-validator exceptions propagate up so
         // the plugin host can mark the plugin failed for this file.
         var language = TreeSitterAdapter.GetLanguage(GetGrammarName(ctx));
         using var parser = new Parser(language);

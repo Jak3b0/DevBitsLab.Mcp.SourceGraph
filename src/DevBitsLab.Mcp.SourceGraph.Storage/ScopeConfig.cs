@@ -204,13 +204,18 @@ public static class ScopeConfigLoader
             throw new ScopeConfigException(
                 $"{FileName} scope `{scopeName}`: `enrichment` block is empty. At this SDK version the only recognised key is `lsp` ({{ command, args }}); future enrichment kinds will be reserved when their indexers ship.");
         }
-        if (string.IsNullOrEmpty(dto.Lsp.Command))
+        if (string.IsNullOrWhiteSpace(dto.Lsp.Command))
         {
+            // IsNullOrWhiteSpace (vs IsNullOrEmpty) catches whitespace-only commands like
+            // "   " that would parse cleanly but fail at process-launch time with a useless
+            // FileNotFoundException — the loader is the right place to reject these.
             throw new ScopeConfigException(
-                $"{FileName} scope `{scopeName}`: `enrichment.lsp.command` is missing or empty. Specify the LSP-server executable name (resolved against PATH).");
+                $"{FileName} scope `{scopeName}`: `enrichment.lsp.command` is missing, empty, or whitespace-only. Specify the LSP-server executable name (resolved against PATH).");
         }
         var args = dto.Lsp.Args ?? Array.Empty<string>();
-        return new ScopeEnrichmentConfig(new LspEnrichmentConfig(dto.Lsp.Command, args));
+        // Trim the command to defend against trailing-newline-from-yaml-paste shapes; args
+        // are passed to the process verbatim so we don't trim them.
+        return new ScopeEnrichmentConfig(new LspEnrichmentConfig(dto.Lsp.Command.Trim(), args));
     }
 
     /// <summary>

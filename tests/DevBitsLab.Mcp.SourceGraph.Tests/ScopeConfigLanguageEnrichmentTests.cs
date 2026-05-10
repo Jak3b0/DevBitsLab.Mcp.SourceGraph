@@ -205,6 +205,50 @@ public sealed class ScopeConfigLanguageEnrichmentTests : IDisposable
             .WithMessage("*embeddings*");
     }
 
+    [Theory]
+    [InlineData("   ")]      // whitespace-only
+    [InlineData("\t\t")]     // tabs
+    [InlineData("\n")]       // newline-only
+    public void Load_rejects_lsp_with_whitespace_command(string badCommand)
+    {
+        // IsNullOrWhiteSpace catches commands that would parse cleanly but launch with a
+        // useless FileNotFoundException at process-spawn time — operator gets the failure at
+        // load time instead.
+        var root = WriteConfig($$"""
+            {
+              "scopes": [
+                {
+                  "name": "frontend",
+                  "paths": ["src/**/*.ts"],
+                  "enrichment": { "lsp": { "command": "{{badCommand}}" } }
+                }
+              ]
+            }
+            """);
+
+        var act = () => ScopeConfigLoader.Load(root);
+        act.Should().Throw<ScopeConfigException>().WithMessage("*command*");
+    }
+
+    [Fact]
+    public void Load_trims_whitespace_around_lsp_command()
+    {
+        var root = WriteConfig("""
+            {
+              "scopes": [
+                {
+                  "name": "frontend",
+                  "paths": ["src/**/*.ts"],
+                  "enrichment": { "lsp": { "command": "  tsserver  ", "args": ["--stdio"] } }
+                }
+              ]
+            }
+            """);
+
+        var config = ScopeConfigLoader.Load(root);
+        config.Scopes.Single().Enrichment!.Lsp!.Command.Should().Be("tsserver");
+    }
+
     [Fact]
     public void Load_rejects_lsp_with_empty_command()
     {

@@ -13,7 +13,12 @@ namespace DevBitsLab.Mcp.SourceGraph.Tests;
 /// shared <see cref="InternalCli"/> helper (which handles the reflection dance to reach the
 /// internal CLI types) and asserts both the markdown and <c>--json</c> shapes surface the
 /// new <c>language</c> and <c>enrichment</c> fields.
+///
+/// <para>Lives in the <c>CliConsole</c> collection so xUnit serialises every Console.Out
+/// redirection with the other CLI test classes. Without that, parallel test runs racing on
+/// <see cref="Console.SetOut"/> can interleave or restore the wrong writer.</para>
 /// </summary>
+[Collection("CliConsole")]
 public sealed class ScopesInfoCliTests : IDisposable
 {
     private readonly string _tempDir = Path.Join(Path.GetTempPath(), "sg-scopes-info-tests-" + Guid.NewGuid().ToString("N"));

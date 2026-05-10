@@ -183,25 +183,26 @@ public sealed class TypeScriptLanguageIndexer : TreeSitterLanguageIndexer<TypeSc
     /// <inheritdoc />
     protected override IReadOnlyList<IndexEvent>? OnEdgeNode(TsNode node, string edgeKindName, IndexContext ctx)
     {
-        // JSX elements: emit an instantiates edge from the file (treated as a namespace) to the
-        // component. TS module-files ARE namespaces in the language semantics, so this isn't a
-        // synthetic dodge — `import * as M from './foo'` is documented as importing the
-        // namespace M. We pre-emit a SymbolDeclared for the file-namespace alongside the edge
-        // so GraphStoreEmitter can resolve the source canonical key and persist the row;
-        // emitting the symbol multiple times across edges is safe (UpsertSymbolAsync dedupes
-        // by canonical key).
+        // Two node types map to `instantiates`:
+        //   * JSX elements (jsx_self_closing_element, jsx_opening_element) — `<Button .../>`
+        //   * `new_expression` — `new Foo()` constructor call
+        // For JSX we add a `props` payload to the edge; for `new` we don't (no constructor-arg
+        // equivalent we'd attach to the edge today). Both share the same source-key + target-
+        // candidate construction so they go through one assembly path below.
         if (edgeKindName != EdgeKinds.Instantiates) return null;
-        if (node.Type != "jsx_self_closing_element" && node.Type != "jsx_opening_element") return null;
+        var isJsx = node.Type is "jsx_self_closing_element" or "jsx_opening_element";
+        var isNewExpression = node.Type == "new_expression";
+        if (!isJsx && !isNewExpression) return null;
 
         var scheme = TypeScriptCanonicalKeys.SchemeFromExtension(ctx.FilePath);
         if (scheme is null) return null;
 
-        var tag = ExtractJsxTag(node);
+        var tag = isJsx ? ExtractJsxTag(node) : ExtractNewExpressionConstructor(node);
         if (tag is null) return null;
 
-        // Skip lower-cased HTML-style tags (`<div>`, `<span>`, …): they don't reference user
-        // symbols and would swamp the signal floor.
-        if (char.IsLower(tag.Value.Name[0])) return null;
+        // Skip lower-cased identifiers for JSX (HTML elements like <div>); for `new`, all
+        // identifier-shaped constructors are user symbols, so no filter applies.
+        if (isJsx && char.IsLower(tag.Value.Name[0])) return null;
 
         var repoRelativePath = MakeRepoRelative(ctx);
         var fileNamespaceKey = BuildFileNamespaceKey(scheme, repoRelativePath);
@@ -227,19 +228,25 @@ public sealed class TypeScriptLanguageIndexer : TreeSitterLanguageIndexer<TypeSc
         var enclosingKey = TryFindEnclosingDeclarationKey(node, scheme, repoRelativePath);
         var sourceKey = enclosingKey ?? fileNamespaceKey;
 
-        var props = ExtractJsxProps(node);
+        // Per-node-type metadata. JSX carries a `props` array; `new_expression` has no
+        // direct payload analogue today (constructor-arg names aren't reliably extractable
+        // from positional args), so its edge goes through with metadata=null.
         Dictionary<string, string>? metadata = null;
-        if (props.Count > 0)
+        if (isJsx)
         {
-            metadata = new Dictionary<string, string>(StringComparer.Ordinal)
+            var props = ExtractJsxProps(node);
+            if (props.Count > 0)
             {
-                // JSON-encoded array via JsonSerializer so consumers can parse structurally
-                // and the existing `payload: { ... }` markdown sub-line renders something
-                // sensible. Hand-rolled string concatenation would silently corrupt prop
-                // names containing quotes, backslashes, or other JSON-significant characters
-                // (legal in TS identifiers via `\u00xx` escapes, even if uncommon).
-                ["props"] = JsonSerializer.Serialize(props),
-            };
+                metadata = new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    // JSON-encoded array via JsonSerializer so consumers can parse structurally
+                    // and the existing `payload: { ... }` markdown sub-line renders something
+                    // sensible. Hand-rolled string concatenation would silently corrupt prop
+                    // names containing quotes, backslashes, or other JSON-significant characters
+                    // (legal in TS identifiers via `\u00xx` escapes, even if uncommon).
+                    ["props"] = JsonSerializer.Serialize(props),
+                };
+            }
         }
 
         var (refLine, refCol) = TreeSitterAdapter.ToOneBased(tag.Value.Position);
@@ -344,6 +351,22 @@ public sealed class TypeScriptLanguageIndexer : TreeSitterLanguageIndexer<TypeSc
         // property_identifier in the chain, not the leftmost identifier (`foo`, the root
         // object). ExtractMemberLeaf encapsulates the property-field lookup with a
         // last-property-identifier fallback.
+        return match.Type == "member_expression"
+            ? ExtractMemberLeaf(match)
+            : (match.Text, match.StartPosition);
+    }
+
+    /// <summary>
+    /// For a <c>new_expression</c> like <c>new Foo(args)</c> or <c>new pkg.Bar()</c>, return
+    /// the constructor identifier — the rightmost property of the constructor expression when
+    /// it's a member access, the identifier itself otherwise. Returns null if no recognisable
+    /// constructor name is present (anonymous class expressions, <c>new (anyExpr)()</c>).
+    /// </summary>
+    private static (string Name, global::TreeSitter.Point Position)? ExtractNewExpressionConstructor(TsNode newExpression)
+    {
+        var match = newExpression.NamedChildren
+            .FirstOrDefault(c => c.Type is "identifier" or "type_identifier" or "member_expression");
+        if (match is null) return null;
         return match.Type == "member_expression"
             ? ExtractMemberLeaf(match)
             : (match.Text, match.StartPosition);

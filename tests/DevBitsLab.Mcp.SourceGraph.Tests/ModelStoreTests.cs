@@ -131,6 +131,31 @@ public sealed class ModelStoreTests : IDisposable
         Directory.Exists(dir).Should().BeFalse();
     }
 
+    [Theory]
+    [InlineData("..")]
+    [InlineData("../etc")]
+    [InlineData("../../escape")]
+    [InlineData("vendor/../../escape")]
+    [InlineData(".")]
+    [InlineData("")]
+    public void DirectoryFor_rejectsPathTraversalEscape(string evilModelId)
+    {
+        var ms = new ModelStore(overrideBaseDir: _tempDir);
+        var act = () => ms.DirectoryFor(evilModelId);
+        // Either layer of the defense (segment-level validation OR resolved-under-base check)
+        // is acceptable; the contract is "throw ArgumentException".
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public void DirectoryFor_acceptsLegitimateHfStyleId()
+    {
+        var ms = new ModelStore(overrideBaseDir: _tempDir);
+        var dir = ms.DirectoryFor("jinaai/jina-embeddings-v2-base-code");
+        dir.Should().Contain("jinaai_jina-embeddings-v2-base-code");
+        dir.Should().StartWith(Path.GetFullPath(_tempDir));
+    }
+
     [Fact]
     public async Task RemoveAllAsync_multiModelCache_deletesEverySubdir_preservesBaseDir()
     {
@@ -196,16 +221,20 @@ public sealed class ModelStoreTests : IDisposable
         public HttpStatusCode StatusCode { get; set; } = HttpStatusCode.OK;
         public byte[] Payload { get; set; } = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 };
 
-        // `HttpMessageHandler.SendAsync` transfers ownership of the returned `HttpResponseMessage`
-        // to `HttpClient`, which disposes it. Constructing the response directly inside
-        // `Task.FromResult(...)` instead of via a local intermediate avoids tripping CodeQL's
-        // `cs/local-not-disposed` ownership-transfer false positive.
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             Urls.Add(request.RequestUri!.ToString());
-            return Task.FromResult(StatusCode == HttpStatusCode.OK
-                ? new HttpResponseMessage(StatusCode) { Content = new ByteArrayContent(Payload) }
-                : new HttpResponseMessage(StatusCode));
+            return Task.FromResult(BuildResponse(StatusCode, StatusCode == HttpStatusCode.OK ? Payload : null));
+        }
+
+        // Helper-method ownership-transfer pattern: a method that constructs and returns the
+        // disposable is recognised by CodeQL's `cs/local-not-disposed` flow analysis as a clean
+        // hand-off, unlike an inline ternary in `Task.FromResult(...)`.
+        private static HttpResponseMessage BuildResponse(HttpStatusCode code, byte[]? payload)
+        {
+            var resp = new HttpResponseMessage(code);
+            if (payload is not null) resp.Content = new ByteArrayContent(payload);
+            return resp;
         }
     }
 }

@@ -33,9 +33,74 @@ public sealed class ModelStore
         _http = http ?? new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
     }
 
-    /// <summary>Path that holds the cached files for a specific model id.</summary>
-    public string DirectoryFor(string modelId) =>
-        Path.Join(_baseDir, SanitiseId(modelId));
+    /// <summary>Path that holds the cached files for a specific model id.
+    /// <para>
+    /// <paramref name="modelId"/> reaches us from CLI flags and MCP tool arguments — both
+    /// untrusted — and is fed into <see cref="RemoveAsync"/> / <see cref="RemoveAllAsync"/>'s
+    /// recursive deletes. We defend against path-traversal in two layers:
+    /// </para>
+    /// <list type="number">
+    ///   <item>Reject any input that contains <c>..</c> or single-dot segments outright (HF-style
+    ///         ids never contain those — version numbers like <c>v1.5</c> are fine because the
+    ///         check is for whole segments, not substrings).</item>
+    ///   <item>After <see cref="SanitiseId"/>, resolve the joined path with
+    ///         <see cref="Path.GetFullPath(string)"/> and require the result to be a strict
+    ///         subdirectory of <see cref="_baseDir"/>. The strict-subdir check rejects empty
+    ///         ids and bare-dot ids that would resolve to <see cref="_baseDir"/> itself
+    ///         (deleting which would wipe the entire cache).</item>
+    /// </list>
+    /// </summary>
+    /// <exception cref="ArgumentException">
+    /// Thrown when <paramref name="modelId"/> is empty, contains path-traversal segments, or
+    /// resolves outside <see cref="_baseDir"/>.
+    /// </exception>
+    public string DirectoryFor(string modelId)
+    {
+        ValidateModelId(modelId);
+        var sanitised = SanitiseId(modelId);
+        var joined = Path.Join(_baseDir, sanitised);
+        // Normalise both sides to absolute paths so the under-base check tolerates a relative
+        // _baseDir (e.g. tests with overrideBaseDir = "./tmp/..." after a chdir).
+        var resolved = Path.GetFullPath(joined);
+        var baseResolved = Path.GetFullPath(_baseDir);
+        var baseWithSep = baseResolved.EndsWith(Path.DirectorySeparatorChar)
+            ? baseResolved
+            : baseResolved + Path.DirectorySeparatorChar;
+        // Strict subdirectory: the resolved path must START WITH `_baseDir<sep>`, not equal it.
+        // A bare `.` would resolve to `_baseDir` itself, which `Directory.Delete(..., recursive)`
+        // would happily wipe — that's still a privilege escalation against the cache root.
+        if (!resolved.StartsWith(baseWithSep, StringComparison.Ordinal))
+        {
+            throw new ArgumentException(
+                $"modelId '{modelId}' resolves to '{resolved}', which is not a subdirectory of '{baseResolved}'.",
+                nameof(modelId));
+        }
+        return resolved;
+    }
+
+    /// <summary>
+    /// Layer-1 path-traversal defense: reject empty / whitespace-only ids and any id whose
+    /// segments contain <c>.</c> or <c>..</c>. Run before <see cref="SanitiseId"/> because
+    /// sanitisation collapses path separators and would otherwise hide a <c>../</c> segment as
+    /// a benign-looking <c>.._</c> substring.
+    /// </summary>
+    private static void ValidateModelId(string modelId)
+    {
+        if (string.IsNullOrWhiteSpace(modelId))
+        {
+            throw new ArgumentException("modelId must not be empty.", nameof(modelId));
+        }
+        // Split on path separators and check each segment.
+        foreach (var segment in modelId.Split(new[] { '/', '\\' }, StringSplitOptions.None))
+        {
+            if (segment is "." or "..")
+            {
+                throw new ArgumentException(
+                    $"modelId '{modelId}' contains a path-traversal segment ('{segment}'); not allowed.",
+                    nameof(modelId));
+            }
+        }
+    }
 
     /// <summary>True when every file the model identity requires is present on disk.</summary>
     public bool IsCached(string modelId)

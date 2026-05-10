@@ -37,8 +37,19 @@ public static class EmbeddingsTools
             // BuildStatusResult would clock only the prose render, missing the SHA-256 sweep
             // that dominates wall time.
             var sw = System.Diagnostics.Stopwatch.StartNew();
-            var status = await manager.GetStatusAsync(modelId).ConfigureAwait(false);
-            return BuildStatusResult(status, verifying: false, prefix: null, sw);
+            try
+            {
+                var status = await manager.GetStatusAsync(modelId).ConfigureAwait(false);
+                return BuildStatusResult(status, verifying: false, prefix: null, sw);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // FileInfo.Length / SHA computation can throw IOException /
+                // UnauthorizedAccessException on locked or unreadable cache files. Surface as a
+                // structured tool error rather than an unhandled tool failure. Cancellation
+                // still propagates.
+                return BuildErrorResult($"Status read failed: {ex.Message}", sw);
+            }
         });
 
     [McpServerTool(UseStructuredContent = true, OutputSchemaType = typeof(EmbeddingsStatusResult))]
@@ -107,8 +118,18 @@ public static class EmbeddingsTools
         ToolMetrics.TrackAsync("embeddings_verify", null, async () =>
         {
             var sw = System.Diagnostics.Stopwatch.StartNew();
-            var status = await manager.VerifyAsync(modelId).ConfigureAwait(false);
-            return BuildStatusResult(status, verifying: true, prefix: null, sw);
+            try
+            {
+                var status = await manager.VerifyAsync(modelId).ConfigureAwait(false);
+                return BuildStatusResult(status, verifying: true, prefix: null, sw);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // SHA recomputation reads every cached file — a locked / unreadable file
+                // surfaces as IOException / UnauthorizedAccessException. Return a structured
+                // error rather than an unhandled tool failure. Cancellation still propagates.
+                return BuildErrorResult($"Verify failed: {ex.Message}", sw);
+            }
         });
 
     private static CallToolResult BuildStatusResult(EmbeddingsStatus status, bool verifying, string? prefix, System.Diagnostics.Stopwatch sw)

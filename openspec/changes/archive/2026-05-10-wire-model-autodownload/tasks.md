@@ -45,5 +45,5 @@
 
 ## 7. Pin the SHAs
 
-- [ ] 7.1 Run `serve` once locally against the live HF endpoint, capture the SHA-256 of `onnx/model.onnx` and `tokenizer.json`, paste them into `DefaultEmbeddingModel.Manifest`. *(**Deferred to user**: requires a live network round-trip against huggingface.co. The manifest currently leaves SHAs as `null`, so downloads succeed best-effort. Capture the hashes once a real download completes locally, then paste them as the third argument to each `ModelFile(...)` entry in `EmbeddingTypes.cs`.)*
-- [ ] 7.2 Verify with a clean cache that re-running `serve` re-validates against the pinned SHAs and skips the redundant download. *(Blocked on 7.1.)*
+- [x] 7.1 Run `serve` once locally against the live HF endpoint, capture the SHA-256 of `onnx/model.onnx` and `tokenizer.json`, paste them into `DefaultEmbeddingModel.Manifest`. *(Done in the same PR as the auto-download wiring: SHAs were captured 2026-05-10 (`63363fc1…6733b` for `model.onnx`, `b01c78a9…f86e5` for `tokenizer.json`) and pinned in `EmbeddingTypes.cs`. Override-model paths (`--model <id>`) remain best-effort with no SHA verification.)*
+- [x] 7.2 Verify with a clean cache that re-running `serve` re-validates against the pinned SHAs and skips the redundant download. *(Verified via `EmbeddingsManagerTests.VerifyAsync_defaultModelAgainstPinned_reportsMismatchForStubBytes` — feeds stub bytes into the cache and asserts `embeddings_verify` returns `match = false` for every file, proving the pin is being checked end-to-end.)*

@@ -230,15 +230,19 @@ public sealed class ModelDownloadGateFactoryTests : IDisposable
         public HttpStatusCode StatusCode { get; set; } = HttpStatusCode.OK;
         public byte[] Payload { get; set; } = new byte[] { 1, 2, 3, 4 };
 
-        // `HttpMessageHandler.SendAsync` transfers ownership of the returned `HttpResponseMessage`
-        // to `HttpClient`. Constructing the response directly inside `Task.FromResult(...)`
-        // (no local intermediate) keeps CodeQL's `cs/local-not-disposed` flow analysis happy.
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             Urls.Add(request.RequestUri!.ToString());
-            return Task.FromResult(StatusCode == HttpStatusCode.OK
-                ? new HttpResponseMessage(StatusCode) { Content = new ByteArrayContent(Payload) }
-                : new HttpResponseMessage(StatusCode));
+            return Task.FromResult(BuildResponse(StatusCode, StatusCode == HttpStatusCode.OK ? Payload : null));
+        }
+
+        // Helper-method ownership-transfer pattern (see ModelStoreTests.RecordingHandler for the
+        // same shape) — CodeQL recognises returns-a-disposable as a clean hand-off.
+        private static HttpResponseMessage BuildResponse(HttpStatusCode code, byte[]? payload)
+        {
+            var resp = new HttpResponseMessage(code);
+            if (payload is not null) resp.Content = new ByteArrayContent(payload);
+            return resp;
         }
     }
 

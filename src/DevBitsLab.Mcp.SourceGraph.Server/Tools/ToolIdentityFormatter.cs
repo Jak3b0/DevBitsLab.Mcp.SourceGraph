@@ -37,22 +37,15 @@ internal static class ToolIdentityFormatter
 
             var protocolTool = tool.ProtocolTool;
 
-            // Title: populate from Name when null/empty; otherwise prepend mark if missing.
-            // The Name field is the snake_case identifier ("find_definition") — Title becomes
-            // its branded display form ("🌿 find_definition").
-            var title = protocolTool.Title;
-            if (string.IsNullOrEmpty(title))
-            {
-                protocolTool.Title = LeafFormatter.Mark + protocolTool.Name;
-            }
-            else if (!title.StartsWith(LeafFormatter.Mark, StringComparison.Ordinal))
-            {
-                protocolTool.Title = LeafFormatter.Mark + title;
-            }
+            // Title: always set to "🌿 " + Name. The assignment is idempotent by construction —
+            // running the pass twice yields the same value. Per design.md Decision 2 there is no
+            // per-tool override mechanism today; if a future change adds a [ToolTitle("...")]
+            // attribute, that change can read it here before applying this default.
+            protocolTool.Title = LeafFormatter.Mark + protocolTool.Name;
 
             // Description: prepend mark when present and not already branded. A null/empty
             // description is left unchanged — branding with a bare glyph is pointless and would
-            // paper over a tool-registration bug.
+            // paper over a tool-registration bug. The spec documents this carve-out.
             var description = protocolTool.Description;
             if (!string.IsNullOrEmpty(description) &&
                 !description.StartsWith(LeafFormatter.Mark, StringComparison.Ordinal))

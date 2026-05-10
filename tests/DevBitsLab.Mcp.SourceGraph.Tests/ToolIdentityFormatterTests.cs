@@ -50,14 +50,17 @@ public sealed class ToolIdentityFormatterTests : IDisposable
     }
 
     [Fact]
-    public void ApplyBrandMark_isIdempotent_whenTitleAlreadyStartsWithMark()
+    public void ApplyBrandMark_overwritesPreviouslySetTitle_withMarkPlusName()
     {
+        // Per the spec ("Tool.Title SHALL be set to '🌿 ' + Tool.Name") and design.md Decision 2
+        // ("set unconditionally, no fallback to existing Title"), any previously-set Title is
+        // overwritten. Idempotency is by construction: pass twice, same result.
         var tool = CreateBuiltInTool();
-        tool.ProtocolTool.Title = LeafFormatter.Mark + "custom_title";
+        tool.ProtocolTool.Title = LeafFormatter.Mark + "stale_value";
 
         ToolIdentityFormatter.ApplyBrandMark(new[] { tool });
 
-        tool.ProtocolTool.Title.Should().Be(LeafFormatter.Mark + "custom_title");
+        tool.ProtocolTool.Title.Should().Be(LeafFormatter.Mark + tool.ProtocolTool.Name);
     }
 
     [Fact]
@@ -124,14 +127,17 @@ public sealed class ToolIdentityFormatterTests : IDisposable
     }
 
     [Fact]
-    public void ApplyBrandMark_prependsMarkToCustomTitle_whenTitleIsSetWithoutMark()
+    public void ApplyBrandMark_overwritesUnbrandedCustomTitle_withMarkPlusName()
     {
+        // A custom Title without the leaf mark is replaced by "🌿 + Name", not augmented.
+        // The pass treats any pre-existing Title as a stale value to overwrite — matching the
+        // spec invariant that built-in Title is exactly the Name-derived form.
         var tool = CreateBuiltInTool();
         tool.ProtocolTool.Title = "Custom Display Name";
 
         ToolIdentityFormatter.ApplyBrandMark(new[] { tool });
 
-        tool.ProtocolTool.Title.Should().Be(LeafFormatter.Mark + "Custom Display Name");
+        tool.ProtocolTool.Title.Should().Be(LeafFormatter.Mark + tool.ProtocolTool.Name);
     }
 
     private static McpServerTool CreateBuiltInTool() =>

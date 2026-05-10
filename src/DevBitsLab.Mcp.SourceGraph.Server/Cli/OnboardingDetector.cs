@@ -46,18 +46,16 @@ internal static class OnboardingDetector
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var hits = new List<string>();
         // Root and one level deep — matching ScopeConfigLoader.DiscoverSolutionSiblings's range.
+        // `seen.Add` is idempotent and side-effect-safe, so using it as the Where predicate
+        // doubles as the dedup pass: only first-seen paths are added to `hits`.
         foreach (var pattern in new[] { "*.slnx", "*.sln" })
         {
-            foreach (var file in Directory.EnumerateFiles(root, pattern, SearchOption.TopDirectoryOnly))
-            {
-                if (seen.Add(file)) hits.Add(file);
-            }
+            hits.AddRange(
+                Directory.EnumerateFiles(root, pattern, SearchOption.TopDirectoryOnly)
+                    .Where(seen.Add));
             foreach (var dir in SafeEnumerateTopDirs(root))
             {
-                foreach (var file in SafeEnumerateFiles(dir, pattern))
-                {
-                    if (seen.Add(file)) hits.Add(file);
-                }
+                hits.AddRange(SafeEnumerateFiles(dir, pattern).Where(seen.Add));
             }
         }
         hits.Sort(StringComparer.Ordinal);

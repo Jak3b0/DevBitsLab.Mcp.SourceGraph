@@ -178,7 +178,7 @@ The subcommand SHALL accept the following flags:
 - `--solution <path>` (repeatable) — override solution-discovery; passes through to `init-scopes` core logic when multiple solutions are configured.
 - `--no-embeddings` / `--no-history` — propagate the corresponding `serve` flag into the written `args` array.
 - `--prewarm` / `--no-prewarm` — opt in to / out of running `RoslynIndexer.IndexSolutionOnceAsync` after writing configs.
-- `--install-mode {global,local-tool,in-repo}` — choose the resulting `command`/`args` shape: `global` invokes `sourcegraph-mcp` directly (default); `local-tool` writes `.config/dotnet-tools.json` and emits `command: "dotnet"`, `args: ["sourcegraph-mcp", ...]`; `in-repo` emits `command: "dotnet"`, `args: ["run", "--project", "<server csproj>", "--no-build", "--", "serve", ...]`.
+- `--install-mode {global,local-tool,in-repo}` — choose the resulting `command`/`args` shape: `global` invokes `sourcegraph-mcp` directly (default); `local-tool` emits `command: "dotnet"`, `args: ["sourcegraph-mcp", ...]` and assumes the repo already has a `.config/dotnet-tools.json` listing the tool (created via `dotnet new tool-manifest && dotnet tool install DevBitsLab.Mcp.SourceGraph.Tool`; `init` does not create or merge the manifest in v1); `in-repo` emits `command: "dotnet"`, `args: ["run", "--project", "<server csproj>", "--no-build", "--", "serve", ...]`.
 - `--print-only` — print the per-client config snippets to stdout with `# would write to: <path>` comment lines; write no files.
 - `--force` — overwrite an existing `sourcegraph` server entry without prompting (in interactive mode) or without skipping (in `--yes` mode); never modifies other servers' entries.
 - `--root <path>` — repository root (default CWD).

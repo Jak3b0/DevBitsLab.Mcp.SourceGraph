@@ -23,7 +23,9 @@ public sealed class OnboardingDetectorTests : IDisposable
 
     public void Dispose()
     {
-        try { Directory.Delete(_tempRoot, recursive: true); } catch { /* best-effort */ }
+        try { Directory.Delete(_tempRoot, recursive: true); }
+        catch (IOException) { /* best-effort cleanup */ }
+        catch (UnauthorizedAccessException) { /* best-effort cleanup */ }
     }
 
     [Fact]

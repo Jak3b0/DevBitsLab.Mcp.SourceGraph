@@ -97,10 +97,10 @@ internal static class DoctorCli
             dbWritable ? $"per-scope DB dir writable: {scopeDir}"
                        : $"per-scope DB dir not writable: {scopeDir}"));
 
-        // 8. Per-client config files.
-        foreach (var c in detection.ClientConfigsDetected)
+        // 8. Per-client config files. Only existing config files are reported; an absent
+        // optional config slot is not a finding.
+        foreach (var c in detection.ClientConfigsDetected.Where(x => x.Exists))
         {
-            if (!c.Exists) continue; // skip non-existent config slots
             var status = c.ContainsSourcegraphEntry ? DoctorStatus.Pass : DoctorStatus.Warn;
             var msg = c.ContainsSourcegraphEntry
                 ? $"{c.Client.ToSlug()} config wired ({(c.IsUserScope ? "user" : "project")}: {c.Path})"

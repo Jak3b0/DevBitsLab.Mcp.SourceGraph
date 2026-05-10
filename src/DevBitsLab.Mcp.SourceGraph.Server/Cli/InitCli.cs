@@ -71,8 +71,19 @@ internal static class InitCli
                 : writer.DefaultProjectPath(root);
             if (string.IsNullOrEmpty(targetPath))
             {
+                // Specific guidance per known combo so the user knows why the scope was skipped.
+                var msg = (clientId, useUserScope) switch
+                {
+                    (ClientId.Copilot, true) =>
+                        "user-scope Copilot wiring (chat.mcp.servers in settings.json) is not " +
+                        "supported by `init` in v1; use the project-scope `.vscode/mcp.json` " +
+                        "(re-run without --user-copilot) or paste the snippet from `--print-only` " +
+                        "into your VS Code user settings manually",
+                    _ => $"client `{clientId.ToSlug()}` has no {(useUserScope ? "user" : "project")}-scope target path",
+                };
+                Console.Error.WriteLine($"warn: skipping {clientId.ToSlug()} ({(useUserScope ? "user" : "project")}): {msg}");
                 results.Add(new WriterRunResult(clientId, useUserScope, "(no target path)",
-                    WriterAction.SkipExistingDiffers, "no target path for this client/scope"));
+                    WriterAction.SkipExistingDiffers, msg));
                 continue;
             }
             byte[]? existing = null;
@@ -272,13 +283,11 @@ internal static class InitCli
         }
         if (cli.ClaudeDesktop) candidates.Add(ClientId.ClaudeDesktop);
 
-        // Apply --no-<client> drops.
-        foreach (var slug in cli.NoClients)
+        // Apply --no-<client> drops. Slugs that don't parse to a known ClientId are silently
+        // ignored — the parser already rejected them with a warn earlier in this method.
+        foreach (var id in cli.NoClients.Select(TryParseClientIdOrNull).Where(x => x.HasValue))
         {
-            if (ClientIdExtensions.TryParseSlug(slug, out var id))
-            {
-                candidates.Remove(id);
-            }
+            candidates.Remove(id!.Value);
         }
 
         // Interactive picker (only when no explicit --client was given).
@@ -304,9 +313,10 @@ internal static class InitCli
     {
         Console.WriteLine("Which clients should I wire up? (Enter to accept, type 'n' to skip a client)");
         var picked = new HashSet<ClientId>();
-        foreach (var id in Enum.GetValues<ClientId>())
+        var visible = Enum.GetValues<ClientId>()
+            .Where(id => id != ClientId.ClaudeDesktop || claudeDesktopOptedIn);
+        foreach (var id in visible)
         {
-            if (id == ClientId.ClaudeDesktop && !claudeDesktopOptedIn) continue;
             var defaultYes = autoSelected.Contains(id);
             var marker = defaultYes ? "[Y/n]" : "[y/N]";
             Console.Write($"  {id.ToSlug(),-15} {marker} ");
@@ -316,6 +326,9 @@ internal static class InitCli
         }
         return picked;
     }
+
+    private static ClientId? TryParseClientIdOrNull(string slug) =>
+        ClientIdExtensions.TryParseSlug(slug, out var id) ? id : null;
 
     private static bool NormaliseYesNo(string? line, bool defaultYes)
     {
@@ -425,55 +438,71 @@ internal static class InitCli
         Console.WriteLine();
         Console.WriteLine($"Pre-warming index against {Path.GetFileName(abs)}…");
         var sw = Stopwatch.StartNew();
-        // Shell out to ourselves for the pre-warm: cleanest and avoids re-creating the indexer
-        // construction graph that lives in Program.cs.
-        var psi = new ProcessStartInfo("dotnet")
+        // Shell out for the pre-warm so we don't re-create the indexer construction graph that
+        // lives in Program.cs. Three invocation strategies, tried in order — the first one that
+        // starts wins. The order is chosen so the path that actually works in each install
+        // mode is hit first:
+        //   1. `dotnet sourcegraph-mcp index <abs>` — works for global tool install AND for the
+        //      .NET local-tool manifest pattern. Most common in practice.
+        //   2. `<entry-apphost> index <abs>` — works when the current process is launched via a
+        //      native apphost (e.g. running in-tree via `dotnet run` produces an apphost binary
+        //      whose Environment.ProcessPath is the apphost itself, not "dotnet").
+        //   3. `dotnet <entry-dll> index <abs>` — last-resort fallback when neither of the
+        //      above starts: re-invokes the same .dll under `dotnet exec`-style launch.
+        var attempts = new List<(string FileName, string[] Args)>
         {
-            ArgumentList = { "sourcegraph-mcp", "index", abs },
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
+            ("dotnet", new[] { "sourcegraph-mcp", "index", abs }),
         };
-        // Try running the published tool first; if that fails (PATH miss), fall back to the
-        // current process's binary location.
-        psi.FileName = ResolveSelfBinary();
-        psi.ArgumentList.Clear();
-        psi.ArgumentList.Add("index");
-        psi.ArgumentList.Add(abs);
-        try
+        var processPath = Environment.ProcessPath;
+        if (!string.IsNullOrEmpty(processPath))
         {
-            using var p = Process.Start(psi);
-            if (p is null)
+            // Heuristic: a `.dll` at ProcessPath means we're being run as `dotnet <dll>`; any
+            // other extension (none on Unix, `.exe` on Windows) means an apphost.
+            if (processPath.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
             {
-                Console.Error.WriteLine("warn: could not start pre-warm subprocess");
+                attempts.Add(("dotnet", new[] { processPath, "index", abs }));
+            }
+            else
+            {
+                attempts.Add((processPath, new[] { "index", abs }));
+            }
+        }
+
+        foreach (var (fileName, args) in attempts)
+        {
+            var psi = new ProcessStartInfo(fileName)
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+            };
+            foreach (var a in args) psi.ArgumentList.Add(a);
+            try
+            {
+                using var p = Process.Start(psi);
+                if (p is null) continue;
+                await p.WaitForExitAsync().ConfigureAwait(false);
+                sw.Stop();
+                Console.WriteLine($"  pre-warm: exit {p.ExitCode} in {sw.Elapsed.TotalSeconds:F1}s");
                 return;
             }
-            await p.WaitForExitAsync().ConfigureAwait(false);
-            sw.Stop();
-            Console.WriteLine($"  pre-warm: exit {p.ExitCode} in {sw.Elapsed.TotalSeconds:F1}s");
+            catch (System.ComponentModel.Win32Exception)
+            {
+                // FileName not found / not executable — try the next strategy.
+                continue;
+            }
+            catch (IOException ex)
+            {
+                Console.Error.WriteLine($"warn: pre-warm failed (i/o): {ex.Message}");
+                return;
+            }
+            catch (InvalidOperationException ex)
+            {
+                Console.Error.WriteLine($"warn: pre-warm failed (process state): {ex.Message}");
+                return;
+            }
         }
-        catch (System.ComponentModel.Win32Exception ex)
-        {
-            Console.Error.WriteLine($"warn: pre-warm failed (process start): {ex.Message}");
-        }
-        catch (IOException ex)
-        {
-            Console.Error.WriteLine($"warn: pre-warm failed (i/o): {ex.Message}");
-        }
-        catch (InvalidOperationException ex)
-        {
-            Console.Error.WriteLine($"warn: pre-warm failed (process state): {ex.Message}");
-        }
-    }
-
-    private static string ResolveSelfBinary()
-    {
-        // When running as `dotnet sourcegraph-mcp` or `sourcegraph-mcp`, the entry assembly's
-        // location is the .dll that we want to re-invoke under `dotnet`. Match the existing
-        // global-tool launch shape by always going through `dotnet`.
-        var path = Environment.ProcessPath;
-        if (!string.IsNullOrEmpty(path)) return path;
-        return "dotnet";
+        Console.Error.WriteLine("warn: pre-warm could not start any subprocess (tried `dotnet sourcegraph-mcp` + the current entry binary). Run `sourcegraph-mcp index <solution>` manually if needed.");
     }
 
     private sealed record WriterRunResult(

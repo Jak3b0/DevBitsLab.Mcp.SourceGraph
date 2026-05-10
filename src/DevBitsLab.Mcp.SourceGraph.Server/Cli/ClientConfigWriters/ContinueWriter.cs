@@ -104,13 +104,10 @@ internal sealed class ContinueWriter : IClientConfigWriter
 
     private static bool NeedsQuoting(string value)
     {
-        foreach (var c in value)
+        if (value.Any(c => c is ':' or '#' or '"' or '\'' or '[' or ']' or '{' or '}' or ',' or '&' or '*'
+            or '!' or '|' or '>' or '%' or '@' or '`' or '\\' or '\n' or '\t'))
         {
-            if (c is ':' or '#' or '"' or '\'' or '[' or ']' or '{' or '}' or ',' or '&' or '*'
-                or '!' or '|' or '>' or '%' or '@' or '`' or '\\' or '\n' or '\t')
-            {
-                return true;
-            }
+            return true;
         }
         // Plain-scalar guards: a leading indicator character forces quoting even when the
         // rest of the string is plain.

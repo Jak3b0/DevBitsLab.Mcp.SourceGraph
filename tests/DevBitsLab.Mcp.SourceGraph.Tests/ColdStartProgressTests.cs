@@ -19,16 +19,17 @@ public sealed class ColdStartProgressTests
     {
         var source = new IndexingProgressSource();
         var captured = new List<ProgressNotificationValue>();
-        var progress = new Progress<ProgressNotificationValue>(captured.Add);
+        // Type the local as the interface so the .Report method group binds to the public
+        // IProgress<T>.Report rather than to Progress<T> (where Report is an explicit interface
+        // implementation and inaccessible by name). Avoids the inline cast that CodeQL
+        // misclassifies as cs/useless-upcast.
+        IProgress<ProgressNotificationValue> progress = new Progress<ProgressNotificationValue>(captured.Add);
         // The Progress<T> contract dispatches Report on the captured SynchronizationContext or
         // ThreadPool. Tests run with no SyncCtx, so dispatch is async — give it a bounded delay
         // to settle after each emission.
 
         // Mirror the wrapper's subscribe-await-unsubscribe pattern.
-        // The cast to IProgress<T> is required: Progress<T>.Report is an explicit interface
-        // implementation, not a public method on the class itself. CodeQL flags this as
-        // cs/useless-upcast — it isn't.
-        Action<ProgressNotificationValue> handler = ((IProgress<ProgressNotificationValue>)progress).Report;
+        Action<ProgressNotificationValue> handler = progress.Report;
         source.Reported += handler;
         try
         {

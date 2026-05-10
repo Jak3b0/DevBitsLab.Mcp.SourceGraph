@@ -46,23 +46,36 @@ internal sealed class IndexingProgressSource : IIndexingProgressSource
     }
 
     /// <summary>Emit a progress event to every subscriber. No-op once <see cref="MarkReady"/>
-    /// has fired (terminal-state contract).</summary>
+    /// has flipped <see cref="IsReady"/> (terminal-state contract).</summary>
     public void Emit(ProgressNotificationValue value)
     {
-        if (_isReady) return;
         Action<ProgressNotificationValue>? snapshot;
-        lock (_lock) snapshot = _handlers;
+        lock (_lock)
+        {
+            // Re-check inside the lock so we don't race with `MarkReady` flipping the flag.
+            // If MarkReady has already won the lock and set `_isReady = true`, this Emit drops.
+            if (_isReady) return;
+            snapshot = _handlers;
+        }
         snapshot?.Invoke(value);
     }
 
-    /// <summary>Emit the terminal <c>ready</c> event and flip the IsReady flag. Subsequent
-    /// <see cref="Emit"/> calls are dropped.</summary>
+    /// <summary>Emit the terminal <c>ready</c> event and flip the IsReady flag. Idempotent and
+    /// thread-safe: the flag is set inside the same lock that takes the subscriber snapshot, so
+    /// any subsequent <see cref="Emit"/> call observes the flag and short-circuits.</summary>
     public void MarkReady()
     {
-        if (_isReady) return;
         Action<ProgressNotificationValue>? snapshot;
-        lock (_lock) snapshot = _handlers;
+        lock (_lock)
+        {
+            if (_isReady) return;
+            // Flip the flag under the lock BEFORE invoking handlers. Any concurrent `Emit`
+            // entering the lock after this point sees `_isReady = true` and drops; an Emit
+            // already past the flag check (snapshot in hand) may still complete in parallel
+            // with our own dispatch — that's an inherent property of out-of-lock invocation.
+            _isReady = true;
+            snapshot = _handlers;
+        }
         snapshot?.Invoke(new ProgressNotificationValue { Progress = 1.0f, Total = 1.0f, Message = "ready" });
-        _isReady = true;
     }
 }

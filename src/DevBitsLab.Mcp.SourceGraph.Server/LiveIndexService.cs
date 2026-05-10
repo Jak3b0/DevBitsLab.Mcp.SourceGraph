@@ -290,10 +290,22 @@ public sealed class LiveIndexService : BackgroundService
         // Task.Run with CancellationToken.None — the work observes `ct` cooperatively inside
         // (RunInitialIndexAsync / StartWatcher both honour it) but the scheduling itself must
         // not be gated on `ct` so a cancellation-during-handoff still kicks off the cold index.
+        // The body is wrapped so an unobserved exception (notably OperationCanceledException on
+        // shutdown) doesn't surface as UnobservedTaskException noise — RunInitialIndexAsync's
+        // own catch already settles the host's status, so anything reaching this layer is either
+        // cooperative cancellation or a programming error worth logging.
         _ = Task.Run(async () =>
         {
-            await RunInitialIndexAsync(host, ct).ConfigureAwait(false);
-            if (host.Status == "ok") StartWatcher(host, ct);
+            try
+            {
+                await RunInitialIndexAsync(host, ct).ConfigureAwait(false);
+                if (host.Status == "ok") StartWatcher(host, ct);
+            }
+            catch (OperationCanceledException) { /* shutting down */ }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Live bring-up of scope `{Id}` raised after Prepare", host.Scope.Id);
+            }
         }, CancellationToken.None);
     }
 
@@ -315,11 +327,20 @@ public sealed class LiveIndexService : BackgroundService
         // Task.Run with CancellationToken.None: we need this work to actually start even if `ct`
         // is cancelled (shutdown). Cooperative cancellation still happens inside the task — both
         // RunInitialIndexAsync and the watcher loop observe `ct` — but the task scheduling itself
-        // mustn't gate on it.
+        // mustn't gate on it. Wrapped to swallow `OperationCanceledException` on shutdown and
+        // log anything else, so the fire-and-forget can't surface as UnobservedTaskException.
         _ = Task.Run(async () =>
         {
-            await RunInitialIndexAsync(newHost, ct).ConfigureAwait(false);
-            if (newHost.Status == "ok") StartWatcher(newHost, ct);
+            try
+            {
+                await RunInitialIndexAsync(newHost, ct).ConfigureAwait(false);
+                if (newHost.Status == "ok") StartWatcher(newHost, ct);
+            }
+            catch (OperationCanceledException) { /* shutting down */ }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Live replace cold-index for scope `{Id}` raised after Prepare", newHost.Scope.Id);
+            }
         }, CancellationToken.None);
 
         if (displaced is not null)

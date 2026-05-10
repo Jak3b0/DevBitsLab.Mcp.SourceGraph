@@ -80,22 +80,27 @@ public sealed class ScopeRouterTests
         var newHost = FakeHost("foo");
         router.Register(oldHost);
 
-        var observed = new List<ScopeHost?>();
-        var observedLock = new object();
+        // Track only the invariants we care about — boolean flags + counts — instead of every
+        // observation. The previous version appended to a List in a tight loop with no bound,
+        // which on a slow CI runner could allocate gigabytes before `stop` fires.
+        var sawNull = false;
+        var sawUnexpected = false;
+        var observationCount = 0L;
         using var stop = new CancellationTokenSource();
 
         var observer = Task.Run(() =>
         {
             while (!stop.IsCancellationRequested)
             {
-                if (router.TryGet("foo", out var host))
+                if (!router.TryGet("foo", out var host))
                 {
-                    lock (observedLock) observed.Add(host);
+                    sawNull = true;
                 }
-                else
+                else if (!ReferenceEquals(host, oldHost) && !ReferenceEquals(host, newHost))
                 {
-                    lock (observedLock) observed.Add(null);
+                    sawUnexpected = true;
                 }
+                Interlocked.Increment(ref observationCount);
             }
         });
 
@@ -110,9 +115,8 @@ public sealed class ScopeRouterTests
         stop.Cancel();
         await observer;
 
-        // Every observation must be one of the two hosts; never null.
-        observed.Should().NotBeEmpty();
-        observed.Should().OnlyContain(h => ReferenceEquals(h, oldHost) || ReferenceEquals(h, newHost),
-            "concurrent TryGet must always see one of the registered hosts during a Replace cycle");
+        observationCount.Should().BeGreaterThan(0, "the observer task must have run at least once");
+        sawNull.Should().BeFalse("concurrent TryGet during Replace must never observe an empty slot");
+        sawUnexpected.Should().BeFalse("concurrent TryGet must never observe a host other than the two we registered");
     }
 }

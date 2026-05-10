@@ -57,12 +57,20 @@ internal sealed class MultiScopeFixtureCopy : IDisposable
     private static bool ShouldSkip(string relativePath)
     {
         var s = relativePath.Replace('\\', '/');
-        return s.Contains("/bin/", StringComparison.Ordinal)
+        // Match three positions for each excluded segment so a top-level `bin` (or other exact-
+        // name entry that EnumerateDirectories may yield before its children) is also skipped:
+        //   - exact equality (the relative path is exactly the segment name, e.g. "bin"),
+        //   - `<seg>/...` (top-level entry with children, e.g. "bin/Debug/..."),
+        //   - `.../<seg>/...` (nested entry, e.g. "src/foo/bin/Debug/...").
+        return s.Equals("bin", StringComparison.Ordinal)
+            || s.Equals("obj", StringComparison.Ordinal)
+            || s.Equals(".sourcegraph", StringComparison.Ordinal)
             || s.StartsWith("bin/", StringComparison.Ordinal)
-            || s.Contains("/obj/", StringComparison.Ordinal)
             || s.StartsWith("obj/", StringComparison.Ordinal)
-            || s.Contains("/.sourcegraph/", StringComparison.Ordinal)
-            || s.StartsWith(".sourcegraph/", StringComparison.Ordinal);
+            || s.StartsWith(".sourcegraph/", StringComparison.Ordinal)
+            || s.Contains("/bin/", StringComparison.Ordinal)
+            || s.Contains("/obj/", StringComparison.Ordinal)
+            || s.Contains("/.sourcegraph/", StringComparison.Ordinal);
     }
 
     public void Dispose()

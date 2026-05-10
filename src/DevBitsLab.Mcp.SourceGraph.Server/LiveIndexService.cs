@@ -234,9 +234,17 @@ public sealed class LiveIndexService : BackgroundService
             _currentPlugins = newConfig.Plugins;
         }
 
-        foreach (var host in _router.All().Where(h => diff.Removed.Any(r => r.Id == h.Scope.Id)).ToList())
+        // Iterate `diff.Removed` directly rather than scanning `_router.All()` and matching each
+        // host against `diff.Removed.Any(...)` — that pattern is O(n*m) and allocates an
+        // intermediate list per save. Looking up by id via `TryGet` keeps the tear-down path
+        // linear in the number of removed scopes, regardless of how many other scopes are
+        // registered.
+        foreach (var removed in diff.Removed)
         {
-            await TearDownScopeAsync(host, TimeSpan.FromMilliseconds(_config.ScopeReplaceGraceMs), ct).ConfigureAwait(false);
+            if (_router.TryGet(removed.Id, out var host))
+            {
+                await TearDownScopeAsync(host, TimeSpan.FromMilliseconds(_config.ScopeReplaceGraceMs), ct).ConfigureAwait(false);
+            }
         }
 
         foreach (var scope in diff.Added)

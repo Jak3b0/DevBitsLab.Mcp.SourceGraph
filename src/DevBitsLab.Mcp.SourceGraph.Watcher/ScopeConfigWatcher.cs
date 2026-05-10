@@ -88,8 +88,13 @@ public sealed class ScopeConfigWatcher : IAsyncDisposable
                     exists = File.Exists(path);
                     writeUtc = exists ? File.GetLastWriteTimeUtc(path) : DateTime.MinValue;
                 }
-                catch (IOException ex)
+                catch (Exception ex)
                 {
+                    // The probe (File.Exists + GetLastWriteTimeUtc) can throw IOException,
+                    // UnauthorizedAccessException, ArgumentException, etc. Treat any failure as
+                    // "state unchanged for this tick" so the loop retries on the next tick rather
+                    // than dying. The class-level reliability contract ("watcher always survives")
+                    // overrides the cost of the broad catch.
                     _logger.LogDebug(ex, "Polling .sourcegraph.json failed; will retry on next tick");
                     exists = lastExists;
                     writeUtc = lastWriteUtc;
@@ -100,15 +105,18 @@ public sealed class ScopeConfigWatcher : IAsyncDisposable
 
                 if (firstIteration || presenceChanged || mtimeChanged)
                 {
-                    lastExists = exists;
-                    lastWriteUtc = writeUtc;
                     firstIteration = false;
-
+                    // Note: we do NOT commit `lastExists` / `lastWriteUtc` here. Each branch below
+                    // commits only on a successful (or "intentionally swallowed") outcome. If a
+                    // transient I/O error escapes the load path, we leave the cursor as-is so the
+                    // next tick still sees mtime/presence-changed and retries.
                     if (!exists)
                     {
                         var synthesised = ScopeConfigLoader.Synthesise(_repoRoot, _discoveredSolutions);
                         _logger.LogInformation(".sourcegraph.json is absent; reverting to synthesised default scope");
                         await _changes.Writer.WriteAsync(new ScopeConfigChange.Reverted(synthesised), ct).ConfigureAwait(false);
+                        lastExists = false;
+                        lastWriteUtc = DateTime.MinValue;
                     }
                     else
                     {
@@ -117,25 +125,31 @@ public sealed class ScopeConfigWatcher : IAsyncDisposable
                         {
                             parsed = ScopeConfigLoader.Load(_repoRoot, _discoveredSolutions);
                             await _changes.Writer.WriteAsync(new ScopeConfigChange.Updated(parsed), ct).ConfigureAwait(false);
+                            // Successful load + emit → commit cursor.
+                            lastExists = true;
+                            lastWriteUtc = writeUtc;
                         }
                         catch (ScopeConfigException ex)
                         {
+                            // Parse error: the file as observed on disk is malformed. Commit the
+                            // cursor so we don't re-fire this same warning on every subsequent
+                            // tick — the user's next save will bump mtime and re-trigger the load.
                             _logger.LogInformation(ex, ".sourcegraph.json save was malformed; ignoring (current scopes still active)");
+                            lastExists = true;
+                            lastWriteUtc = writeUtc;
                         }
                         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                         {
-                            // Transient / permission errors — file locked by an editor mid-save,
-                            // ACL flap, etc. Log and let the next tick retry. We must not let any
-                            // of these escape PollAsync, otherwise the loop dies and live reload
-                            // is silently disabled until restart.
+                            // Transient / permission error: file locked by an editor mid-save,
+                            // ACL flap, etc. *Don't* commit the cursor — the next tick will see
+                            // the same mtime as still-changed and retry the load.
                             _logger.LogInformation(ex, ".sourcegraph.json read failed; will retry on next poll");
                         }
                         catch (Exception ex)
                         {
-                            // Defence-in-depth: anything else escaping `Load` is unexpected, but
-                            // letting it kill the watcher loop is worse than logging loud and
-                            // retrying. Errors here will still be visible in the host's stderr.
-                            _logger.LogError(ex, ".sourcegraph.json load raised unexpectedly; continuing poll loop");
+                            // Unforeseen exception: keep the loop alive (the watcher must never
+                            // permanently die) but don't commit the cursor — retry next tick.
+                            _logger.LogError(ex, ".sourcegraph.json load raised unexpectedly; will retry on next poll");
                         }
                     }
                 }

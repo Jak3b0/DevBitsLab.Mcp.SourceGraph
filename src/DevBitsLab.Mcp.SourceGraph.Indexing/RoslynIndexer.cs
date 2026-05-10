@@ -390,9 +390,18 @@ public sealed class RoslynIndexer : IAsyncDisposable, ILanguageIndexer
             if (unchanged && !fullReset && _keysByFileId.TryGetValue(fileId, out var keysForFile))
             {
                 // SHA matches and the in-memory symbol map is hydrated. Verify the store's
-                // refs are in agreement before we skip pass 2: a symbol-bearing file with
-                // zero outgoing refs is "zombied" (pass 1 cleared, pass 2 never repopulated).
-                // Without this check the SHA-skip would keep that file stranded forever.
+                // refs/edges are in agreement before we skip pass 2: a symbol-bearing file
+                // with zero outgoing refs AND zero outgoing edges is "zombied" (pass 1
+                // cleared, pass 2 never repopulated). Without this check the SHA-skip would
+                // keep that file stranded forever.
+                //
+                // Files with zero declared symbols (a usings-only file, an [assembly:]
+                // attribute file, etc.) take the early-out: pass 2 has nothing useful to
+                // walk for them. This relies on `_keysByFileId` faithfully reflecting what
+                // pass 1 declared — since pass 1 phase B always populates the map from the
+                // walked declarations of every changed file, and the hydrate path on cold
+                // start reads it from `symbols.file_id`, the assumption holds for the
+                // built-in C# indexer.
                 if (keysForFile.Count == 0)
                 {
                     continue;
@@ -622,214 +631,214 @@ public sealed class RoslynIndexer : IAsyncDisposable, ILanguageIndexer
                 var model = await document.GetSemanticModelAsync(ct).ConfigureAwait(false);
                 if (tree is null || model is null) continue;
 
-            var root = await tree.GetRootAsync(ct).ConfigureAwait(false);
-            var refBatch = new List<SymbolReference>(capacity: 256);
-            var edgeBatch = new List<Edge>(capacity: 64);
-            // Dedupe edges within this file's pass-2 to avoid bombarding SQLite with duplicates that
-            // INSERT OR IGNORE would just throw away. Tuple key keeps it allocation-light.
-            // Edge kind is now a kebab-case TEXT identifier rather than an int enum; comparing by
-            // ordinal is the cheapest stable form.
-            var emittedEdges = new HashSet<(long src, long dst, string kind)>();
-            void AddEdge(long src, long dst, string kind)
-            {
-                if (src == dst) return;
-                if (emittedEdges.Add((src, dst, kind)))
+                var root = await tree.GetRootAsync(ct).ConfigureAwait(false);
+                var refBatch = new List<SymbolReference>(capacity: 256);
+                var edgeBatch = new List<Edge>(capacity: 64);
+                // Dedupe edges within this file's pass-2 to avoid bombarding SQLite with duplicates that
+                // INSERT OR IGNORE would just throw away. Tuple key keeps it allocation-light.
+                // Edge kind is now a kebab-case TEXT identifier rather than an int enum; comparing by
+                // ordinal is the cheapest stable form.
+                var emittedEdges = new HashSet<(long src, long dst, string kind)>();
+                void AddEdge(long src, long dst, string kind)
                 {
-                    edgeBatch.Add(new Edge(src, dst, kind));
-                }
-            }
-
-            foreach (var node in root.DescendantNodes())
-            {
-                ISymbol? referenced = null;
-                ReferenceKind kind = ReferenceKind.Reference;
-                SyntaxNode? refNode = null; // node whose position we record
-
-                switch (node)
-                {
-                    case IdentifierNameSyntax id when id.Parent is not (NamespaceDeclarationSyntax or BaseTypeDeclarationSyntax or MethodDeclarationSyntax or PropertyDeclarationSyntax or VariableDeclaratorSyntax or ParameterSyntax or TypeParameterSyntax):
-                        referenced = model.GetSymbolInfo(id, ct).Symbol;
-                        refNode = id;
-                        if (id.Parent is InvocationExpressionSyntax inv && inv.Expression == id)
-                        {
-                            kind = ReferenceKind.Call;
-                        }
-                        else
-                        {
-                            kind = ClassifyReadWrite(id, referenced) ?? ReferenceKind.Reference;
-                        }
-                        break;
-
-                    case GenericNameSyntax gn:
-                        referenced = model.GetSymbolInfo(gn, ct).Symbol;
-                        refNode = gn;
-                        break;
-
-                    case MemberAccessExpressionSyntax mae:
-                        referenced = model.GetSymbolInfo(mae.Name, ct).Symbol;
-                        refNode = mae.Name;
-                        if (mae.Parent is InvocationExpressionSyntax invMa && invMa.Expression == mae)
-                        {
-                            kind = ReferenceKind.Call;
-                        }
-                        else
-                        {
-                            kind = ClassifyReadWrite(mae, referenced) ?? ReferenceKind.Reference;
-                        }
-                        break;
-
-                    case ObjectCreationExpressionSyntax oce:
-                        referenced = model.GetSymbolInfo(oce, ct).Symbol;
-                        refNode = oce;
-                        kind = ReferenceKind.Call;
-                        break;
-                }
-
-                if (referenced is null || refNode is null) continue;
-                var key = SymbolMapping.CanonicalKey(referenced);
-                if (key is null) continue;
-                if (!_symbolIdByKey.TryGetValue(key, out var symId)) continue;
-
-                var pos = refNode.GetLocation().GetLineSpan().StartLinePosition;
-
-                // For ReferenceKind.Read|Write on increments/decrements/compound-assignment/ref params,
-                // we may need to emit two ref rows at the same position (one Read, one Write).
-                var emit = SplitReadWrite(kind, refNode, referenced);
-                foreach (var rk in emit)
-                {
-                    refBatch.Add(new SymbolReference(
-                        Id: 0,
-                        SymbolId: symId,
-                        FileId: fileId,
-                        Line: pos.Line + 1,
-                        Col: pos.Character + 1,
-                        Kind: rk));
-                }
-
-                // Calls edge: source = enclosing named member, target = referenced
-                if (kind == ReferenceKind.Call)
-                {
-                    var enclosing = FindEnclosingMember(model, refNode.SpanStart, ct);
-                    if (enclosing is not null)
+                    if (src == dst) return;
+                    if (emittedEdges.Add((src, dst, kind)))
                     {
-                        var encKey = SymbolMapping.CanonicalKey(enclosing);
-                        if (encKey is not null && _symbolIdByKey.TryGetValue(encKey, out var srcId))
-                        {
-                            AddEdge(srcId, symId, EdgeKinds.Calls);
-                        }
+                        edgeBatch.Add(new Edge(src, dst, kind));
                     }
                 }
 
-                // Instantiates edge: every `new T()` becomes an Instantiates(enclosing -> T) edge,
-                // alongside the Calls edge to the constructor that the case above already emitted.
-                // We also emit a UsesType edge so kind=uses_type can answer "every consumer of T",
-                // including body-local instantiations (per design.md point 1).
-                if (node is ObjectCreationExpressionSyntax oceNode && referenced is IMethodSymbol ctor)
+                foreach (var node in root.DescendantNodes())
                 {
-                    var typeSym = ctor.ContainingType;
-                    if (typeSym is not null)
+                    ISymbol? referenced = null;
+                    ReferenceKind kind = ReferenceKind.Reference;
+                    SyntaxNode? refNode = null; // node whose position we record
+
+                    switch (node)
                     {
-                        var typeKey = SymbolMapping.CanonicalKey(typeSym);
-                        if (typeKey is not null && _symbolIdByKey.TryGetValue(typeKey, out var dstId))
-                        {
-                            var enclosing = FindEnclosingMember(model, oceNode.SpanStart, ct);
-                            if (enclosing is not null)
+                        case IdentifierNameSyntax id when id.Parent is not (NamespaceDeclarationSyntax or BaseTypeDeclarationSyntax or MethodDeclarationSyntax or PropertyDeclarationSyntax or VariableDeclaratorSyntax or ParameterSyntax or TypeParameterSyntax):
+                            referenced = model.GetSymbolInfo(id, ct).Symbol;
+                            refNode = id;
+                            if (id.Parent is InvocationExpressionSyntax inv && inv.Expression == id)
                             {
-                                var encKey = SymbolMapping.CanonicalKey(enclosing);
-                                if (encKey is not null && _symbolIdByKey.TryGetValue(encKey, out var srcId))
+                                kind = ReferenceKind.Call;
+                            }
+                            else
+                            {
+                                kind = ClassifyReadWrite(id, referenced) ?? ReferenceKind.Reference;
+                            }
+                            break;
+
+                        case GenericNameSyntax gn:
+                            referenced = model.GetSymbolInfo(gn, ct).Symbol;
+                            refNode = gn;
+                            break;
+
+                        case MemberAccessExpressionSyntax mae:
+                            referenced = model.GetSymbolInfo(mae.Name, ct).Symbol;
+                            refNode = mae.Name;
+                            if (mae.Parent is InvocationExpressionSyntax invMa && invMa.Expression == mae)
+                            {
+                                kind = ReferenceKind.Call;
+                            }
+                            else
+                            {
+                                kind = ClassifyReadWrite(mae, referenced) ?? ReferenceKind.Reference;
+                            }
+                            break;
+
+                        case ObjectCreationExpressionSyntax oce:
+                            referenced = model.GetSymbolInfo(oce, ct).Symbol;
+                            refNode = oce;
+                            kind = ReferenceKind.Call;
+                            break;
+                    }
+
+                    if (referenced is null || refNode is null) continue;
+                    var key = SymbolMapping.CanonicalKey(referenced);
+                    if (key is null) continue;
+                    if (!_symbolIdByKey.TryGetValue(key, out var symId)) continue;
+
+                    var pos = refNode.GetLocation().GetLineSpan().StartLinePosition;
+
+                    // For ReferenceKind.Read|Write on increments/decrements/compound-assignment/ref params,
+                    // we may need to emit two ref rows at the same position (one Read, one Write).
+                    var emit = SplitReadWrite(kind, refNode, referenced);
+                    foreach (var rk in emit)
+                    {
+                        refBatch.Add(new SymbolReference(
+                            Id: 0,
+                            SymbolId: symId,
+                            FileId: fileId,
+                            Line: pos.Line + 1,
+                            Col: pos.Character + 1,
+                            Kind: rk));
+                    }
+
+                    // Calls edge: source = enclosing named member, target = referenced
+                    if (kind == ReferenceKind.Call)
+                    {
+                        var enclosing = FindEnclosingMember(model, refNode.SpanStart, ct);
+                        if (enclosing is not null)
+                        {
+                            var encKey = SymbolMapping.CanonicalKey(enclosing);
+                            if (encKey is not null && _symbolIdByKey.TryGetValue(encKey, out var srcId))
+                            {
+                                AddEdge(srcId, symId, EdgeKinds.Calls);
+                            }
+                        }
+                    }
+
+                    // Instantiates edge: every `new T()` becomes an Instantiates(enclosing -> T) edge,
+                    // alongside the Calls edge to the constructor that the case above already emitted.
+                    // We also emit a UsesType edge so kind=uses_type can answer "every consumer of T",
+                    // including body-local instantiations (per design.md point 1).
+                    if (node is ObjectCreationExpressionSyntax oceNode && referenced is IMethodSymbol ctor)
+                    {
+                        var typeSym = ctor.ContainingType;
+                        if (typeSym is not null)
+                        {
+                            var typeKey = SymbolMapping.CanonicalKey(typeSym);
+                            if (typeKey is not null && _symbolIdByKey.TryGetValue(typeKey, out var dstId))
+                            {
+                                var enclosing = FindEnclosingMember(model, oceNode.SpanStart, ct);
+                                if (enclosing is not null)
                                 {
-                                    AddEdge(srcId, dstId, EdgeKinds.Instantiates);
-                                    AddEdge(srcId, dstId, EdgeKinds.UsesType);
+                                    var encKey = SymbolMapping.CanonicalKey(enclosing);
+                                    if (encKey is not null && _symbolIdByKey.TryGetValue(encKey, out var srcId))
+                                    {
+                                        AddEdge(srcId, dstId, EdgeKinds.Instantiates);
+                                        AddEdge(srcId, dstId, EdgeKinds.UsesType);
+                                    }
                                 }
                             }
                         }
                     }
                 }
-            }
 
-            // Throws edges from `throw` syntax (statement and expression).
-            foreach (var node in root.DescendantNodes())
-            {
-                ExpressionSyntax? thrown = node switch
+                // Throws edges from `throw` syntax (statement and expression).
+                foreach (var node in root.DescendantNodes())
                 {
-                    ThrowStatementSyntax ts => ts.Expression,
-                    ThrowExpressionSyntax te => te.Expression,
-                    _ => null,
-                };
-                if (thrown is null) continue;
-                var thrownType = model.GetTypeInfo(thrown, ct).Type;
-                if (thrownType is null) continue;
-                var typeKey = SymbolMapping.CanonicalKey(thrownType);
-                if (typeKey is null || !_symbolIdByKey.TryGetValue(typeKey, out var dstId)) continue;
-                var enclosing = FindEnclosingMember(model, node.SpanStart, ct);
-                if (enclosing is null) continue;
-                var encKey = SymbolMapping.CanonicalKey(enclosing);
-                if (encKey is null || !_symbolIdByKey.TryGetValue(encKey, out var srcId)) continue;
-                AddEdge(srcId, dstId, EdgeKinds.Throws);
-            }
-
-            // Inherits / Implements edges from BaseListSyntax + UsesType for the same targets.
-            foreach (var typeDecl in root.DescendantNodes().OfType<TypeDeclarationSyntax>())
-            {
-                var typeSym = model.GetDeclaredSymbol(typeDecl, ct);
-                if (typeSym is null) continue;
-                var typeKey = SymbolMapping.CanonicalKey(typeSym);
-                if (typeKey is null || !_symbolIdByKey.TryGetValue(typeKey, out var srcId)) continue;
-
-                if (typeDecl.BaseList is not null)
-                {
-                    foreach (var baseTypeSyntax in typeDecl.BaseList.Types)
+                    ExpressionSyntax? thrown = node switch
                     {
-                        var baseSym = model.GetSymbolInfo(baseTypeSyntax.Type, ct).Symbol;
-                        if (baseSym is null) continue;
-                        var baseKey = SymbolMapping.CanonicalKey(baseSym);
-                        if (baseKey is null || !_symbolIdByKey.TryGetValue(baseKey, out var dstId)) continue;
+                        ThrowStatementSyntax ts => ts.Expression,
+                        ThrowExpressionSyntax te => te.Expression,
+                        _ => null,
+                    };
+                    if (thrown is null) continue;
+                    var thrownType = model.GetTypeInfo(thrown, ct).Type;
+                    if (thrownType is null) continue;
+                    var typeKey = SymbolMapping.CanonicalKey(thrownType);
+                    if (typeKey is null || !_symbolIdByKey.TryGetValue(typeKey, out var dstId)) continue;
+                    var enclosing = FindEnclosingMember(model, node.SpanStart, ct);
+                    if (enclosing is null) continue;
+                    var encKey = SymbolMapping.CanonicalKey(enclosing);
+                    if (encKey is null || !_symbolIdByKey.TryGetValue(encKey, out var srcId)) continue;
+                    AddEdge(srcId, dstId, EdgeKinds.Throws);
+                }
 
-                        var ek = baseSym is INamedTypeSymbol nt && nt.TypeKind == TypeKind.Interface
-                            ? EdgeKinds.Implements
-                            : EdgeKinds.Inherits;
-                        AddEdge(srcId, dstId, ek);
-                        // Also a UsesType edge so kind=uses_type can answer "every consumer of B".
-                        AddEdge(srcId, dstId, EdgeKinds.UsesType);
+                // Inherits / Implements edges from BaseListSyntax + UsesType for the same targets.
+                foreach (var typeDecl in root.DescendantNodes().OfType<TypeDeclarationSyntax>())
+                {
+                    var typeSym = model.GetDeclaredSymbol(typeDecl, ct);
+                    if (typeSym is null) continue;
+                    var typeKey = SymbolMapping.CanonicalKey(typeSym);
+                    if (typeKey is null || !_symbolIdByKey.TryGetValue(typeKey, out var srcId)) continue;
+
+                    if (typeDecl.BaseList is not null)
+                    {
+                        foreach (var baseTypeSyntax in typeDecl.BaseList.Types)
+                        {
+                            var baseSym = model.GetSymbolInfo(baseTypeSyntax.Type, ct).Symbol;
+                            if (baseSym is null) continue;
+                            var baseKey = SymbolMapping.CanonicalKey(baseSym);
+                            if (baseKey is null || !_symbolIdByKey.TryGetValue(baseKey, out var dstId)) continue;
+
+                            var ek = baseSym is INamedTypeSymbol nt && nt.TypeKind == TypeKind.Interface
+                                ? EdgeKinds.Implements
+                                : EdgeKinds.Inherits;
+                            AddEdge(srcId, dstId, ek);
+                            // Also a UsesType edge so kind=uses_type can answer "every consumer of B".
+                            AddEdge(srcId, dstId, EdgeKinds.UsesType);
+                        }
+                    }
+
+                    // Member-level ImplementsMember: walk every interface this type implements and ask
+                    // Roslyn which member satisfies each interface member. Done once per type declaration.
+                    EmitMemberImplements(typeSym, AddEdge);
+                }
+
+                // Per-member emitters: UsesType from signatures, OverridesMember from Overridden*,
+                // Tests from test methods to first non-test production call.
+                // We walk the same declaration set pass 1 does (via EnumerateDeclarations) so this
+                // touches type/method/property/event/field nodes — the only ones that have signatures
+                // worth scanning for type usage.
+                foreach (var node in EnumerateDeclarations(root))
+                {
+                    if (model.GetDeclaredSymbol(node, ct) is not ISymbol declSym) continue;
+                    var key = SymbolMapping.CanonicalKey(declSym);
+                    if (key is null || !_symbolIdByKey.TryGetValue(key, out var memberId)) continue;
+
+                    EmitUsesTypeForSignature(declSym, memberId, AddEdge);
+                    EmitOverrides(declSym, memberId, AddEdge);
+
+                    // Tests edge: the source is a test method (carries a recognised framework),
+                    // the destination is the first non-trivial production call inside its body.
+                    if (declSym is IMethodSymbol testMethod && TestDiscriminator.Detect(testMethod) is not null)
+                    {
+                        EmitTestsEdge(node, model, memberId, AddEdge, ct);
                     }
                 }
 
-                // Member-level ImplementsMember: walk every interface this type implements and ask
-                // Roslyn which member satisfies each interface member. Done once per type declaration.
-                EmitMemberImplements(typeSym, AddEdge);
-            }
-
-            // Per-member emitters: UsesType from signatures, OverridesMember from Overridden*,
-            // Tests from test methods to first non-test production call.
-            // We walk the same declaration set pass 1 does (via EnumerateDeclarations) so this
-            // touches type/method/property/event/field nodes — the only ones that have signatures
-            // worth scanning for type usage.
-            foreach (var node in EnumerateDeclarations(root))
-            {
-                if (model.GetDeclaredSymbol(node, ct) is not ISymbol declSym) continue;
-                var key = SymbolMapping.CanonicalKey(declSym);
-                if (key is null || !_symbolIdByKey.TryGetValue(key, out var memberId)) continue;
-
-                EmitUsesTypeForSignature(declSym, memberId, AddEdge);
-                EmitOverrides(declSym, memberId, AddEdge);
-
-                // Tests edge: the source is a test method (carries a recognised framework),
-                // the destination is the first non-trivial production call inside its body.
-                if (declSym is IMethodSymbol testMethod && TestDiscriminator.Detect(testMethod) is not null)
+                if (refBatch.Count > 0)
                 {
-                    EmitTestsEdge(node, model, memberId, AddEdge, ct);
+                    await _store.BulkInsertReferencesAsync(refBatch, ct).ConfigureAwait(false);
+                    refsIndexed += refBatch.Count;
                 }
-            }
-
-            if (refBatch.Count > 0)
-            {
-                await _store.BulkInsertReferencesAsync(refBatch, ct).ConfigureAwait(false);
-                refsIndexed += refBatch.Count;
-            }
-            if (edgeBatch.Count > 0)
-            {
-                await _store.BulkInsertEdgesAsync(edgeBatch, ct).ConfigureAwait(false);
-            }
+                if (edgeBatch.Count > 0)
+                {
+                    await _store.BulkInsertEdgesAsync(edgeBatch, ct).ConfigureAwait(false);
+                }
             }
             catch (OperationCanceledException)
             {

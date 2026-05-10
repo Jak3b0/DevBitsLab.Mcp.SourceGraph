@@ -375,17 +375,17 @@ The cache SHALL be populated once at project discovery and reused for every `.xa
 - **THEN** the indexer emits the `uses-resource` edge with an unresolved target and logs a debug-level note (does not error; the binding may be resolved by a runtime mechanism the indexer does not see)
 
 ### Requirement: Self-heal stranded reference edges
-The indexer SHALL detect and recover from a "zombie" file state where pass 1's `ClearFileOutgoingAsync` cleared a file's outgoing references but pass 2's reference walk did not repopulate them. On every `IndexCoreAsync` call, the pass-1 unchanged-file skip path SHALL bypass the skip when the file declares one or more symbols but the store reports zero outgoing-reference rows for that file. The bypassed file SHALL be re-walked in pass 2 so its references are regenerated.
+The indexer SHALL detect and recover from a "zombie" file state where pass 1's `ClearFileOutgoingAsync` cleared a file's outgoing refs/edges but pass 2's reference walk did not repopulate them. On every `IndexCoreAsync` call, the pass-1 unchanged-file skip path SHALL bypass the skip when the file declares one or more symbols but the store reports zero outgoing pass-2 artifacts (refs AND edges) for that file. The bypassed file SHALL be re-walked in pass 2 so its refs/edges are regenerated.
 
-The integrity check SHALL be implemented via a new storage method `IGraphStore.HasOutgoingReferencesAsync(long fileId, CancellationToken ct)` that returns `true` when at least one outgoing-reference row exists for the given file (in `SqliteGraphStore`'s schema, the `refs` table). Default implementation SHALL return `true` so existing storage implementations preserve today's behaviour.
+The integrity check SHALL be implemented via a new storage method `IGraphStore.HasOutgoingReferencesAsync(long fileId, CancellationToken ct)` that returns `true` when at least one outgoing-reference row exists for the given file OR at least one outgoing edge originates from a symbol declared in that file (in `SqliteGraphStore`'s schema, the `refs` table or the `edges` table joined to `symbols.file_id`). Checking edges as well as refs avoids spurious re-walks of files that legitimately produce zero refs but emit edges from member signatures (`uses-type`, `inherits`, `implements-member`). Default implementation SHALL return `true` so existing storage implementations preserve today's behaviour.
 
 #### Scenario: Stranded file is re-walked on next index
-- **GIVEN** a file `F` whose row, declared symbols, and content SHA exist in the store, but for which `refs.file_id = F.id` has zero rows
+- **GIVEN** a file `F` whose row, declared symbols, and content SHA exist in the store, but for which `refs.file_id = F.id` has zero rows AND no edges originate from symbols declared in `F`
 - **WHEN** `IndexCoreAsync` runs against a workspace containing `F` whose on-disk SHA matches the stored SHA (no edit since last index)
 - **THEN** pass 1's "unchanged file" skip is bypassed for `F` (because `HasOutgoingReferencesAsync(F.id) == false` while `_keysByFileId[F.id].Any() == true`), pass 2 walks `F`, and at least one outgoing-reference row appears for `F` after the call returns
 
 #### Scenario: Healthy unchanged file is still skipped
-- **GIVEN** a file `F` with declared symbols and at least one outgoing-reference row in the store
+- **GIVEN** a file `F` with declared symbols and at least one outgoing-reference row OR at least one outgoing edge from a symbol declared in `F`
 - **WHEN** `IndexCoreAsync` runs against a workspace containing `F` whose on-disk SHA matches the stored SHA
 - **THEN** pass 1's "unchanged file" skip applies as today; pass 2 does NOT walk `F`; the EXISTS-style integrity check fires once with negligible cost
 

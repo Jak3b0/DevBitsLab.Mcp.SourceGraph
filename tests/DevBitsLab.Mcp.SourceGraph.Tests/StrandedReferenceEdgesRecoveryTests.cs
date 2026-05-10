@@ -66,9 +66,12 @@ public sealed class StrandedReferenceEdgesRecoveryTests : IAsyncLifetime
             beforeRefs.Should().BeGreaterThan(0, "Calculator.cs body produces calls + uses-type refs");
         }
 
-        // Construct the zombie state: drop refs for Calculator.cs but keep the file row +
-        // symbols intact. content_sha256 stays put, so the next index sees "unchanged" in pass 1.
-        await DeleteRefsForFileAsync(_dbPath, calcFileId);
+        // Construct the zombie state: drop the file's outgoing refs AND edges (mirroring
+        // what ClearFileOutgoingAsync does in production), but keep the file row + symbols
+        // intact. content_sha256 stays put, so the next index sees "unchanged" in pass 1.
+        // Both tables are wiped because the integrity check probes refs OR edges — leaving
+        // edges in place would (correctly) read as "healthy" and skip the SHA check.
+        await ClearOutgoingForFileAsync(_dbPath, calcFileId);
         var zombieRefs = await CountRefsForFileAsync(_dbPath, calcFileId);
         zombieRefs.Should().Be(0, "the deletion should have left the file zombied");
 
@@ -292,14 +295,22 @@ public sealed class StrandedReferenceEdgesRecoveryTests : IAsyncLifetime
         return await cmd.ExecuteScalarAsync() as string;
     }
 
-    private static async Task DeleteRefsForFileAsync(string dbPath, long fileId)
+    private static async Task ClearOutgoingForFileAsync(string dbPath, long fileId)
     {
+        // Mirrors SqliteGraphStore.ClearFileOutgoingAsync: drops both refs (by file_id) and
+        // edges (whose src is one of the file's declared symbols). Used by the zombie-state
+        // construction in the recovery regression test.
         await using var c = OpenReadWrite(dbPath);
         await c.OpenAsync();
-        await using var cmd = c.CreateCommand();
-        cmd.CommandText = "DELETE FROM refs WHERE file_id = $id;";
-        cmd.Parameters.AddWithValue("$id", fileId);
-        await cmd.ExecuteNonQueryAsync();
+        await using var deleteEdges = c.CreateCommand();
+        deleteEdges.CommandText =
+            "DELETE FROM edges WHERE src IN (SELECT id FROM symbols WHERE file_id = $id);";
+        deleteEdges.Parameters.AddWithValue("$id", fileId);
+        await deleteEdges.ExecuteNonQueryAsync();
+        await using var deleteRefs = c.CreateCommand();
+        deleteRefs.CommandText = "DELETE FROM refs WHERE file_id = $id;";
+        deleteRefs.Parameters.AddWithValue("$id", fileId);
+        await deleteRefs.ExecuteNonQueryAsync();
     }
 
     private static SqliteConnection OpenReadOnly(string dbPath)

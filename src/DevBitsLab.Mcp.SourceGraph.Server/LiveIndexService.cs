@@ -678,9 +678,10 @@ public sealed class LiveIndexService : BackgroundService
 
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
-        // Stop the scope-config watcher first so no late event arrives mid-tear-down. The
-        // BackgroundService stop CTS triggers the consumer task to exit on its own; the
-        // FileSystemWatcher dispose stops new events from queueing.
+        // Stop the scope-config watcher first so no late event arrives mid-tear-down.
+        // ScopeConfigWatcher.DisposeAsync cancels its internal CTS which both terminates the
+        // poll loop and lets the channel writer's `TryComplete` (in the loop's finally) signal
+        // any consumer awaiting `ReadAllAsync`.
         if (_configWatcher is not null)
         {
             try { await _configWatcher.DisposeAsync().ConfigureAwait(false); }

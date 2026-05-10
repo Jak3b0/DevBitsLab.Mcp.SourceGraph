@@ -47,8 +47,12 @@ public static class Views
     public static IReadOnlyDictionary<string, string> PerScopeBlockTemplates { get; }
 
     /// <summary>
-    /// Hand-curated descriptors for <c>describe_schema</c>'s response. Order matches the
-    /// <see cref="PerScopeBlockTemplates"/> keys plus <c>v_scopes</c> at the end.
+    /// Hand-curated descriptors for <c>describe_schema</c>'s response. Order: the five core
+    /// views from the parent change (<c>v_symbols</c>, <c>v_files</c>, <c>v_edges</c>,
+    /// <c>v_references</c>, <c>v_scopes</c>) followed by the three extended views from
+    /// <c>add-graph-query-extended-views</c> (<c>v_annotations</c>, <c>v_diagnostics</c>,
+    /// <c>v_history</c>). The contract is "8 views, names match the live <c>tools/list</c>
+    /// output"; the specific iteration order is documentation, not contract.
     /// </summary>
     public static IReadOnlyList<ViewDescriptor> All { get; }
 

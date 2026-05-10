@@ -1,5 +1,4 @@
 using System.ComponentModel;
-using System.Data;
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
@@ -3082,12 +3081,14 @@ public static class GraphTools
 
     /// <summary>
     /// Classify a SQLite exception as a "write attempted on read-only surface". Two cases land
-    /// here: (1) <c>SQLITE_READONLY</c> (8) on an attempt to write the underlying per-scope DB
-    /// (which was ATTACHed with <c>?mode=ro</c>); (2) <c>SQLITE_ERROR</c> (1) with a "cannot
-    /// modify ... because it is a view" message when the agent tries to INSERT/UPDATE/DELETE
-    /// against one of the <c>v_*</c> TEMP views (SQLite's parser rejects these before even
-    /// looking at file permissions). The spec promises every write attempt surfaces as
-    /// <c>read_only</c>, regardless of which gate fired.
+    /// here: (1) <c>SQLITE_READONLY</c> (8) on an attempt to write any attached DB or the
+    /// in-memory main — the connection has <c>PRAGMA query_only = 1</c> set after the TEMP
+    /// VIEW DDL is applied (see <see cref="DevBitsLab.Mcp.SourceGraph.Storage.MultiScopeReadOnlyConnection.OpenAsync"/>),
+    /// so any INSERT/UPDATE/DELETE/DROP/CREATE/REPLACE against any attached DB returns this
+    /// code; (2) <c>SQLITE_ERROR</c> (1) with a "cannot modify ... because it is a view"
+    /// message when the agent tries to INSERT/UPDATE/DELETE against one of the <c>v_*</c>
+    /// TEMP views (SQLite's parser rejects these before even consulting query_only). The spec
+    /// promises every write attempt surfaces as <c>read_only</c>, regardless of which gate fired.
     /// </summary>
     private static bool IsReadOnlyError(SqliteException ex)
     {

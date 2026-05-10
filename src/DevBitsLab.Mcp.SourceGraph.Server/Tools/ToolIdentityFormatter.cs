@@ -31,10 +31,8 @@ internal static class ToolIdentityFormatter
     {
         if (LeafFormatter.Suppressed) return;
 
-        foreach (var tool in tools.Where(IsBuiltInTool))
+        foreach (var protocolTool in tools.Where(IsBuiltInTool).Select(t => t.ProtocolTool))
         {
-            var protocolTool = tool.ProtocolTool;
-
             // Title: always set to "🌿 " + Name. The assignment is idempotent by construction —
             // running the pass twice yields the same value. Per design.md Decision 2 there is no
             // per-tool override mechanism today; if a future change adds a [ToolTitle("...")]

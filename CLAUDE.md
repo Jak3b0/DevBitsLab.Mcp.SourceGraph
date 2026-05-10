@@ -4,6 +4,19 @@ Live code source graph MCP server for .NET solutions. Indexes C# via Roslyn into
 SQLite + FTS5 and exposes graph queries to MCP clients (Claude Code, Cursor) over
 stdio.
 
+## Onboarding CLI: `init`, `doctor`, `demo`
+
+Three subcommands handle first-run setup. `sourcegraph-mcp init` is interactive
+by default; flag-driven (`--yes`) for CI. It detects environment, picks MCP
+clients (project-scope by default, user-scope opt-in via `--user-<client>`),
+and writes per-client config files with merge-by-name semantics — first-class
+support for Claude Code, **GitHub Copilot** (distinct `servers`/`type` schema in
+`.vscode/mcp.json`), Cursor, Continue, and Claude Desktop. `doctor` runs a
+read-only environment diagnostic with `pass | warn | fail` exit-code semantics.
+`demo` runs four canned operations (`ping`, `graph_stats`, `search_symbols`,
+`find_definition`) against the active scope and prints leaf-stamped markdown —
+the same shape an agent sees, available without an agent loop.
+
 ## Tool-usage guidance ships with the server
 
 When this MCP server connects, it publishes "prefer source-graph tools over
@@ -49,11 +62,15 @@ env vars). Cross-view JOINs use the composite `(scope, id)` tuple. The view laye
 is versioned (`view_schema_version`, currently `2`); it bumps on any view-set
 change so cache-aware clients re-introspect after a server upgrade.
 
-`semantic_search`, `impact_of_change`, and `module_summary` emit MCP
-`notifications/progress` when the originating `tools/call` request includes
-a `progressToken` — useful for live status indicators on the slow paths
-(cold-start ONNX model load, deep recursive CTE walks). Clients that don't
-opt in see today's silent-then-result behaviour.
+`semantic_search`, `impact_of_change`, `module_summary`, and `find_definition`
+emit MCP `notifications/progress` when the originating `tools/call` request
+includes a `progressToken` — useful for live status indicators on the slow
+paths (cold-start ONNX model load, deep recursive CTE walks). When any of
+these tools is called against a scope whose initial indexing is still in
+flight, the server forwards per-scope cold-start phase progress (`opening
+workspace` → `indexing` → `ready`) for the duration of the wait, so first-
+call latency narrates itself instead of presenting as a silent spinner.
+Clients that don't opt in see today's silent-then-result behaviour.
 
 The embedding model cache is inspectable from both surfaces: the CLI verbs
 `sourcegraph-mcp embeddings status / pull / remove / verify` (operator-facing,
@@ -78,9 +95,13 @@ A `.sourcegraph.json` at the repo root opts a project into multi-scope mode:
 ```
 
 Each scope owns its own SQLite DB at `.sourcegraph/scopes/<id>.db`; a separate
-`_meta.db` registry tracks status (`ok | degraded | indexing`) and last-indexed
-time. An `isolated` scope is excluded from `scope = "*"` fan-out — useful for
-vendored / generated code that shouldn't pollute `find_references` on production.
+`_meta.db` registry tracks status (`ok | partial | degraded | indexing`) and
+last-indexed time. `partial` means one or more projects/files failed to index
+but at least one project produced symbols; `list_scopes` carries
+`failed_projects` / `failed_files` arrays so operators see which projects'
+symbols are missing without scraping logs. An `isolated` scope is excluded from
+`scope = "*"` fan-out — useful for vendored / generated code that shouldn't
+pollute `find_references` on production.
 
 Every existing tool gains an optional `scope` parameter (string id, comma-separated
 list, or `"*"`). Call `list_scopes` to discover the configured scopes. Without a
@@ -92,6 +113,17 @@ CLI helpers:
 - `sourcegraph-mcp init-scopes` — scaffold a `.sourcegraph.json` from the .slnx
   files at the repo root.
 - `sourcegraph-mcp scopes list` / `add <name> --solution <path>` / `remove <name>`.
+
+A running server picks up `.sourcegraph.json` edits live — no restart required.
+The four delta kinds are: **add scope** (new per-scope DB + cold index), **remove
+scope** (registry row deleted, on-disk DB preserved as a re-add cache), **modify
+scope** (atomic-swap of the host with a 5-second grace window for in-flight
+queries against the old host), and **change `default_scope`** (router metadata
+flip, no scope is reindexed). A malformed save is tolerated: the watcher logs
+at info level and leaves the running scope set untouched until the next valid
+save. **Plugin changes (`plugins[]`) still require a restart** — hot-loading
+`AssemblyLoadContext`-isolated plugins is out of scope; a save that touches
+`plugins[]` logs a warning and otherwise applies any concurrent scope deltas.
 
 The legacy single-DB layout (`.sourcegraph/graph.db`) is migrated automatically
 on first start of the new server — the file is renamed into `scopes/default.db`

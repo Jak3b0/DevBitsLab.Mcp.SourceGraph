@@ -24,11 +24,15 @@ The system SHALL model a scope as `(id, name, root, project_set, isolated, last_
 - **THEN** all three appear in the registry and `list_scopes` reports each with the right kind, isolation flag, and root
 
 ### Requirement: Per-scope physical isolation
-Each scope SHALL persist its graph in `<repo>/.sourcegraph/scopes/<id>.db`; a separate `<repo>/.sourcegraph/_meta.db` SHALL hold the `scopes` registry.
+Each scope SHALL persist its graph in `<repo>/.sourcegraph/scopes/<id>.db`; a separate `<repo>/.sourcegraph/_meta.db` SHALL hold the `scopes` registry. A new scope's per-scope DB SHALL be created on its first index, whether the scope was added at startup or live via a `.sourcegraph.json` edit.
 
-#### Scenario: New scope creates a new file
+#### Scenario: New scope creates a new file (restart path)
 - **WHEN** a new scope `frontend` is added to `.sourcegraph.json` and the server is restarted
 - **THEN** `.sourcegraph/scopes/frontend.db` is created on first index, distinct from any other scope's DB
+
+#### Scenario: New scope creates a new file (live path)
+- **WHEN** a new scope `frontend` is added to `.sourcegraph.json` while the server is running
+- **THEN** within the watcher's debounce + cold-index window, `.sourcegraph/scopes/frontend.db` is created and `list_scopes` reports the new scope; no other scope's DB is touched
 
 ### Requirement: One-shot migration from single-DB layout
 On startup, if a legacy `<repo>/.sourcegraph/graph.db` exists and `<repo>/.sourcegraph/scopes/default.db` does not, the system SHALL atomically move the legacy file to the new location.
@@ -51,16 +55,90 @@ When a scope has `isolated: true`, it SHALL be excluded from `scope = "*"` fan-o
 - **WHEN** `find_references(symbol = "AuthService", scope = "*")` runs against a config with `frontend, backend, vendor (isolated)`
 - **THEN** results come from `frontend` and `backend` only; rows from `vendor` are excluded unless `scope` explicitly includes `"vendor"`
 
+### Requirement: Partial scope reports per-project failures
+A scope whose cold-index completed and produced symbols for at least one project, but where one or more projects or files failed, SHALL be marked with status `partial`. A partial scope SHALL be queryable: tools targeting `scope = "<id>"` against a partial scope SHALL return whatever symbols were indexed (best-effort); `scope = "*"` fan-out SHALL include partial scopes alongside `ok` scopes (and SHALL also reach `degraded` scopes per the existing `Degraded scope doesn't crash the host` requirement — those contribute a `"scope is degraded: <error>"` block to the merged response instead of running the query). The registry SHALL persist the failure lists alongside the scope row so `list_scopes` returns accurate failure detail even after a server restart that hasn't yet re-triggered indexing.
+
+A scope status SHALL be:
+- `ok` — every project and file indexed cleanly; `failed_projects` and `failed_files` are empty
+- `indexing` — cold index in progress
+- `partial` — at least one project produced symbols and at least one project or file failed; `failed_projects` and/or `failed_files` are non-empty
+- `degraded` — workspace failed to open, OR every project failed (zero files indexed), OR an unanticipated exception escaped to the scope-level safety net; tools return `"scope is degraded: <error>"`
+
+#### Scenario: Solution with one bad project lands `partial`, not `degraded`
+- **GIVEN** a solution containing two projects where one fails to compile
+- **WHEN** `LiveIndexService` cold-indexes the scope
+- **THEN** the scope's status is `partial` (not `degraded`); `list_scopes` reports `failed_projects` containing the failed project's name and reason; tools targeting the scope return symbols from the working project; `scope = "*"` fan-out includes this scope's results
+
+#### Scenario: Partial-scope failure lists survive restart
+- **GIVEN** a scope previously cold-indexed to `partial` status with one entry in `failed_projects`
+- **WHEN** the server is restarted and `list_scopes` is invoked before any re-index runs
+- **THEN** the partial status, the failed project's name, and the reason are returned from the persisted registry row — operators see accurate failure detail without waiting for a re-index
+
+#### Scenario: All-projects-fail scope is `degraded`, not `partial`
+- **GIVEN** a solution where every project's compilation fails
+- **WHEN** `LiveIndexService` cold-indexes the scope
+- **THEN** the scope's status is `degraded` (because zero files were indexed); `failed_projects` enumerates every project; tools targeting the scope return the existing degraded-scope error message; `scope = "*"` reaches the scope as today (per `Degraded scope doesn't crash the host`) and contributes the per-scope error block to the merged response without breaking the call
+
 ### Requirement: Degraded scope doesn't crash the host
-If a scope's initial index fails (workspace error, missing solution, etc.), the registry SHALL mark that scope as `degraded`; queries against it return an empty result with a status note, while every other scope continues to serve.
+If a scope's initial index fails with no recoverable output (workspace error, missing solution, every project failed to compile, or an unanticipated exception escaped to the scope-level safety net), the registry SHALL mark that scope as `degraded`; queries against it return an empty result with a status note, while every other scope continues to serve. A scope with at least one project that produced symbols SHALL be marked `partial` instead — `degraded` is reserved for the no-recoverable-output case.
 
 #### Scenario: Bad solution path
 - **WHEN** `.sourcegraph.json` lists a `tools.slnx` that fails to load
 - **THEN** `list_scopes` reports `tools` with `status: degraded` and an error message; queries with `scope = "tools"` return `"scope is degraded: <error>"`; queries with `scope = "*"` succeed against the healthy scopes
 
+#### Scenario: Boundary between degraded and partial
+- **GIVEN** a solution that opens successfully but where every project's compilation fails
+- **WHEN** `LiveIndexService` cold-indexes the scope
+- **THEN** the scope is `degraded` (not `partial`) because zero files were indexed; the `failed_projects` list still enumerates every project so operators see why every project failed
+
 ### Requirement: list_scopes tool
-The server SHALL expose a `list_scopes` tool that returns each scope's id, name, root, project count, last-indexed timestamp, isolation flag, and status.
+The server SHALL expose a `list_scopes` tool that returns each scope's id, name, root, project count, last-indexed timestamp, isolation flag, status, and (when non-empty) the lists of failed projects and failed files.
+
+The structured output schema SHALL include:
+- `failed_projects: { name: string, reason: string }[]` — projects whose compilation could not be obtained during the most recent cold index
+- `failed_files: { path: string, reason: string }[]` — files whose Pass 1 walk threw during the most recent cold index
+
+Both arrays SHALL be omitted when empty (or rendered as empty arrays — the JSON shape is consistent), so healthy scopes' output is unchanged from the prior contract. The markdown rendering SHALL surface the failure detail (e.g., as a sub-list under the affected scope's row) when the arrays are non-empty so operators reading the human-friendly output see the failure attribution without needing to inspect `structuredContent`.
 
 #### Scenario: Discover available scopes
 - **WHEN** the agent invokes `list_scopes()`
-- **THEN** the response is a markdown table with one row per registered scope
+- **THEN** the response is a markdown table with one row per registered scope; healthy scopes show only id, name, root, project count, last-indexed timestamp, isolation flag, and `status: ok` — the failure-list columns are suppressed
+
+#### Scenario: List a partial scope
+- **GIVEN** a scope `backend` with `status: partial` whose `failed_projects` contains `Legacy.WebForms` (reason: `compilation null`)
+- **WHEN** `list_scopes` is invoked
+- **THEN** the markdown row for `backend` shows `status: partial` and a sub-list (or column) carrying `Legacy.WebForms — compilation null`; the `structuredContent.failed_projects` array contains exactly one entry with `name: "Legacy.WebForms"` and a non-empty `reason`; `failed_files` is empty
+
+### Requirement: Live scope lifecycle from config edits
+The system SHALL bring up, tear down, and replace per-scope hosts in response to validated `.sourcegraph.json` saves observed by `ScopeConfigWatcher`, without restarting the server. The lifecycle stages SHALL match the startup path: a new scope passes through `indexing → ok | degraded` and signals `ScopeHost.Ready` exactly as a startup scope does.
+
+#### Scenario: Live add goes through full lifecycle
+- **WHEN** an `add` delta is applied for a new scope
+- **THEN** `LiveIndexService` calls the same `PrepareScopeAsync` → `RunInitialIndexAsync` → `StartWatcher` chain as for a startup scope, the scope's `status` transitions through `indexing` to `ok` or `degraded`, and `ScopeHost.Ready` completes once the cold index settles
+
+#### Scenario: Live remove disposes cleanly
+- **WHEN** a `remove` delta is applied for an existing scope
+- **THEN** `ScopeRouter.Unregister` removes the scope from the router, the per-scope `SolutionWatcher` is disposed, the embeddings drain is stopped, the indexer + store are disposed; the per-scope DB on disk is *not* deleted
+
+#### Scenario: Live modify atomically replaces the host
+- **WHEN** a `modify` delta is applied (a scope's `solutions`/`projects`/`paths`/`exclude`/`isolated` changed)
+- **THEN** a fresh `ScopeHost` is constructed and the router swap is observably atomic — no concurrent `TryGet(id)` ever returns null during the replacement; the displaced host is disposed after the configured grace period; the new host is brought up via `RunInitialIndexAsync` exactly as a startup scope is
+
+#### Scenario: Live remove deletes the registry row
+- **WHEN** a `remove` delta is applied
+- **THEN** the scope's row in `_meta.db` is deleted (no tombstone); the per-scope `<id>.db` file on disk is preserved; subsequent `list_scopes` does not report the scope, and re-adding the same scope id later picks up the existing on-disk DB without a cold reindex
+
+#### Scenario: Live default-scope change is metadata-only
+- **WHEN** only the `default_scope` field changed
+- **THEN** `ScopeRouter.SetDefaultScope` is called with the new id and no scope's data is touched; no scope is reindexed and no host is replaced
+
+### Requirement: Plugin changes are not live-reloadable
+The system SHALL NOT load, unload, or reconfigure plugins in response to a `.sourcegraph.json` edit. The plugin set established at server startup SHALL be the plugin set the server runs with for its entire lifetime. A change to the top-level `plugins[]` array detected by `ScopeConfigWatcher` SHALL be logged at warn level with a message stating that a server restart is required to apply the change.
+
+#### Scenario: Adding a plugin entry at runtime is non-effective
+- **WHEN** a new entry is added to the top-level `plugins[]` array of `.sourcegraph.json` while the server is running
+- **THEN** the running plugin set is unchanged, no `AssemblyLoadContext` is created, no analyzer is loaded, and a single warn-level log entry is emitted naming the change and instructing the user to restart
+
+#### Scenario: Plugin and scope change in the same save
+- **WHEN** a single `.sourcegraph.json` save adds a new scope *and* adds a new plugin entry
+- **THEN** the scope diff is applied normally (new scope brought up live), the plugin diff is logged-and-skipped, and the running plugin set is unchanged

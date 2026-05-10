@@ -39,6 +39,7 @@ public static class GraphTools
         [Description("Symbol name (e.g. 'Calculator', 'Divide') or FQN suffix (e.g. 'Calculator.Add', 'Sample.Domain.Calculator')")] string symbol,
         [Description("Optional substring to narrow the search to specific file paths")] string? fileHint = null,
         [Description(ScopeDescription)] string? scope = null,
+        IProgress<ModelContextProtocol.ProgressNotificationValue>? progress = null,
         CancellationToken ct = default) =>
         ToolMetrics.TrackAsync("find_definition", new { symbol, fileHint, scope }, () =>
             ScopedExecution.RunAsync(router, scope, async host =>
@@ -97,7 +98,7 @@ public static class GraphTools
                     structuredHits: structuredHits,
                     scopeId: host.Scope.Id,
                     elapsedMs: sw.ElapsedMilliseconds);
-            }, ct));
+            }, ct, progress));
 
     /// <summary>
     /// Compose the multi-content <see cref="CallToolResult"/> for <c>find_definition</c>: the
@@ -1708,7 +1709,7 @@ public static class GraphTools
                     rows: rows,
                     scopeId: host.Scope.Id,
                     elapsedMs: sw.ElapsedMilliseconds);
-            }, ct));
+            }, ct, progress));
 
     private static CallToolResult BuildModuleSummaryResult(
         string prose,
@@ -1836,7 +1837,7 @@ public static class GraphTools
                     maxDepth: maxDepth,
                     scopeId: host.Scope.Id,
                     elapsedMs: sw.ElapsedMilliseconds);
-            }, ct));
+            }, ct, progress));
 
     private static CallToolResult BuildImpactOfChangeResult(
         string prose,
@@ -2140,7 +2141,7 @@ public static class GraphTools
                     scopeId: host.Scope.Id,
                     elapsedMs: sw.ElapsedMilliseconds,
                     omittedSize: hitsOmitted);
-            }, ct));
+            }, ct, progress));
 
     private static CallToolResult BuildSemanticSearchResult(
         string prose,
@@ -3558,7 +3559,7 @@ internal static class Format
         foreach (var h in headers)
         {
             sb.Append(' ');
-            sb.Append(EscapeCell(h));
+            sb.Append(MarkdownTable.EscapeCell(h));
             sb.Append(" |");
         }
         sb.AppendLine();
@@ -3591,16 +3592,12 @@ internal static class Format
             foreach (var cell in row)
             {
                 sb.Append(' ');
-                sb.Append(EscapeCell(cell));
+                sb.Append(MarkdownTable.EscapeCell(cell));
                 sb.Append(" |");
             }
             sb.AppendLine();
         }
     }
-
-    /// <summary>Escape a literal <c>|</c> in cell content so it doesn't break GFM table parsing.</summary>
-    private static string EscapeCell(string s) =>
-        string.IsNullOrEmpty(s) ? string.Empty : s.Replace("|", "\\|", StringComparison.Ordinal);
 
     /// <summary>
     /// Build a <see cref="ProgressNotificationValue"/> for emission via an injected

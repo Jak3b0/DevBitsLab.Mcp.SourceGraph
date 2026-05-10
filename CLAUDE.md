@@ -31,7 +31,18 @@ directly without re-parsing markdown — see README's "Structured output and
 resource links" for the shape and a worked example.
 
 A persistent JSONL log of every tool call lives at
-`<solution>/.sourcegraph/usage.jsonl` for offline analysis.
+`<solution>/.sourcegraph/usage.jsonl` for offline analysis. `query_graph` calls log
+the SQL text; the log is the evidence base for which ad-hoc queries deserve to be
+promoted into curated tools.
+
+For ad-hoc questions that don't fit a curated tool — aggregations, joins, "how many
+public types use X", "which classes implement IDisposable but lack `Dispose`" — the
+server exposes a stable view layer (`v_symbols`, `v_files`, `v_edges`, `v_references`,
+`v_scopes`) plus two tools: `describe_schema` (returns the views with column types and
+descriptions, plus the live `symbol_kinds`/`edge_kinds` vocabularies) and
+`query_graph` (read-only single SQL statement, named `@param` bindings, scope-aware,
+5 s timeout / 5000-row cap configurable via `--query-timeout-seconds` /
+`--query-row-limit` or the matching `SOURCEGRAPH_QUERY_*` env vars).
 
 `semantic_search`, `impact_of_change`, and `module_summary` emit MCP
 `notifications/progress` when the originating `tools/call` request includes

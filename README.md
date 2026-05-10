@@ -224,6 +224,17 @@ to the client at handshake time.
 | `usage_stats` | Per-tool call count, error count, latency, average response size, last-called time for the current process |
 | `ping` | Health check — returns `pong @ <UTC ISO-8601>` |
 
+### Ad-hoc queries (escape hatch)
+
+When no curated tool fits the question — aggregations, joins, "how many public types use X", "which classes implement IDisposable but lack `Dispose`", "which types have > 50 methods" — the server exposes a stable view layer over the SQLite tables and a tool to run read-only SQL against it.
+
+| Tool | Purpose |
+|---|---|
+| `describe_schema` | Returns the queryable view layer (`v_symbols`, `v_files`, `v_edges`, `v_references`, `v_scopes`) with each column's type and description, plus the live `symbol_kinds` and `edge_kinds` vocabularies present in the resolved scope set. Call this first when composing `query_graph` SQL. |
+| `query_graph` | Runs a single read-only `SELECT` or `WITH` statement against the views. Named parameter binding via `@name` placeholders. Read-only at the SQLite connection level, single-statement enforced at prepare, 5-second statement timeout (configurable), 5000-row cap (configurable). Returns tabular `{columns, rows}` structured content plus a markdown table. Logged into `.sourcegraph/usage.jsonl` with the SQL text — the call log is the evidence base for which queries deserve to be promoted into curated tools. |
+
+The view layer is versioned (`view_schema_version`, currently `1`); the underlying tables remain implementation details and may evolve without bumping it.
+
 ### Example tool calls
 
 ```jsonc
@@ -288,6 +299,18 @@ to the client at handshake time.
 // Every element with `Grid.Row` set (XAML attached-property annotation).
 { "tool": "find_by_annotation",
   "args": { "name": "Grid.Row", "flavor": "xaml-attached-property" } }
+
+// Ad-hoc SQL: how many public types use Sample.Domain.Calculator?
+// Aggregates v_edges through v_symbols.container_id and filters by accessibility=Public.
+// No curated tool answers this shape; query_graph composes it from the view layer.
+{ "tool": "query_graph",
+  "args": {
+    "sql": "SELECT COUNT(DISTINCT t.id) AS public_user_count FROM v_edges e JOIN v_symbols m ON m.id = e.src AND m.scope = e.scope JOIN v_symbols t ON t.id = m.container_id AND t.scope = m.scope WHERE e.dst = (SELECT id FROM v_symbols WHERE fqn = @fqn LIMIT 1) AND e.kind = 'uses-type' AND t.is_public = 1 AND t.is_type = 1",
+    "parameters": { "@fqn": "Sample.Domain.Calculator" }
+  } }
+
+// Schema discovery — list views, columns, and live kind vocabularies.
+{ "tool": "describe_schema", "args": {} }
 ```
 
 ## Structured output and resource links
@@ -550,10 +573,10 @@ database per scope. The current limits are:
 | MCP `initialize` instructions payload | enabled | Disable with `--no-instructions` or `SOURCEGRAPH_NO_INSTRUCTIONS=1`. |
 | Green-leaf brand mark on tool responses, `ServerInstructions`, and per-tool `Title`/`Description` in `tools/list` | enabled | Disable with `--no-leaf` or `SOURCEGRAPH_NO_LEAF=1`. |
 | SQLite database size per scope | unbounded | Use `clear` to wipe; databases live under `<root>/.sourcegraph/scopes/<id>.db`. |
+| `query_graph` statement timeout | 5 s | `--query-timeout-seconds <int>` or `SOURCEGRAPH_QUERY_TIMEOUT_SECONDS=<int>`. |
+| `query_graph` row cap | 5000 rows | `--query-row-limit <int>` or `SOURCEGRAPH_QUERY_ROW_LIMIT=<int>`. The tool surfaces `truncated: true` when the cap is hit. |
 
-There is no built-in query timeout. If you need one, layer a `CancellationToken`
-on the MCP client side — the server honours cancellation through every async
-graph operation.
+The curated tools have no built-in timeout — they honour the MCP client's `CancellationToken` through every async graph operation. The `query_graph` tool DOES enforce a per-call statement timeout (above) so an accidental Cartesian join doesn't pin the server.
 
 ## Platform support
 

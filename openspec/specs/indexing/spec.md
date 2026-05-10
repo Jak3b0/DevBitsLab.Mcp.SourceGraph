@@ -377,12 +377,12 @@ The cache SHALL be populated once at project discovery and reused for every `.xa
 ### Requirement: Self-heal stranded reference edges
 The indexer SHALL detect and recover from a "zombie" file state where pass 1's `ClearFileOutgoingAsync` cleared a file's outgoing references but pass 2's reference walk did not repopulate them. On every `IndexCoreAsync` call, the pass-1 unchanged-file skip path SHALL bypass the skip when the file declares one or more symbols but the store reports zero outgoing-reference rows for that file. The bypassed file SHALL be re-walked in pass 2 so its references are regenerated.
 
-The integrity check SHALL be implemented via a new storage method `IGraphStore.HasOutgoingReferencesAsync(long fileId, CancellationToken ct)` that returns `true` when at least one `symbol_references` row exists for the given file. Default implementation SHALL return `true` so existing storage implementations preserve today's behaviour.
+The integrity check SHALL be implemented via a new storage method `IGraphStore.HasOutgoingReferencesAsync(long fileId, CancellationToken ct)` that returns `true` when at least one outgoing-reference row exists for the given file (in `SqliteGraphStore`'s schema, the `refs` table). Default implementation SHALL return `true` so existing storage implementations preserve today's behaviour.
 
 #### Scenario: Stranded file is re-walked on next index
-- **GIVEN** a file `F` whose row, declared symbols, and content SHA exist in the store, but for which `symbol_references.file_id = F.id` has zero rows
+- **GIVEN** a file `F` whose row, declared symbols, and content SHA exist in the store, but for which `refs.file_id = F.id` has zero rows
 - **WHEN** `IndexCoreAsync` runs against a workspace containing `F` whose on-disk SHA matches the stored SHA (no edit since last index)
-- **THEN** pass 1's "unchanged file" skip is bypassed for `F` (because `HasOutgoingReferencesAsync(F.id) == false` while `_keysByFileId[F.id].Any() == true`), pass 2 walks `F`, and at least one `symbol_references` row appears for `F` after the call returns
+- **THEN** pass 1's "unchanged file" skip is bypassed for `F` (because `HasOutgoingReferencesAsync(F.id) == false` while `_keysByFileId[F.id].Any() == true`), pass 2 walks `F`, and at least one outgoing-reference row appears for `F` after the call returns
 
 #### Scenario: Healthy unchanged file is still skipped
 - **GIVEN** a file `F` with declared symbols and at least one outgoing-reference row in the store

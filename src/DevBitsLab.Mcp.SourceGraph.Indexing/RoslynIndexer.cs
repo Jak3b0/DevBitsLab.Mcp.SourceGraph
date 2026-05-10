@@ -306,6 +306,11 @@ public sealed class RoslynIndexer : IAsyncDisposable, ILanguageIndexer
         var changedFileIds = new HashSet<long>();
         var docsByChangedFile = new Dictionary<long, List<Document>>();
         var changedFileMeta = new Dictionary<long, (string Path, byte[] Sha)>();
+        // Memoize HasOutgoingReferencesAsync per fileId for the lifetime of this pass: in
+        // multi-target / linked-project solutions the same fileId enumerates once per TFM,
+        // and the integrity check answer is invariant within a single pass. Caching also
+        // collapses the recovery log line to one entry per zombied file rather than N.
+        var hasOutgoingRefsCache = new Dictionary<long, bool>();
         var symbolsIndexed = 0;
 
         foreach (var document in documents)
@@ -359,16 +364,33 @@ public sealed class RoslynIndexer : IAsyncDisposable, ILanguageIndexer
                 // refs are in agreement before we skip pass 2: a symbol-bearing file with
                 // zero outgoing refs is "zombied" (pass 1 cleared, pass 2 never repopulated).
                 // Without this check the SHA-skip would keep that file stranded forever.
-                if (keysForFile.Count == 0
-                    || await _store.HasOutgoingReferencesAsync(fileId, ct).ConfigureAwait(false))
+                if (keysForFile.Count == 0)
                 {
                     continue;
                 }
-
-                _logger.LogInformation(
-                    "Re-walking references for {Path}: file SHA matches but no outgoing edges in store " +
-                    "(likely zombied by a prior incomplete indexing pass; recovering)",
-                    path);
+                bool hasOutgoingRefs;
+                if (hasOutgoingRefsCache.TryGetValue(fileId, out var cached))
+                {
+                    hasOutgoingRefs = cached;
+                }
+                else
+                {
+                    hasOutgoingRefs = await _store.HasOutgoingReferencesAsync(fileId, ct).ConfigureAwait(false);
+                    hasOutgoingRefsCache[fileId] = hasOutgoingRefs;
+                    // Log once per zombied fileId on first detection — subsequent TFM
+                    // iterations of the same path hit the cache branch and stay quiet.
+                    if (!hasOutgoingRefs)
+                    {
+                        _logger.LogInformation(
+                            "Re-walking references for {Path}: file SHA matches but no outgoing edges in store " +
+                            "(likely zombied by a prior incomplete indexing pass; recovering)",
+                            path);
+                    }
+                }
+                if (hasOutgoingRefs)
+                {
+                    continue;
+                }
                 // Fall through to the changed-file path so pass 2 walks this file.
             }
 

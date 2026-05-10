@@ -90,6 +90,31 @@ public sealed class ViewsTests : IAsyncLifetime
                 -- v_references integer-to-text mapping for ReferenceKind.Call -> 'call'.
                 INSERT INTO refs(id, symbol_id, file_id, line, col, kind)
                 VALUES (1, 100, 10, 9, 16, 2);
+
+                -- One annotation row tagged on the public class. Carries a JSON args payload
+                -- so the v_annotations.args_json column has a non-NULL value to assert against.
+                INSERT INTO annotations(
+                    id, symbol_id, name, full_name, flavor, args_json, attribute_symbol_id)
+                VALUES (
+                    1, 100, 'Obsolete', 'System.ObsoleteAttribute', 'csharp-attribute',
+                    '["use Foo"]', NULL);
+
+                -- Two diagnostic rows so we can exercise the severity_name CASE mapping
+                -- against both a Warning (2) and an Error (3). symbol_id targets the public
+                -- class so an INNER JOIN against v_symbols would surface them.
+                INSERT INTO diagnostics(id, symbol_id, file_id, severity, code, message, line, col)
+                VALUES (1, 100, 10, 2, 'CS0612', 'Type is obsolete', 7, 4);
+                INSERT INTO diagnostics(id, symbol_id, file_id, severity, code, message, line, col)
+                VALUES (2, 100, 10, 3, 'CS0029', 'Cannot implicitly convert', 8, 5);
+
+                -- One symbol_history row so v_history has data to project. last_authored_at
+                -- is Unix-millis matching the documented unit (mirrors v_files.last_indexed_at).
+                INSERT INTO symbol_history(
+                    symbol_id, last_commit_sha, last_author, last_authored_at,
+                    line_count, blamed_content_sha)
+                VALUES (
+                    100, 'abc123def456', 'Jacques Bourque', 1700000005000,
+                    6, X'00112233');
                 """);
         }
 
@@ -153,11 +178,20 @@ public sealed class ViewsTests : IAsyncLifetime
         Views.Sql.Should().Contain("{{SCOPE_UNION_BLOCK_v_files}}");
         Views.Sql.Should().Contain("{{SCOPE_UNION_BLOCK_v_edges}}");
         Views.Sql.Should().Contain("{{SCOPE_UNION_BLOCK_v_references}}");
+        Views.Sql.Should().Contain("{{SCOPE_UNION_BLOCK_v_annotations}}");
+        Views.Sql.Should().Contain("{{SCOPE_UNION_BLOCK_v_diagnostics}}");
+        Views.Sql.Should().Contain("{{SCOPE_UNION_BLOCK_v_history}}");
 
         Views.PerScopeBlockTemplates.Keys.Should().BeEquivalentTo(
-            new[] { "v_symbols", "v_files", "v_edges", "v_references" });
+            new[]
+            {
+                "v_symbols", "v_files", "v_edges", "v_references",
+                "v_annotations", "v_diagnostics", "v_history",
+            });
 
-        Views.SchemaVersion.Should().Be(1, "the initial change ships v1 of the contract");
+        Views.SchemaVersion.Should().Be(2,
+            "the extended-views change bumps the version to signal the v_annotations / "
+            + "v_diagnostics / v_history additions to cache-aware clients");
     }
 
     [Fact]
@@ -280,6 +314,90 @@ public sealed class ViewsTests : IAsyncLifetime
         Convert.ToInt32(row["isolated"], CultureInfo.InvariantCulture).Should().Be(0);
         row["status"].Should().Be("ok");
         Convert.ToInt64(row["last_indexed_at"], CultureInfo.InvariantCulture).Should().Be(1700000000000L);
+    }
+
+    [Fact]
+    public async Task Substituted_v_annotations_returnsExpectedColumns()
+    {
+        var descriptor = Views.All.First(v => v.Name == "v_annotations");
+
+        var rows = (await _connection!.QueryAsync(
+            "SELECT * FROM v_annotations ORDER BY id;")).ToList();
+        rows.Should().HaveCount(1, "one annotation row was seeded");
+
+        var row = (IDictionary<string, object?>)rows[0]!;
+        row.Keys.Should().BeEquivalentTo(descriptor.Columns.Select(c => c.Name),
+            "view column names must match the curated descriptor");
+        row["scope"].Should().Be("test");
+        row["id"].Should().Be(1L);
+        row["symbol_id"].Should().Be(100L,
+            "the annotation row was tagged on the public class (id=100)");
+        row["name"].Should().Be("Obsolete");
+        row["full_name"].Should().Be("System.ObsoleteAttribute");
+        row["flavor"].Should().Be("csharp-attribute",
+            "csharp-attribute is the documented flavor for .NET attributes");
+        row["args_json"].Should().Be("[\"use Foo\"]",
+            "args_json projects raw TEXT (the seeded JSON literal)");
+        row["attribute_symbol_id"].Should().BeNull(
+            "the seeded annotation's defining type isn't itself indexed");
+    }
+
+    [Fact]
+    public async Task Substituted_v_diagnostics_mapsSeverityToText()
+    {
+        var descriptor = Views.All.First(v => v.Name == "v_diagnostics");
+
+        var rows = (await _connection!.QueryAsync(
+            "SELECT * FROM v_diagnostics ORDER BY id;")).ToList();
+        rows.Should().HaveCount(2, "two diagnostic rows were seeded (warning + error)");
+
+        // First row: severity=2 → 'warning'
+        var first = (IDictionary<string, object?>)rows[0]!;
+        first.Keys.Should().BeEquivalentTo(descriptor.Columns.Select(c => c.Name),
+            "view column names must match the curated descriptor");
+        first["scope"].Should().Be("test");
+        first["id"].Should().Be(1L);
+        first["symbol_id"].Should().Be(100L);
+        first["file_id"].Should().Be(10L);
+        Convert.ToInt32(first["severity"], CultureInfo.InvariantCulture).Should().Be(2,
+            "raw severity stays available for ordering / range queries");
+        first["severity_name"].Should().Be("warning",
+            "severity=2 maps to 'warning' via the documented CASE expression");
+        first["code"].Should().Be("CS0612");
+        first["message"].Should().Be("Type is obsolete");
+        Convert.ToInt32(first["line"], CultureInfo.InvariantCulture).Should().Be(7);
+        Convert.ToInt32(first["column_number"], CultureInfo.InvariantCulture).Should().Be(4,
+            "column_number is the renamed projection of the underlying diagnostics.col");
+
+        // Second row: severity=3 → 'error'
+        var second = (IDictionary<string, object?>)rows[1]!;
+        Convert.ToInt32(second["severity"], CultureInfo.InvariantCulture).Should().Be(3);
+        second["severity_name"].Should().Be("error",
+            "severity=3 maps to 'error' via the documented CASE expression");
+        second["code"].Should().Be("CS0029");
+    }
+
+    [Fact]
+    public async Task Substituted_v_history_returnsExpectedColumns()
+    {
+        var descriptor = Views.All.First(v => v.Name == "v_history");
+
+        var rows = (await _connection!.QueryAsync("SELECT * FROM v_history;")).ToList();
+        rows.Should().HaveCount(1, "one symbol_history row was seeded");
+
+        var row = (IDictionary<string, object?>)rows[0]!;
+        row.Keys.Should().BeEquivalentTo(descriptor.Columns.Select(c => c.Name),
+            "view column names must match the curated descriptor");
+        row["scope"].Should().Be("test");
+        row["symbol_id"].Should().Be(100L);
+        row["last_commit_sha"].Should().Be("abc123def456");
+        row["last_author"].Should().Be("Jacques Bourque");
+        Convert.ToInt64(row["last_authored_at"], CultureInfo.InvariantCulture).Should().Be(1700000005000L,
+            "last_authored_at is Unix-millis (matches v_files.last_indexed_at units)");
+        Convert.ToInt32(row["line_count"], CultureInfo.InvariantCulture).Should().Be(6);
+        row["blamed_content_sha"].Should().BeOfType<byte[]>(
+            "BLOB columns surface as byte[] in Microsoft.Data.Sqlite");
+        ((byte[])row["blamed_content_sha"]!).Should().Equal(0x00, 0x11, 0x22, 0x33);
     }
 
     /// <summary>

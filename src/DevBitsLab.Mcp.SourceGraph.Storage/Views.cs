@@ -5,21 +5,24 @@ namespace DevBitsLab.Mcp.SourceGraph.Storage;
 /// openspec/changes/add-graph-query/design.md (Decision 2) for the contract.
 ///
 /// View names are stable; their column shape is the public API. Bump
-/// <see cref="SchemaVersion"/> on any backwards-incompatible column change
-/// (column removed, renamed, or whose type meaningfully changes).
+/// <see cref="SchemaVersion"/> on any view-set change — addition, removal, column
+/// rename, or column-type change — so clients that cache <c>describe_schema</c> by
+/// version always re-introspect after a server upgrade.
 ///
-/// The underlying tables (<c>symbols</c>, <c>edges</c>, <c>refs</c>, <c>files</c>) remain
-/// implementation details and may evolve without bumping <see cref="SchemaVersion"/> —
-/// only <see cref="Schema.Version"/> moves for those.
+/// The underlying tables (<c>symbols</c>, <c>edges</c>, <c>refs</c>, <c>files</c>,
+/// <c>annotations</c>, <c>diagnostics</c>, <c>symbol_history</c>) remain implementation
+/// details and may evolve without bumping <see cref="SchemaVersion"/> — only
+/// <see cref="Schema.Version"/> moves for those.
 /// </summary>
 public static class Views
 {
     /// <summary>
     /// View-layer schema version. Independent from <see cref="Schema.Version"/> (the on-disk
-    /// table schema). Bumps only when a view's column shape changes in a backwards-incompatible
-    /// way.
+    /// table schema). Bumps on any view-set change — addition, removal, column rename, or
+    /// column-type change — so clients that cache <c>describe_schema</c> by version always
+    /// re-introspect after a server upgrade.
     /// </summary>
-    public const int SchemaVersion = 1;
+    public const int SchemaVersion = 2;
 
     /// <summary>
     /// The CREATE TEMP VIEW scaffolding loaded from <c>Views.sql</c>. Contains
@@ -34,7 +37,8 @@ public static class Views
     /// scope and joins them with <c>UNION ALL</c>, then substitutes the joined text into the
     /// matching <c>{{SCOPE_UNION_BLOCK_&lt;view&gt;}}</c> token in <see cref="Sql"/>.
     ///
-    /// Keys: <c>"v_symbols"</c>, <c>"v_files"</c>, <c>"v_edges"</c>, <c>"v_references"</c>.
+    /// Keys: <c>"v_symbols"</c>, <c>"v_files"</c>, <c>"v_edges"</c>, <c>"v_references"</c>,
+    /// <c>"v_annotations"</c>, <c>"v_diagnostics"</c>, <c>"v_history"</c>.
     /// (<c>v_scopes</c> is single-source from <c>meta.scopes</c> and has no per-scope template.)
     ///
     /// The ATTACH alias <c>"{SCOPE_ID}"</c> is double-quoted because scope ids can contain
@@ -104,12 +108,40 @@ public static class Views
             FROM "{SCOPE_ID}".refs r
             """;
 
+        const string vAnnotations = """
+            SELECT '{SCOPE_ID}' AS scope, a.id AS id, a.symbol_id AS symbol_id,
+                   a.name AS name, a.full_name AS full_name, a.flavor AS flavor,
+                   a.args_json AS args_json, a.attribute_symbol_id AS attribute_symbol_id
+            FROM "{SCOPE_ID}".annotations a
+            """;
+
+        const string vDiagnostics = """
+            SELECT '{SCOPE_ID}' AS scope, d.id AS id, d.symbol_id AS symbol_id, d.file_id AS file_id,
+                   d.severity AS severity,
+                   (CASE d.severity WHEN 0 THEN 'hidden' WHEN 1 THEN 'info'
+                                    WHEN 2 THEN 'warning' WHEN 3 THEN 'error'
+                                    ELSE CAST(d.severity AS TEXT) END) AS severity_name,
+                   d.code AS code, d.message AS message, d.line AS line, d.col AS column_number
+            FROM "{SCOPE_ID}".diagnostics d
+            """;
+
+        const string vHistory = """
+            SELECT '{SCOPE_ID}' AS scope, h.symbol_id AS symbol_id,
+                   h.last_commit_sha AS last_commit_sha, h.last_author AS last_author,
+                   h.last_authored_at AS last_authored_at, h.line_count AS line_count,
+                   h.blamed_content_sha AS blamed_content_sha
+            FROM "{SCOPE_ID}".symbol_history h
+            """;
+
         return new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["v_symbols"] = vSymbols,
             ["v_files"] = vFiles,
             ["v_edges"] = vEdges,
             ["v_references"] = vReferences,
+            ["v_annotations"] = vAnnotations,
+            ["v_diagnostics"] = vDiagnostics,
+            ["v_history"] = vHistory,
         };
     }
 
@@ -189,6 +221,52 @@ public static class Views
                     new("isolated", "INTEGER", false, "1 when the scope is isolated (excluded from `scope='*'` fan-out); 0 otherwise."),
                     new("status", "TEXT", false, "One of `ok`, `degraded`, `indexing`."),
                     new("last_indexed_at", "INTEGER", false, "Unix-millis timestamp of the last completed index pass against the scope."),
+                }),
+
+            new(
+                "v_annotations",
+                "Every indexed annotation across the resolved scopes — C# attributes, XAML attached properties, and any future plugin-defined flavor. One row per (scope, id). Join `symbol_id` → `v_symbols.id` within the same scope to reach the decorated symbol.",
+                new List<ViewColumn>
+                {
+                    new("scope", "TEXT", false, "Scope id this row lives in."),
+                    new("id", "INTEGER", false, "Per-scope annotation id; combine with `scope` for cross-scope uniqueness."),
+                    new("symbol_id", "INTEGER", false, "Per-scope id of the decorated symbol. Join to `v_symbols.id` within the same scope."),
+                    new("name", "TEXT", false, "Short annotation name (e.g. `Obsolete`, `HttpPost`, `Grid.Row`); the unqualified identifier as it appears at the use site."),
+                    new("full_name", "TEXT", false, "Fully-qualified annotation name (e.g. `System.ObsoleteAttribute`, `Microsoft.AspNetCore.Mvc.HttpPostAttribute`)."),
+                    new("flavor", "TEXT", false, "Annotation source / framework: `csharp-attribute`, `xaml-attached-property`. Future plugins can introduce new flavors (e.g. `ts-decorator`, `vue-directive`, `svelte-action`); `describe_schema.annotation_flavors` carries the live vocabulary."),
+                    new("args_json", "TEXT", true, "Raw JSON array/object of constructor + named arguments captured from the annotation site; NULL when the annotation has no arguments. This column is raw TEXT — for substring search over argument values, prefer the curated `find_by_annotation` tool (FTS5-indexed via `annotations_fts`); use this view for compositional joins / aggregations."),
+                    new("attribute_symbol_id", "INTEGER", true, "Per-scope id of the annotation's defining type when that type is itself indexed (user-defined attribute / decorator); NULL when the defining type lives outside the index. Join to `v_symbols.id` within the same scope."),
+                }),
+
+            new(
+                "v_diagnostics",
+                "Every Roslyn diagnostic across the resolved scopes (warnings / errors / info / hidden). One row per (scope, id). Join `symbol_id` → `v_symbols.id` within the same scope to reach the diagnosed declaration; `symbol_id` is NULL for diagnostics whose source span doesn't fall inside any indexed declaration (e.g. unused-using on a using directive at file scope) — use LEFT JOIN to preserve those rows.",
+                new List<ViewColumn>
+                {
+                    new("scope", "TEXT", false, "Scope id this diagnostic lives in."),
+                    new("id", "INTEGER", false, "Per-scope diagnostic id; combine with `scope` for cross-scope uniqueness."),
+                    new("symbol_id", "INTEGER", true, "Per-scope id of the diagnosed symbol; NULL when the diagnostic's source span doesn't fall inside any indexed declaration (e.g. unused-using directive at file scope). Join to `v_symbols.id` within the same scope (use LEFT JOIN to keep null-symbol diagnostics)."),
+                    new("file_id", "INTEGER", false, "Per-scope id of the file containing the diagnostic site. Join to `v_files.id` within the same scope."),
+                    new("severity", "INTEGER", false, "Roslyn `DiagnosticSeverity`: 0=Hidden, 1=Info, 2=Warning, 3=Error. Use this column for ordering / range filters (e.g. `WHERE severity >= 2` for warnings + errors)."),
+                    new("severity_name", "TEXT", false, "Convenience text mapping of `severity`: `hidden` (0), `info` (1), `warning` (2), `error` (3); computed via CASE so agents don't have to memorise the integer enum."),
+                    new("code", "TEXT", false, "Diagnostic code (e.g. `CS0612`, `CS0618`, `IDE0001`)."),
+                    new("message", "TEXT", false, "Human-readable diagnostic message."),
+                    new("line", "INTEGER", false, "1-based line of the diagnostic site."),
+                    new("column_number", "INTEGER", false, "1-based column of the diagnostic site. (Renamed from underlying `col`; SQL reserves the bare identifier `column`.)"),
+                }),
+
+            new(
+                "v_history",
+                "Per-symbol git-blame metadata across the resolved scopes (last commit sha, last author, last-authored timestamp, line count). One row per (scope, symbol_id). Empty when the server runs with `--no-history` or against an environment without git on PATH. Join `symbol_id` → `v_symbols.id` within the same scope to reach the symbol's name / kind / file.",
+                new List<ViewColumn>
+                {
+                    new("scope", "TEXT", false, "Scope id this history row lives in."),
+                    new("symbol_id", "INTEGER", false, "Per-scope id of the symbol whose history this row caches. Join to `v_symbols.id` within the same scope."),
+                    new("last_commit_sha", "TEXT", true, "Git commit SHA of the most recent commit that touched any line in the symbol's source span; NULL for symbols whose blame run failed or returned no commits."),
+                    new("last_author", "TEXT", true, "Author of `last_commit_sha`; NULL when `last_commit_sha` is NULL."),
+                    new("last_authored_at", "INTEGER", true, "Unix-millis timestamp of the most recent authored change to the symbol's source span (matches `v_files.last_indexed_at` and `v_scopes.last_indexed_at` units). For ISO-8601 use `datetime(last_authored_at / 1000, 'unixepoch')`. NULL when `last_commit_sha` is NULL."),
+                    new("line_count", "INTEGER", true, "Number of source lines covered by the symbol's declaration span at blame time."),
+                    new("blamed_content_sha", "BLOB", true, "SHA-256 of the source file's content at blame time; used by the indexer to skip re-blaming when the file is unchanged. Compare against `v_files.sha` to detect stale blame caches."),
                 }),
         };
     }

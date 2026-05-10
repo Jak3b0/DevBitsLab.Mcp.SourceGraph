@@ -11,11 +11,16 @@
 --     for ergonomics, even though the underlying table uses start_col / end_col.
 --   * v_references.column_number renames the underlying refs.col — SQL reserves the
 --     bare identifier COLUMN, so we avoid the double-quoting tax for agent queries.
+--   * v_diagnostics.column_number renames the underlying diagnostics.col for the
+--     same reason.
 --   * v_files.sha renames files.content_sha256 — "sha" is the agent-facing name.
 --   * v_edges.kind / v_symbols.kind are projected from the underlying *_kind_name
 --     columns; "kind" is the contract.
 --   * v_references.kind maps the integer Core.ReferenceKind enum to short text:
 --     0='def', 1='ref', 2='call', 3='impl', 4='inherit', 5='read', 6='write'.
+--   * v_diagnostics.severity_name maps the integer Roslyn DiagnosticSeverity enum
+--     to short text: 0='hidden', 1='info', 2='warning', 3='error'. The raw integer
+--     stays available via the severity column for ordering / range queries.
 
 CREATE TEMP VIEW v_symbols AS
 {{SCOPE_UNION_BLOCK_v_symbols}}
@@ -42,3 +47,15 @@ SELECT
   s.status          AS status,
   s.last_indexed_at AS last_indexed_at
 FROM meta.scopes s;
+
+CREATE TEMP VIEW v_annotations AS
+{{SCOPE_UNION_BLOCK_v_annotations}}
+;
+
+CREATE TEMP VIEW v_diagnostics AS
+{{SCOPE_UNION_BLOCK_v_diagnostics}}
+;
+
+CREATE TEMP VIEW v_history AS
+{{SCOPE_UNION_BLOCK_v_history}}
+;

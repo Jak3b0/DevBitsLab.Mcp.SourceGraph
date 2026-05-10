@@ -81,10 +81,16 @@ public sealed class GraphQueryToolTests : IAsyncLifetime, IDisposable
 
         var dto = result.StructuredContent!.Value.Deserialize<DescribeSchemaResult>(
             ToolOutputJsonContext.Default.DescribeSchemaResult)!;
-        dto.ViewSchemaVersion.Should().Be(1, "Views.SchemaVersion is pinned at 1 today");
-        dto.Views.Should().HaveCount(5);
+        dto.ViewSchemaVersion.Should().Be(2,
+            "Views.SchemaVersion is at 2 after the extended-views change "
+            + "(v_annotations / v_diagnostics / v_history added)");
+        dto.Views.Should().HaveCount(8);
         dto.Views.Select(v => v.Name).Should().BeEquivalentTo(
-            new[] { "v_symbols", "v_files", "v_edges", "v_references", "v_scopes" });
+            new[]
+            {
+                "v_symbols", "v_files", "v_edges", "v_references", "v_scopes",
+                "v_annotations", "v_diagnostics", "v_history",
+            });
 
         // Each view must list at least one column so agents can see the shape; and v_symbols
         // must surface the well-known is_public / is_type convenience booleans.
@@ -106,7 +112,7 @@ public sealed class GraphQueryToolTests : IAsyncLifetime, IDisposable
         var first = result.Content!.OfType<TextContentBlock>().First(IsUserVisible);
         first.Text.Should().StartWith("\U0001F33F ", "the leaf chokepoint should brand the first text block");
         first.Text.Should().Contain("describe_schema");
-        first.Text.Should().Contain("view_schema_version=1");
+        first.Text.Should().Contain("view_schema_version=2");
         first.Text.Should().Contain("v_symbols");
 
         // Audience-restricted metadata block at the tail.
@@ -444,6 +450,88 @@ public sealed class GraphQueryToolTests : IAsyncLifetime, IDisposable
         scopes.Should().NotContain("backend");
     }
 
+    // ─── extended-views composability ────────────────────────────────────────────────
+
+    [Fact]
+    public async Task QueryGraph_annotationsJoinSymbols_findsDecoratedTypes()
+    {
+        // Composability test for v_annotations + v_symbols. The fixture seeds one
+        // [Obsolete] annotation tagged on Calculator per scope; this query in scope=frontend
+        // returns exactly the frontend Calculator. Validates that the (scope, id) tuple
+        // convention works across the new view the same way it does for v_edges.
+        var opts = new GraphQueryOptions(TimeoutSeconds: 5, RowLimit: 5000);
+        const string sql = """
+            SELECT s.fqn FROM v_annotations a
+            JOIN v_symbols s ON s.id = a.symbol_id AND s.scope = a.scope
+            WHERE a.name = @name AND s.is_type = 1
+            """;
+        var parameters = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+        {
+            ["@name"] = JsonSerializer.SerializeToElement("Obsolete"),
+        };
+
+        var result = await GraphTools.QueryGraphAsync(
+            _registry!, new RepoRootInfo(_repoRoot), opts,
+            sql: sql, parameters: parameters, scope: "frontend",
+            ct: CancellationToken.None);
+
+        result.IsError.Should().NotBe(true);
+        var dto = result.StructuredContent!.Value.Deserialize<QueryGraphResult>(
+            ToolOutputJsonContext.Default.QueryGraphResult)!;
+        dto.RowCount.Should().Be(1, "frontend's Calculator is the only [Obsolete] type in scope");
+        dto.Rows[0][0].GetString().Should().Be("Sample.frontend.Calculator");
+    }
+
+    [Fact]
+    public async Task QueryGraph_diagnosticsJoinSymbols_findsSymbolsWithWarnings()
+    {
+        // Composability test for v_diagnostics + v_symbols. The fixture seeds one CS0612
+        // warning (severity=2) tagged on Calculator per scope; this query filters via
+        // severity_name='warning' and is_public=1/is_type=1 to surface exactly the
+        // frontend Calculator. Validates the severity_name CASE mapping + the (scope, id)
+        // join in one shot.
+        var opts = new GraphQueryOptions(TimeoutSeconds: 5, RowLimit: 5000);
+        const string sql = """
+            SELECT DISTINCT s.fqn FROM v_diagnostics d
+            JOIN v_symbols s ON s.id = d.symbol_id AND s.scope = d.scope
+            WHERE d.severity_name = 'warning' AND s.is_public = 1 AND s.is_type = 1
+            """;
+
+        var result = await GraphTools.QueryGraphAsync(
+            _registry!, new RepoRootInfo(_repoRoot), opts,
+            sql: sql, parameters: null, scope: "frontend",
+            ct: CancellationToken.None);
+
+        result.IsError.Should().NotBe(true);
+        var dto = result.StructuredContent!.Value.Deserialize<QueryGraphResult>(
+            ToolOutputJsonContext.Default.QueryGraphResult)!;
+        dto.RowCount.Should().Be(1, "frontend's Calculator is the only public type with a warning");
+        dto.Rows[0][0].GetString().Should().Be("Sample.frontend.Calculator");
+    }
+
+    [Fact]
+    public async Task QueryGraph_historyView_returnsExpectedColumns_evenWithEmptyData()
+    {
+        // v_history shape verification. The fixture doesn't seed git-blame rows, so this
+        // query returns zero rows but must execute cleanly and surface the documented
+        // column shape. Composability against populated history rides on the existing
+        // who_authored / recent_changes curated-tool integration tests (out of scope here).
+        var opts = new GraphQueryOptions(TimeoutSeconds: 5, RowLimit: 5000);
+        var result = await GraphTools.QueryGraphAsync(
+            _registry!, new RepoRootInfo(_repoRoot), opts,
+            sql: "SELECT * FROM v_history",
+            parameters: null, scope: "frontend",
+            ct: CancellationToken.None);
+
+        result.IsError.Should().NotBe(true,
+            "v_history must execute cleanly even when symbol_history is empty");
+        var dto = result.StructuredContent!.Value.Deserialize<QueryGraphResult>(
+            ToolOutputJsonContext.Default.QueryGraphResult)!;
+        dto.RowCount.Should().Be(0, "no symbol_history rows are seeded by the fixture");
+        var columnNames = dto.Columns.Select(c => c.Name).ToList();
+        columnNames.Should().Contain(new[] { "scope", "symbol_id", "last_commit_sha", "last_authored_at" });
+    }
+
     // ─── seeding helpers ──────────────────────────────────────────────────────────────
 
     private async Task SeedScopeWithDataAsync(string scopeId, bool isolated)
@@ -510,6 +598,35 @@ public sealed class GraphQueryToolTests : IAsyncLifetime, IDisposable
             await store.BulkInsertEdgesAsync(new[]
             {
                 new Edge(methodId, loggerId, EdgeKinds.UsesType, null),
+            });
+
+            // One annotation tagged on Calculator: simulates `[Obsolete("use Foo")]` so
+            // QueryGraph_annotationsJoinSymbols_findsDecoratedTypes can JOIN through to the
+            // type. csharp-attribute is the documented flavor for .NET attributes.
+            await store.BulkInsertAnnotationsAsync(new[]
+            {
+                new AnnotationRecord(
+                    SymbolId: classId,
+                    Name: "Obsolete",
+                    FullName: "System.ObsoleteAttribute",
+                    Flavor: "csharp-attribute",
+                    ArgsJson: "[\"use Foo\"]",
+                    AttributeSymbolId: null),
+            });
+
+            // One Roslyn-shaped warning against Calculator (severity=2 maps to severity_name
+            // = 'warning' via the documented CASE expression in v_diagnostics). The line/col
+            // matches the seeded class declaration so the diagnostic surfaces inside its span.
+            await store.UpsertDiagnosticsForFileAsync(fileId, new[]
+            {
+                new DiagnosticRecord(
+                    SymbolId: classId,
+                    FileId: fileId,
+                    Severity: 2,
+                    Code: "CS0612",
+                    Message: "Type is obsolete",
+                    Line: 1,
+                    Col: 1),
             });
         }
 

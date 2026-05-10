@@ -226,14 +226,16 @@ to the client at handshake time.
 
 ### Ad-hoc queries (escape hatch)
 
-When no curated tool fits the question — aggregations, joins, "how many public types use X", "which classes implement IDisposable but lack `Dispose`", "which types have > 50 methods" — the server exposes a stable view layer over the SQLite tables and a tool to run read-only SQL against it.
+When no curated tool fits the question — aggregations, joins, "how many public types use X", "which classes implement IDisposable but lack `Dispose`", "which types have > 50 methods", "which `[Obsolete]` types have outstanding CS-warnings" — the server exposes a stable view layer over the SQLite tables and a tool to run read-only SQL against it.
 
 | Tool | Purpose |
 |---|---|
-| `describe_schema` | Returns the queryable view layer (`v_symbols`, `v_files`, `v_edges`, `v_references`, `v_scopes`) with each column's type and description, plus the live `symbol_kinds` and `edge_kinds` vocabularies present in the resolved scope set. Call this first when composing `query_graph` SQL. |
+| `describe_schema` | Returns the queryable view layer (`v_symbols`, `v_files`, `v_edges`, `v_references`, `v_scopes`, `v_annotations`, `v_diagnostics`, `v_history`) with each column's type and description, plus the live `symbol_kinds` and `edge_kinds` vocabularies present in the resolved scope set. Call this first when composing `query_graph` SQL. |
 | `query_graph` | Runs a single read-only `SELECT` or `WITH` statement against the views. Named parameter binding via `@name` placeholders. Read-only at the SQLite connection level, single-statement enforced at prepare, 5-second statement timeout (configurable), 5000-row cap (configurable). Returns tabular `{columns, rows}` structured content plus a markdown table. Logged into `.sourcegraph/usage.jsonl` with the SQL text — the call log is the evidence base for which queries deserve to be promoted into curated tools. |
 
-The view layer is versioned (`view_schema_version`, currently `1`); the underlying tables remain implementation details and may evolve without bumping it.
+The view layer is versioned (`view_schema_version`, currently `2`); the underlying tables remain implementation details and may evolve without bumping it. The version bumps on **any** view-set change — addition, removal, column rename, or column-type change — so cache-aware clients always re-introspect after a server upgrade.
+
+The eight views cover: code structure (`v_symbols`/`v_files`/`v_edges`/`v_references`), scope metadata (`v_scopes`), attribute / decorator metadata (`v_annotations`), Roslyn diagnostics (`v_diagnostics`), and per-symbol git history (`v_history`). Cross-view JOINs use the composite `(scope, id)` tuple — see `describe_schema`'s response for the per-column documentation.
 
 ### Example tool calls
 
@@ -311,6 +313,22 @@ The view layer is versioned (`view_schema_version`, currently `1`); the underlyi
 
 // Schema discovery — list views, columns, and live kind vocabularies.
 { "tool": "describe_schema", "args": {} }
+
+// Composability across the extended views: every public type decorated with
+// [Obsolete] that ALSO has at least one outstanding CS-warning. Joins
+// v_annotations + v_diagnostics + v_symbols. No curated tool answers the
+// intersection; query_graph composes it from the view layer in one round-trip.
+{ "tool": "query_graph",
+  "args": {
+    "sql": "SELECT DISTINCT s.fqn, COUNT(d.id) AS warnings FROM v_annotations a JOIN v_symbols s ON s.id = a.symbol_id AND s.scope = a.scope JOIN v_diagnostics d ON d.symbol_id = s.id AND d.scope = s.scope WHERE a.name = 'Obsolete' AND s.is_public = 1 AND s.is_type = 1 AND d.severity_name = 'warning' GROUP BY s.fqn ORDER BY warnings DESC"
+  } }
+
+// Per-symbol git history composability: methods authored > 6 months ago that
+// have grown beyond 100 lines (refactor candidates). Joins v_history + v_symbols.
+{ "tool": "query_graph",
+  "args": {
+    "sql": "SELECT s.fqn, h.last_author, h.line_count, datetime(h.last_authored_at / 1000, 'unixepoch') AS last_touched FROM v_history h JOIN v_symbols s ON s.id = h.symbol_id AND s.scope = h.scope WHERE s.kind = 'method' AND h.line_count > 100 AND h.last_authored_at < (strftime('%s', 'now', '-6 months') * 1000) ORDER BY h.line_count DESC"
+  } }
 ```
 
 ## Structured output and resource links

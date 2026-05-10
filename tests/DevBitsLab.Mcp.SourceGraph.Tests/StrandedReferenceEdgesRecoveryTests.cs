@@ -32,11 +32,11 @@ public sealed class StrandedReferenceEdgesRecoveryTests : IAsyncLifetime
     {
         _slnPath = LocateSolution();
         _calculatorPath = Path.GetFullPath(
-            Path.Combine(Path.GetDirectoryName(_slnPath)!, "Sample.Domain", "Calculator.cs"));
+            Path.Join(Path.GetDirectoryName(_slnPath)!, "Sample.Domain", "Calculator.cs"));
 
-        _tempDir = Path.Combine(Path.GetTempPath(), "stranded-refs-" + Guid.NewGuid().ToString("N"));
+        _tempDir = Path.Join(Path.GetTempPath(), "stranded-refs-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_tempDir);
-        _dbPath = Path.Combine(_tempDir, "graph.db");
+        _dbPath = Path.Join(_tempDir, "graph.db");
 
         await using var store = new SqliteGraphStore(_dbPath);
         await RoslynIndexer.IndexSolutionOnceAsync(_slnPath, store);
@@ -48,7 +48,8 @@ public sealed class StrandedReferenceEdgesRecoveryTests : IAsyncLifetime
         {
             if (Directory.Exists(_tempDir)) Directory.Delete(_tempDir, recursive: true);
         }
-        catch { /* best-effort */ }
+        catch (IOException) { /* WAL sidecar held by AV / antivirus — leave for the OS to clean. */ }
+        catch (UnauthorizedAccessException) { /* same, but a permissions flavor. */ }
         return Task.CompletedTask;
     }
 
@@ -111,12 +112,12 @@ public sealed class StrandedReferenceEdgesRecoveryTests : IAsyncLifetime
         // Fresh DB so cold-index touches every file (no SHA-skip path); the throwing wrapper
         // makes Calculator.cs's pass-2 BulkInsertReferencesAsync fail. Greeter.cs and the
         // other files should still get refs because the catch keeps the loop going.
-        var localTempDir = Path.Combine(Path.GetTempPath(), "stranded-refs-pt2-" + Guid.NewGuid().ToString("N"));
+        var localTempDir = Path.Join(Path.GetTempPath(), "stranded-refs-pt2-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(localTempDir);
-        var localDbPath = Path.Combine(localTempDir, "graph.db");
+        var localDbPath = Path.Join(localTempDir, "graph.db");
 
         var greeterPath = Path.GetFullPath(
-            Path.Combine(Path.GetDirectoryName(_slnPath)!, "Sample.Domain", "Greeter.cs"));
+            Path.Join(Path.GetDirectoryName(_slnPath)!, "Sample.Domain", "Greeter.cs"));
 
         var capturingLogger = new CapturingLogger();
         long calcFileId;
@@ -127,7 +128,7 @@ public sealed class StrandedReferenceEdgesRecoveryTests : IAsyncLifetime
             await using (var realStore = new SqliteGraphStore(localDbPath))
             {
                 var proxy = DispatchProxy.Create<IGraphStore, ThrowOnReferencesProxy>();
-                var typed = (ThrowOnReferencesProxy)(object)proxy;
+                var typed = (ThrowOnReferencesProxy)proxy;
                 typed.Inner = realStore;
                 typed.DbPath = localDbPath;
                 typed.TargetPath = _calculatorPath;
@@ -163,7 +164,8 @@ public sealed class StrandedReferenceEdgesRecoveryTests : IAsyncLifetime
         finally
         {
             try { if (Directory.Exists(localTempDir)) Directory.Delete(localTempDir, recursive: true); }
-            catch { /* best-effort */ }
+            catch (IOException) { /* best-effort */ }
+            catch (UnauthorizedAccessException) { /* best-effort */ }
         }
     }
 
@@ -223,7 +225,7 @@ public sealed class StrandedReferenceEdgesRecoveryTests : IAsyncLifetime
         var dir = AppContext.BaseDirectory;
         for (var d = new DirectoryInfo(dir); d is not null; d = d.Parent)
         {
-            var candidate = Path.Combine(d.FullName, "tests", "fixtures", "Sample.sln");
+            var candidate = Path.Join(d.FullName, "tests", "fixtures", "Sample.sln");
             if (File.Exists(candidate)) return candidate;
         }
         throw new FileNotFoundException("Could not locate tests/fixtures/Sample.sln from " + dir);

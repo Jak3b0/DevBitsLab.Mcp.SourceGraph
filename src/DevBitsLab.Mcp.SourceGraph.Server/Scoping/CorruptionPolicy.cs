@@ -191,8 +191,15 @@ internal static class CorruptionGuard
         return statusMessage;
     }
 
-    private static Task MarkDegradedAsync(ScopeHost host, IScopeRegistry registry, string statusMessage, CancellationToken ct)
+    private static async Task MarkDegradedAsync(ScopeHost host, IScopeRegistry registry, string statusMessage, CancellationToken ct)
     {
+        // In-process state always flips first — even if the registry write below throws (e.g.,
+        // _meta.db is locked or itself corrupt), subsequent ScopedExecution calls against this
+        // host will short-circuit on the in-memory `Status == "degraded"` check, so the user-
+        // facing degraded behaviour holds. The registry persistence is the cross-restart story:
+        // best-effort, log-and-continue. Letting an UpsertAsync exception escape would shadow
+        // the original SQLite-corruption signal that called us here, so VerifyAndMarkAsync's
+        // caller would see the wrong cause.
         host.Status = "degraded";
         host.StatusMessage = statusMessage;
         var row = new ScopeRow(
@@ -204,6 +211,15 @@ internal static class CorruptionGuard
             LastIndexedAt: DateTimeOffset.UtcNow,
             Status: "degraded",
             StatusMessage: statusMessage);
-        return registry.UpsertAsync(row, ct);
+        try
+        {
+            await registry.UpsertAsync(row, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            CorruptionPolicy.Logger.LogWarning(ex,
+                "Scope `{Id}`: failed to persist degraded row to registry during corruption verification; in-process status is still flipped",
+                host.Scope.Id);
+        }
     }
 }

@@ -178,10 +178,29 @@ public static class ScopeTools
         CancellationToken ct = default) =>
         ToolMetrics.TrackAsync("verify_scope", new { scope }, async () =>
         {
+            var sw = Stopwatch.StartNew();
             var resolution = router.Resolve(scope);
-            if (resolution.IsError) return DiagnosticResult.Error(resolution.ErrorMessage!);
+            if (resolution.IsError)
+            {
+                return DiagnosticResult.StructuredError(
+                    toolName: "verify_scope",
+                    error: "no_scopes",
+                    message: resolution.ErrorMessage!,
+                    hint: "register a scope (or name an isolated one explicitly) before calling verify_scope",
+                    scope: scope ?? "*",
+                    elapsedMs: sw.ElapsedMilliseconds);
+            }
             var hosts = resolution.Hosts;
-            if (hosts.Count == 0) return DiagnosticResult.Error("No scopes matched.");
+            if (hosts.Count == 0)
+            {
+                return DiagnosticResult.StructuredError(
+                    toolName: "verify_scope",
+                    error: "no_scopes",
+                    message: "No scopes matched.",
+                    hint: "pass an explicit scope id, or register a non-isolated scope",
+                    scope: scope ?? "*",
+                    elapsedMs: sw.ElapsedMilliseconds);
+            }
 
             var rows = new List<VerifyScopeRow>(hosts.Count);
             for (var i = 0; i < hosts.Count; i++)
@@ -390,9 +409,10 @@ public static class ScopeTools
 
             if (resolvedMode == "minimal")
             {
-                progress?.Report(Format.Progress(0.0, "running integrity_check"));
-                var result = await liveIndex.MinimalRepairScopeAsync(scope, ct).ConfigureAwait(false);
-                progress?.Report(Format.Progress(0.8, "reopening workspace"));
+                // MinimalRepairScopeAsync emits progress at each phase boundary internally
+                // (integrity_check 0.0, prune 0.5, reopen 0.8) so checkpoints fire BEFORE the
+                // slow work, not after it returns.
+                var result = await liveIndex.MinimalRepairScopeAsync(scope, ct, progress).ConfigureAwait(false);
                 sw.Stop();
                 afterStatus = router.TryGet(scope, out var post) ? post.Status : beforeStatus;
                 message = result.Message;
@@ -463,25 +483,46 @@ public static class ScopeTools
         CancellationToken ct = default) =>
         ToolMetrics.TrackAsync("reconcile_drift", new { scope, max_files, dry_run }, async () =>
         {
+            var sw = Stopwatch.StartNew();
             if (string.IsNullOrWhiteSpace(scope) ||
                 scope == "*" ||
                 scope.Contains(',', StringComparison.Ordinal))
             {
-                return DiagnosticResult.Error(
-                    $"`scope` must name a single scope id. Got `{scope}`. `*` and comma-separated lists are rejected.");
+                return DiagnosticResult.StructuredError(
+                    toolName: "reconcile_drift",
+                    error: "bad_scope",
+                    message: $"`scope` must name a single scope id. Got `{scope}`. `*` and comma-separated lists are rejected.",
+                    hint: "pass exactly one scope id as the `scope` argument",
+                    scope: scope ?? "",
+                    elapsedMs: sw.ElapsedMilliseconds);
+            }
+            if (max_files < 1)
+            {
+                return DiagnosticResult.StructuredError(
+                    toolName: "reconcile_drift",
+                    error: "bad_argument",
+                    message: $"`max_files` must be >= 1. Got {max_files}.",
+                    hint: "pass a positive integer (default 1000, hard cap 50000)",
+                    scope: scope,
+                    elapsedMs: sw.ElapsedMilliseconds,
+                    extras: new Dictionary<string, object?> { ["max_files"] = max_files });
             }
             if (!router.TryGet(scope, out var host))
             {
-                return DiagnosticResult.Error($"Unknown scope `{scope}`.");
+                return DiagnosticResult.StructuredError(
+                    toolName: "reconcile_drift",
+                    error: "unknown_scope",
+                    message: $"Unknown scope `{scope}`.",
+                    hint: "call list_scopes to see registered scope ids",
+                    scope: scope,
+                    elapsedMs: sw.ElapsedMilliseconds);
             }
 
             var clampedMax = Math.Min(max_files, 50000);
-            var sw = Stopwatch.StartNew();
 
-            progress?.Report(Format.Progress(0.0, "walking source tree"));
-            var diff = await DriftReconciler.ComputeAsync(host, clampedMax, ct).ConfigureAwait(false);
-
-            progress?.Report(Format.Progress(0.3, "comparing hashes"));
+            // ComputeAsync emits its own progress checkpoints (walking source tree → comparing
+            // hashes) BEFORE each phase, so the chat panel sees motion during the slow work.
+            var diff = await DriftReconciler.ComputeAsync(host, clampedMax, ct, progress).ConfigureAwait(false);
 
             if (!dry_run)
             {

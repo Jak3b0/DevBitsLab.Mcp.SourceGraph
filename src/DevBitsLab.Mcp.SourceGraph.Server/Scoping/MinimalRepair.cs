@@ -1,7 +1,9 @@
 using DevBitsLab.Mcp.SourceGraph.Indexing;
 using DevBitsLab.Mcp.SourceGraph.Server.Observability;
+using DevBitsLab.Mcp.SourceGraph.Server.Tools;
 using DevBitsLab.Mcp.SourceGraph.Storage;
 using Microsoft.Extensions.Logging;
+using ModelContextProtocol;
 
 namespace DevBitsLab.Mcp.SourceGraph.Server.Scoping;
 
@@ -23,10 +25,13 @@ internal static class MinimalRepair
         IScopeRegistry registry,
         IReadOnlyList<TimeSpan> reloadBackoffs,
         ILogger logger,
-        CancellationToken ct)
+        CancellationToken ct,
+        IProgress<ProgressNotificationValue>? progress = null)
     {
-        // Integrity check first — corrupt DB short-circuits to "use rebuild" so we never run
-        // prune / reload against unreliable btree pages.
+        // Phase 1 (0.0): integrity check. Reported BEFORE the call so the caller's chat panel
+        // shows motion during the slow integrity-check pass. Corrupt DB short-circuits to
+        // "use rebuild" so we never run prune / reload against unreliable btree pages.
+        progress?.Report(Format.Progress(0.0, "running integrity_check"));
         var integrity = await host.Store.IntegrityCheckAsync(ct).ConfigureAwait(false);
         if (!string.Equals(integrity, "ok", StringComparison.Ordinal))
         {
@@ -35,6 +40,9 @@ internal static class MinimalRepair
                 Message: $"integrity_check failed: {integrity}; call repair_scope mode=rebuild");
         }
 
+        // Phase 2 (0.5): prune orphan embeddings. Cheap (one DELETE) but reported so the
+        // checkpoint sequence stays monotonically increasing.
+        progress?.Report(Format.Progress(0.5, "pruning orphan embeddings"));
         var pruned = await host.EmbeddingsStore.PruneOrphanedAsync(ct).ConfigureAwait(false);
         if (pruned > 0)
         {
@@ -42,8 +50,10 @@ internal static class MinimalRepair
                 details: $"removed {pruned} orphan rows");
         }
 
-        // Re-attempt workspace reload + index_all under bounded retry. If the scope didn't open
-        // during initial bring-up (no SolutionPath), skip — there's nothing to reload.
+        // Phase 3 (0.8): workspace reload + index_all. Re-attempt under bounded retry. If the
+        // scope didn't open during initial bring-up (no SolutionPath), skip — there's nothing
+        // to reload.
+        progress?.Report(Format.Progress(0.8, "reopening workspace"));
         var reindexed = false;
         if (!string.IsNullOrEmpty(host.SolutionPath))
         {

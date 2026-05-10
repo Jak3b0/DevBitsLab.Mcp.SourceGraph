@@ -719,7 +719,10 @@ public sealed class LiveIndexService : BackgroundService
     /// <see cref="MinimalRepair.RunAsync"/> with the production
     /// <see cref="WorkspaceOpenRetry.DefaultBackoffs"/>.
     /// </summary>
-    public Task<MinimalRepairResult> MinimalRepairScopeAsync(string scopeId, CancellationToken ct)
+    public Task<MinimalRepairResult> MinimalRepairScopeAsync(
+        string scopeId,
+        CancellationToken ct,
+        IProgress<ModelContextProtocol.ProgressNotificationValue>? progress = null)
     {
         if (!_router.TryGet(scopeId, out var host))
         {
@@ -727,7 +730,7 @@ public sealed class LiveIndexService : BackgroundService
                 Refused: true, IntegrityCheck: "scope-not-found", PrunedEmbeddings: 0,
                 Reindexed: false, Message: "scope not registered"));
         }
-        return MinimalRepair.RunAsync(host, _registry, WorkspaceOpenRetry.DefaultBackoffs, _logger, ct);
+        return MinimalRepair.RunAsync(host, _registry, WorkspaceOpenRetry.DefaultBackoffs, _logger, ct, progress);
     }
 
     /// <summary>

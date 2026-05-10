@@ -113,6 +113,28 @@ public sealed class ReconcileDriftToolTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ComputeAsync_partialWalk_doesNotMisclassifyDbPathsAsRemoved()
+    {
+        // Regression: before the fix, ComputeAsync would mark any DB path absent from the
+        // (capped) `disk` set as `removed` — leading ApplyAsync to wipe still-existing files
+        // when the walk hit max_files. Plant 5 files, index all 5, walk with cap=3 → the 2
+        // unwalked files must NOT show up as removed.
+        var srcDir = Path.Join(_root, "src");
+        Directory.CreateDirectory(srcDir);
+        for (var i = 0; i < 5; i++)
+        {
+            var path = Path.Join(srcDir, $"F{i}.cs");
+            await PlantFile(path, $"class F{i} {{}}");
+            await UpsertFile(path);
+        }
+
+        var diff = await DriftReconciler.ComputeAsync(_host!, maxFiles: 3, CancellationToken.None);
+        diff.Partial.Should().BeTrue();
+        diff.Removed.Should().BeEmpty(
+            "removal detection requires a complete walk; partial walks must not infer deletions");
+    }
+
+    [Fact]
     public async Task ComputeAsync_emptyDirectory_yieldsNoDrift()
     {
         var diff = await DriftReconciler.ComputeAsync(_host!, maxFiles: 100, CancellationToken.None);

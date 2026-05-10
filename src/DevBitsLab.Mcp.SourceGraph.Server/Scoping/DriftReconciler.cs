@@ -1,5 +1,7 @@
 using DevBitsLab.Mcp.SourceGraph.Indexing;
+using DevBitsLab.Mcp.SourceGraph.Server.Tools;
 using DevBitsLab.Mcp.SourceGraph.Storage;
+using ModelContextProtocol;
 
 namespace DevBitsLab.Mcp.SourceGraph.Server.Scoping;
 
@@ -18,13 +20,16 @@ internal static class DriftReconciler
     public static async Task<DriftDiff> ComputeAsync(
         ScopeHost host,
         int maxFiles,
-        CancellationToken ct)
+        CancellationToken ct,
+        IProgress<ProgressNotificationValue>? progress = null)
     {
-        // Walk the source tree under the scope's root. SourceTreeWalker uses the same exclusion
-        // rules as SolutionWatcher (obj/, bin/, .git/, .sourcegraph/) so the file set matches.
-        // The walker's HitLimit flag is the authoritative "did the cap actually truncate the
-        // result" signal — distinguishes "tree had exactly maxFiles" from "tree had more"; a
-        // simple `scanned >= maxFiles` test would incorrectly report partial in the first case.
+        // Phase 1 (0.0): walk the source tree under the scope's root. SourceTreeWalker uses the
+        // same exclusion rules as SolutionWatcher (obj/, bin/, .git/, .sourcegraph/) so the file
+        // set matches. The walker's HitLimit flag is the authoritative "did the cap actually
+        // truncate the result" signal — distinguishes "tree had exactly maxFiles" from "tree had
+        // more"; a simple `scanned >= maxFiles` test would incorrectly report partial in the
+        // first case. Reported BEFORE the walk so callers see motion during the disk pass.
+        progress?.Report(Format.Progress(0.0, "walking source tree"));
         var outcome = await SourceTreeWalker.WalkAsync(host.Scope.Root, maxFiles, ct).ConfigureAwait(false);
         var disk = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
         foreach (var entry in outcome.Entries)
@@ -34,8 +39,10 @@ internal static class DriftReconciler
         var scanned = outcome.Entries.Count;
         var partial = outcome.HitLimit;
 
-        // Read every (path, sha) row from the DB. Comparing case-insensitive paths to mirror
-        // SqliteGraphStore's path-matching elsewhere.
+        // Phase 2 (0.3): read every (path, sha) row from the DB and compute the diff. Reported
+        // BEFORE the DB pass + comparison loop so the checkpoint sequence stays meaningful.
+        // Comparing case-insensitive paths to mirror SqliteGraphStore's path-matching elsewhere.
+        progress?.Report(Format.Progress(0.3, "comparing hashes"));
         var dbRows = await host.Store.GetAllFileShasAsync(ct).ConfigureAwait(false);
         var db = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
         foreach (var row in dbRows) db[row.Path] = row.ContentSha256;
@@ -57,9 +64,20 @@ internal static class DriftReconciler
                 added.Add(path);
             }
         }
-        foreach (var path in db.Keys)
+        // Removal detection requires a COMPLETE on-disk file set: if a DB row's path is missing
+        // from `disk`, we infer the file was deleted. When `partial = true` the walker stopped
+        // before traversing the whole tree, so DB paths beyond the cap are absent from `disk`
+        // not because they were deleted but because we never looked. Applying that inferred
+        // `removed` set would tell `RoslynIndexer.IndexChangedFilesAsync` to wipe symbols for
+        // files that still exist on disk — large parts of the index would silently disappear.
+        // Skip removal detection entirely on partial walks; the agent / user can re-run with a
+        // larger `max_files` to cover the whole tree.
+        if (!partial)
         {
-            if (!disk.ContainsKey(path)) removed.Add(path);
+            foreach (var path in db.Keys)
+            {
+                if (!disk.ContainsKey(path)) removed.Add(path);
+            }
         }
 
         return new DriftDiff(scanned, changed, added, removed, unchanged, partial);

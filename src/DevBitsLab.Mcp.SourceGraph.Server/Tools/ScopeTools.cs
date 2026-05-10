@@ -62,8 +62,8 @@ public static class ScopeTools
                 : host.Status;
             // Status messages, names, and roots can contain user data (exception messages, file
             // paths from `.sourcegraph.json`). A literal `|` or newline in any cell would break
-            // the GFM table renderer; escape both before interpolation.
-            sb.AppendLine($"| `{scope.Id}` | {EscapeCell(scope.Name)} | {EscapeCell(statusCell)} | {(scope.Isolated ? "yes" : "no")} | {projectCount} | {lastIndexed} | `{scope.Root.Replace("|", "\\|")}` |");
+            // the GFM table renderer; escape both via the shared MarkdownTable helper.
+            sb.AppendLine($"| `{scope.Id}` | {MarkdownTable.EscapeCell(scope.Name)} | {MarkdownTable.EscapeCell(statusCell)} | {(scope.Isolated ? "yes" : "no")} | {projectCount} | {lastIndexed} | `{MarkdownTable.EscapeCell(scope.Root)}` |");
         }
 
         // Per-scope failure detail: only emit when at least one scope has non-empty failure
@@ -158,12 +158,4 @@ public static class ScopeTools
         _ => 0,
     };
 
-    /// <summary>
-    /// Sanitise a value for inclusion in a GFM table cell. Escapes <c>|</c> as <c>\|</c> and
-    /// collapses any newline / carriage-return into a single space — both characters break the
-    /// table renderer when interpolated raw, and exception messages or status strings can
-    /// legitimately contain either.
-    /// </summary>
-    private static string EscapeCell(string value)
-        => value.Replace("|", "\\|").Replace("\r\n", " ").Replace('\n', ' ').Replace('\r', ' ');
 }

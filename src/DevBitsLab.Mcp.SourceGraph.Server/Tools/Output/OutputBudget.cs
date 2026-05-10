@@ -1,9 +1,11 @@
 namespace DevBitsLab.Mcp.SourceGraph.Server.Tools.Output;
 
 /// <summary>
-/// Soft byte budget for built-in tool responses. Claude Code (and similar MCP clients) clamp
+/// Soft character budget for built-in tool responses. Claude Code (and similar MCP clients) clamp
 /// per-tool-call results around ~16K tokens / ~64K characters; emitting more triggers a host
-/// truncation that the agent reads as a cryptic error.
+/// truncation that the agent reads as a cryptic error. All constants and the <see cref="ChooseKeep"/>
+/// arithmetic are denominated in serialized characters of the resulting JSON wire payload — not
+/// bytes, not tokens — matching how the host measures the limit.
 ///
 /// Each list-shaped tool's result triplicates per-row data — prose row, <c>ResourceLinkBlock</c>
 /// JSON, structured-content array entry — so a <c>limit=200</c> query can cross 80K characters

@@ -5,8 +5,9 @@ using Xunit;
 namespace DevBitsLab.Mcp.SourceGraph.Tests;
 
 /// <summary>
-/// Pins the soft-cap arithmetic that protects every list-shaped tool's response from Claude
-/// Code's ~64K-character per-tool-result ceiling. The contract is a pure function of
+/// Pins the soft-cap arithmetic used by the four currently opted-in tools (find_references,
+/// list_members, list_symbols_in_file, semantic_search) to stay under Claude Code's
+/// ~64K-character per-tool-result ceiling. The contract is a pure function of
 /// (totalItems, perItemChars, baseChars, budget) — so direct unit coverage is enough; the
 /// downstream wiring is exercised by the structured-output tests in GraphTools.
 /// </summary>

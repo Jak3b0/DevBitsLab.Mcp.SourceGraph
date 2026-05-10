@@ -2088,16 +2088,18 @@ public static class GraphTools
                 }
 
                 progress?.Report(Format.Progress(0.9, "formatting results"));
-                // Resolve every hit into its SymbolHit once; downstream prose render and structured
-                // output share this list so prose-row count and structured-array length stay in lockstep.
-                var resolved = new List<(EmbeddingHit Hit, SymbolHit Symbol)>(hits.Count);
-                foreach (var h in hits)
+                // Apply the size budget at the hit level *before* resolving symbols so omitted rows
+                // don't incur per-row GetSymbolByIdAsync calls — important when callers pass a large
+                // k and the budget trims to ~30. Resolving only the kept hits keeps prose-row count
+                // and structured-array length in lockstep with the budget decision.
+                var (hitsKept, hitsOmitted) = OutputBudget.ChooseKeep(hits.Count, OutputBudget.SnippetRowChars);
+                IEnumerable<EmbeddingHit> hitsToResolve = hitsOmitted > 0 ? hits.Take(hitsKept) : hits;
+                var resolved = new List<(EmbeddingHit Hit, SymbolHit Symbol)>(hitsKept);
+                foreach (var h in hitsToResolve)
                 {
                     var sym = await host.Store.GetSymbolByIdAsync(h.SymbolId, ct).ConfigureAwait(false);
                     if (sym is not null) resolved.Add((h, sym));
                 }
-                var (resolvedKept, resolvedOmitted) = OutputBudget.ChooseKeep(resolved.Count, OutputBudget.SnippetRowChars);
-                if (resolvedOmitted > 0) resolved = resolved.Take(resolvedKept).ToList();
                 var sb = new StringBuilder();
                 sb.AppendLine($"{resolved.Count} semantic hits for '{query}':");
                 if (resolved.Count >= 2)
@@ -2135,7 +2137,7 @@ public static class GraphTools
                     rows: resolved,
                     scopeId: host.Scope.Id,
                     elapsedMs: sw.ElapsedMilliseconds,
-                    omittedSize: resolvedOmitted);
+                    omittedSize: hitsOmitted);
             }, ct));
 
     private static CallToolResult BuildSemanticSearchResult(

@@ -115,7 +115,7 @@ static async Task<int> RunServeAsync(CommandLine cli)
 
     var dbDir = ScopeLayout.SourcegraphDir(repoRoot);
     Directory.CreateDirectory(dbDir);
-    ToolMetrics.Configure(Path.Combine(dbDir, "usage.jsonl"));
+    ToolMetrics.Configure(Path.Join(dbDir, "usage.jsonl"));
 
     var embeddingsEnabled = !cli.NoEmbeddings;
     // Always know the active model identity so the vec0 table can be sized consistently
@@ -162,6 +162,13 @@ static async Task<int> RunServeAsync(CommandLine cli)
 
     var historyDisabled = await ResolveHistoryDisabledForScopesAsync(cli, scopeConfig).ConfigureAwait(false);
     builder.Services.AddSingleton(new HistoryOptions(historyDisabled));
+
+    // Tunables for the query_graph tool: CLI flag → env var → built-in default. Singleton so the
+    // tool method can resolve it via DI without re-parsing every call.
+    builder.Services.AddSingleton(GraphQueryOptions.Resolve(cli.QueryTimeoutSeconds, cli.QueryRowLimit));
+    // Repo root surfaced for tools (query_graph / describe_schema) that need it to locate
+    // per-scope DB files via ScopeLayout.
+    builder.Services.AddSingleton(new RepoRootInfo(repoRoot));
 
     builder.Services.AddSingleton(new LiveIndexConfig(scopeConfig.Scopes));
     builder.Services.AddHostedService<HistoryHostedService>(sp => new HistoryHostedService(
@@ -667,7 +674,7 @@ static async Task<bool> ResolveHistoryDisabledForScopesAsync(CommandLine cli, Sc
     foreach (var scope in config.Scopes)
     {
         var solutionDir = scope.ProjectSet is ScopeProjectSet.Solutions s && s.Items.Count > 0
-            ? Path.GetDirectoryName(Path.IsPathRooted(s.Items[0]) ? s.Items[0] : Path.Combine(scope.Root, s.Items[0]))
+            ? Path.GetDirectoryName(Path.IsPathRooted(s.Items[0]) ? s.Items[0] : Path.Join(scope.Root, s.Items[0]))
             : scope.Root;
         if (string.IsNullOrEmpty(solutionDir)) continue;
         var probe = new GitBlameRunner();

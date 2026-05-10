@@ -284,7 +284,7 @@ public sealed class JinaCodeEmbeddingGenerator : ICodeEmbeddingGenerator
             }
             if (string.Equals(modelType, "WordPiece", StringComparison.Ordinal))
             {
-                tokenizer = LoadWordPiece(root, modelEl, tokenizerJsonPath, out padId);
+                tokenizer = LoadWordPiece(root, modelEl, out padId);
                 return true;
             }
             error = $"unsupported tokenizer.model.type: '{modelType}' (expected 'BPE' or 'WordPiece')";
@@ -375,11 +375,12 @@ public sealed class JinaCodeEmbeddingGenerator : ICodeEmbeddingGenerator
         return BpeTokenizer.Create(options);
     }
 
-    private static WordPieceTokenizer LoadWordPiece(JsonElement root, JsonElement modelEl, string tokenizerJsonPath, out long padId)
+    private static WordPieceTokenizer LoadWordPiece(JsonElement root, JsonElement modelEl, out long padId)
     {
-        // WordPieceTokenizer.Create takes a tokenizer.json file path directly via WordPieceOptions.
-        // We still extract the pad id ourselves so the EncodeBatch padding loop matches the
-        // tokenizer's own pad id rather than always writing 0.
+        // We extract the pad id ourselves so the EncodeBatch padding loop matches the tokenizer's
+        // own pad id rather than always writing 0. The tokenizer itself is constructed from a
+        // temp newline-delimited vocab file (Microsoft.ML.Tokenizers' WordPieceTokenizer.Create
+        // expects standalone vocab.txt, not tokenizer.json's nested vocab object).
         padId = 0;
         if (root.TryGetProperty("added_tokens", out var added) && added.ValueKind == JsonValueKind.Array)
         {

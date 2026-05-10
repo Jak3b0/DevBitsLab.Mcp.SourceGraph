@@ -47,6 +47,7 @@ public sealed class EmbeddingsManager
     {
         var resolved = ResolveModelInfo(modelId);
         var manifest = ResolveManifest(resolved.ModelId);
+        _logger.LogInformation("Pulling embedding model {Model} into {Dir}", resolved.ModelId, _store.DirectoryFor(resolved.ModelId));
         await _store.EnsureAsync(resolved.ModelId, manifest, ct).ConfigureAwait(false);
         return await BuildStatusAsync(modelId, populateMatch: false, ct).ConfigureAwait(false);
     }
@@ -64,12 +65,14 @@ public sealed class EmbeddingsManager
         }
         if (all)
         {
+            _logger.LogInformation("Removing every cached embedding model directory");
             var result = await _store.RemoveAllAsync(ct).ConfigureAwait(false);
             return new RemoveResult(ModelId: null, RemovedDirs: result.RemovedDirs, FreedBytes: result.FreedBytes);
         }
         var resolved = ResolveModelInfo(modelId);
         var dir = _store.DirectoryFor(resolved.ModelId);
         var existed = Directory.Exists(dir);
+        _logger.LogInformation("Removing cached embedding model {Model} at {Dir}", resolved.ModelId, dir);
         var freed = await _store.RemoveAsync(resolved.ModelId, ct).ConfigureAwait(false);
         var removed = existed ? new[] { dir } : Array.Empty<string>();
         return new RemoveResult(ModelId: resolved.ModelId, RemovedDirs: removed, FreedBytes: freed);

@@ -25,7 +25,7 @@ public sealed class OnboardingCliTests : IDisposable
 
     public OnboardingCliTests()
     {
-        _tempRoot = Path.Combine(Path.GetTempPath(), "sg-init-tests-" + Guid.NewGuid().ToString("N"));
+        _tempRoot = Path.Join(Path.GetTempPath(), "sg-init-tests-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_tempRoot);
         _originalStdout = Console.Out;
         _originalStderr = Console.Error;
@@ -37,7 +37,7 @@ public sealed class OnboardingCliTests : IDisposable
     {
         Console.SetOut(_originalStdout);
         Console.SetError(_originalStderr);
-        try { Directory.Delete(_tempRoot, recursive: true); } catch { }
+        try { Directory.Delete(_tempRoot, recursive: true); } catch (IOException) { /* best-effort cleanup */ } catch (UnauthorizedAccessException) { /* best-effort cleanup */ }
     }
 
     private CommandLine ParseInit(params string[] extra)
@@ -87,7 +87,7 @@ public sealed class OnboardingCliTests : IDisposable
         var cli = ParseInit("--client", "claude-code");
         var rc = await InitCli.RunAsync(cli);
         rc.Should().Be(0);
-        var path = Path.Combine(_tempRoot, ".mcp.json");
+        var path = Path.Join(_tempRoot, ".mcp.json");
         File.Exists(path).Should().BeTrue();
         var json = JsonNode.Parse(File.ReadAllText(path))!.AsObject();
         json["mcpServers"]!["sourcegraph"]!["command"]!.GetValue<string>().Should().Be("sourcegraph-mcp");
@@ -96,7 +96,7 @@ public sealed class OnboardingCliTests : IDisposable
     [Fact]
     public async Task Init_yes_mergesIntoExistingConfig()
     {
-        var path = Path.Combine(_tempRoot, ".mcp.json");
+        var path = Path.Join(_tempRoot, ".mcp.json");
         File.WriteAllText(path,
             "{ \"mcpServers\": { \"otherServer\": { \"command\": \"x\", \"args\": [\"y\"] } } }");
 
@@ -111,7 +111,7 @@ public sealed class OnboardingCliTests : IDisposable
     [Fact]
     public async Task Init_skipsExistingDifferingEntry_withoutForce()
     {
-        var path = Path.Combine(_tempRoot, ".mcp.json");
+        var path = Path.Join(_tempRoot, ".mcp.json");
         File.WriteAllText(path,
             "{ \"mcpServers\": { \"sourcegraph\": { \"command\": \"different\", \"args\": [] } } }");
 
@@ -125,7 +125,7 @@ public sealed class OnboardingCliTests : IDisposable
     [Fact]
     public async Task Init_force_overwritesExistingDifferingEntry()
     {
-        var path = Path.Combine(_tempRoot, ".mcp.json");
+        var path = Path.Join(_tempRoot, ".mcp.json");
         File.WriteAllText(path,
             "{ \"mcpServers\": { \"sourcegraph\": { \"command\": \"different\", \"args\": [] } } }");
 
@@ -167,7 +167,7 @@ public sealed class OnboardingCliTests : IDisposable
         var marker = _stdout.ToString();
         marker.Should().Contain("wrote");
 
-        var freshOut = new StringWriter();
+        using var freshOut = new StringWriter();
         Console.SetOut(freshOut);
         var secondCli = ParseInit("--client", "claude-code");
         await InitCli.RunAsync(secondCli);
@@ -178,7 +178,7 @@ public sealed class OnboardingCliTests : IDisposable
     [Fact]
     public async Task Init_malformedSourcegraphJson_failsFast()
     {
-        File.WriteAllText(Path.Combine(_tempRoot, ".sourcegraph.json"), "{ broken");
+        File.WriteAllText(Path.Join(_tempRoot, ".sourcegraph.json"), "{ broken");
         var cli = ParseInit("--client", "claude-code");
         var rc = await InitCli.RunAsync(cli);
         rc.Should().Be(1);
@@ -201,7 +201,7 @@ public sealed class DoctorCliTests : IDisposable
 
     public DoctorCliTests()
     {
-        _tempRoot = Path.Combine(Path.GetTempPath(), "sg-doctor-tests-" + Guid.NewGuid().ToString("N"));
+        _tempRoot = Path.Join(Path.GetTempPath(), "sg-doctor-tests-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_tempRoot);
         _originalStdout = Console.Out;
         _originalStderr = Console.Error;
@@ -213,7 +213,7 @@ public sealed class DoctorCliTests : IDisposable
     {
         Console.SetOut(_originalStdout);
         Console.SetError(_originalStderr);
-        try { Directory.Delete(_tempRoot, recursive: true); } catch { }
+        try { Directory.Delete(_tempRoot, recursive: true); } catch (IOException) { /* best-effort cleanup */ } catch (UnauthorizedAccessException) { /* best-effort cleanup */ }
     }
 
     [Fact]
@@ -230,7 +230,7 @@ public sealed class DoctorCliTests : IDisposable
     [Fact]
     public async Task Doctor_repoWithSolution_passesSolutionsCheck()
     {
-        File.WriteAllText(Path.Combine(_tempRoot, "Test.slnx"), "<Solution/>");
+        File.WriteAllText(Path.Join(_tempRoot, "Test.slnx"), "<Solution/>");
         var cli = CommandLine.Parse(new[] { "doctor", "--root", _tempRoot });
         await DoctorCli.RunAsync(cli);
         var output = _stdout.ToString();
@@ -241,7 +241,7 @@ public sealed class DoctorCliTests : IDisposable
     [Fact]
     public async Task Doctor_malformedSourcegraphJson_failsCheck()
     {
-        File.WriteAllText(Path.Combine(_tempRoot, ".sourcegraph.json"), "broken{json");
+        File.WriteAllText(Path.Join(_tempRoot, ".sourcegraph.json"), "broken{json");
         var cli = CommandLine.Parse(new[] { "doctor", "--root", _tempRoot });
         var rc = await DoctorCli.RunAsync(cli);
         rc.Should().Be(1);
@@ -252,7 +252,7 @@ public sealed class DoctorCliTests : IDisposable
     [Fact]
     public async Task Doctor_jsonMode_emitsStructuredDocument()
     {
-        File.WriteAllText(Path.Combine(_tempRoot, "Test.slnx"), "<Solution/>");
+        File.WriteAllText(Path.Join(_tempRoot, "Test.slnx"), "<Solution/>");
         var cli = CommandLine.Parse(new[] { "doctor", "--root", _tempRoot, "--json" });
         await DoctorCli.RunAsync(cli);
 
@@ -285,7 +285,7 @@ public sealed class DemoCliTests : IDisposable
 
     public DemoCliTests()
     {
-        _tempRoot = Path.Combine(Path.GetTempPath(), "sg-demo-tests-" + Guid.NewGuid().ToString("N"));
+        _tempRoot = Path.Join(Path.GetTempPath(), "sg-demo-tests-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_tempRoot);
         _originalStdout = Console.Out;
         _originalStderr = Console.Error;
@@ -297,7 +297,7 @@ public sealed class DemoCliTests : IDisposable
     {
         Console.SetOut(_originalStdout);
         Console.SetError(_originalStderr);
-        try { Directory.Delete(_tempRoot, recursive: true); } catch { }
+        try { Directory.Delete(_tempRoot, recursive: true); } catch (IOException) { /* best-effort cleanup */ } catch (UnauthorizedAccessException) { /* best-effort cleanup */ }
     }
 
     [Fact]
@@ -341,7 +341,7 @@ public sealed class DemoCliTests : IDisposable
         {
             await store.EnsureSchemaAsync();
             var fileId = await store.UpsertFileAsync(
-                Path.Combine(_tempRoot, "Calculator.cs"),
+                Path.Join(_tempRoot, "Calculator.cs"),
                 contentSha256: new byte[32],
                 indexedAt: DateTimeOffset.UtcNow);
             await store.UpsertSymbolAsync(
@@ -373,7 +373,7 @@ public sealed class DemoCliTests : IDisposable
         {
             await store.EnsureSchemaAsync();
             var fileId = await store.UpsertFileAsync(
-                Path.Combine(_tempRoot, "x.cs"),
+                Path.Join(_tempRoot, "x.cs"),
                 contentSha256: new byte[32],
                 indexedAt: DateTimeOffset.UtcNow);
             await store.UpsertSymbolAsync(

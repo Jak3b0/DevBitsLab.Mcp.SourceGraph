@@ -17,7 +17,7 @@ public sealed class OnboardingDetectorTests : IDisposable
 
     public OnboardingDetectorTests()
     {
-        _tempRoot = Path.Combine(Path.GetTempPath(), "sg-onboarding-tests-" + Guid.NewGuid().ToString("N"));
+        _tempRoot = Path.Join(Path.GetTempPath(), "sg-onboarding-tests-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_tempRoot);
     }
 
@@ -44,7 +44,7 @@ public sealed class OnboardingDetectorTests : IDisposable
     [Fact]
     public async Task DiscoversSlnxAtRoot()
     {
-        var sln = Path.Combine(_tempRoot, "MyApp.slnx");
+        var sln = Path.Join(_tempRoot, "MyApp.slnx");
         File.WriteAllText(sln, "<Solution/>");
         var result = await OnboardingDetector.DetectAsync(_tempRoot);
         result.SolutionFiles.Should().ContainSingle().Which.Should().EndWith("MyApp.slnx");
@@ -53,7 +53,7 @@ public sealed class OnboardingDetectorTests : IDisposable
     [Fact]
     public async Task DiscoversSlnAtRoot()
     {
-        var sln = Path.Combine(_tempRoot, "Legacy.sln");
+        var sln = Path.Join(_tempRoot, "Legacy.sln");
         File.WriteAllText(sln, "Microsoft Visual Studio Solution File");
         var result = await OnboardingDetector.DetectAsync(_tempRoot);
         result.SolutionFiles.Should().ContainSingle().Which.Should().EndWith("Legacy.sln");
@@ -62,10 +62,10 @@ public sealed class OnboardingDetectorTests : IDisposable
     [Fact]
     public async Task DiscoversSolutionsOneLevelDeep()
     {
-        var sub = Path.Combine(_tempRoot, "src");
+        var sub = Path.Join(_tempRoot, "src");
         Directory.CreateDirectory(sub);
-        File.WriteAllText(Path.Combine(sub, "frontend.slnx"), "<Solution/>");
-        File.WriteAllText(Path.Combine(sub, "backend.slnx"), "<Solution/>");
+        File.WriteAllText(Path.Join(sub, "frontend.slnx"), "<Solution/>");
+        File.WriteAllText(Path.Join(sub, "backend.slnx"), "<Solution/>");
 
         var result = await OnboardingDetector.DetectAsync(_tempRoot);
         result.SolutionFiles.Should().HaveCount(2);
@@ -84,7 +84,7 @@ public sealed class OnboardingDetectorTests : IDisposable
     [Fact]
     public async Task SourceGraphConfig_malformed_carriesError()
     {
-        File.WriteAllText(Path.Combine(_tempRoot, ".sourcegraph.json"), "{ this is not valid json");
+        File.WriteAllText(Path.Join(_tempRoot, ".sourcegraph.json"), "{ this is not valid json");
         var result = await OnboardingDetector.DetectAsync(_tempRoot);
         result.SourceGraphConfigStatus.Should().Be(SourceGraphConfigStatus.Malformed);
         result.SourceGraphConfigError.Should().NotBeNullOrEmpty();
@@ -93,7 +93,7 @@ public sealed class OnboardingDetectorTests : IDisposable
     [Fact]
     public async Task ClientConfig_detectedWhenPresent_claudeCode()
     {
-        File.WriteAllText(Path.Combine(_tempRoot, ".mcp.json"),
+        File.WriteAllText(Path.Join(_tempRoot, ".mcp.json"),
             "{ \"mcpServers\": { \"sourcegraph\": { \"command\": \"sourcegraph-mcp\" } } }");
         var result = await OnboardingDetector.DetectAsync(_tempRoot);
 
@@ -107,10 +107,10 @@ public sealed class OnboardingDetectorTests : IDisposable
     [Fact]
     public async Task ClientConfig_detectedWhenPresent_copilot_distinctSchema()
     {
-        var vscodeDir = Path.Combine(_tempRoot, ".vscode");
+        var vscodeDir = Path.Join(_tempRoot, ".vscode");
         Directory.CreateDirectory(vscodeDir);
         // Copilot uses `servers` (not `mcpServers`) and an explicit `type: "stdio"`.
-        File.WriteAllText(Path.Combine(vscodeDir, "mcp.json"),
+        File.WriteAllText(Path.Join(vscodeDir, "mcp.json"),
             "{ \"servers\": { \"sourcegraph\": { \"type\": \"stdio\", \"command\": \"sourcegraph-mcp\" } } }");
         var result = await OnboardingDetector.DetectAsync(_tempRoot);
 
@@ -124,7 +124,7 @@ public sealed class OnboardingDetectorTests : IDisposable
     [Fact]
     public async Task ClientConfig_existsButNoEntry_isFlagged()
     {
-        File.WriteAllText(Path.Combine(_tempRoot, ".mcp.json"),
+        File.WriteAllText(Path.Join(_tempRoot, ".mcp.json"),
             "{ \"mcpServers\": { \"otherServer\": { \"command\": \"x\" } } }");
         var result = await OnboardingDetector.DetectAsync(_tempRoot);
 
@@ -137,9 +137,9 @@ public sealed class OnboardingDetectorTests : IDisposable
     [Fact]
     public async Task ClientConfig_continueYaml_detectedByNameLine()
     {
-        var continueDir = Path.Combine(_tempRoot, ".continue", "mcp");
+        var continueDir = Path.Join(_tempRoot, ".continue", "mcp");
         Directory.CreateDirectory(continueDir);
-        File.WriteAllText(Path.Combine(continueDir, "sourcegraph.yaml"),
+        File.WriteAllText(Path.Join(continueDir, "sourcegraph.yaml"),
             "name: sourcegraph\ncommand: sourcegraph-mcp\nargs:\n  - serve\n");
         var result = await OnboardingDetector.DetectAsync(_tempRoot);
 
@@ -180,13 +180,13 @@ public sealed class WriterContractTests : IDisposable
 
     public WriterContractTests()
     {
-        _tempRoot = Path.Combine(Path.GetTempPath(), "sg-writer-tests-" + Guid.NewGuid().ToString("N"));
+        _tempRoot = Path.Join(Path.GetTempPath(), "sg-writer-tests-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_tempRoot);
     }
 
     public void Dispose()
     {
-        try { Directory.Delete(_tempRoot, recursive: true); } catch { }
+        try { Directory.Delete(_tempRoot, recursive: true); } catch (IOException) { /* best-effort cleanup */ } catch (UnauthorizedAccessException) { /* best-effort cleanup */ }
     }
 
     private DevBitsLab.Mcp.SourceGraph.Server.Cli.ClientConfigWriters.WriterContext MakeContext(
@@ -209,7 +209,7 @@ public sealed class WriterContractTests : IDisposable
     public void Plan_missingFile_isInsert()
     {
         var writer = new StubWriter();
-        var ctx = MakeContext(Path.Combine(_tempRoot, "absent.json"), existingContent: null);
+        var ctx = MakeContext(Path.Join(_tempRoot, "absent.json"), existingContent: null);
         var plan = writer.Plan(ctx);
         plan.Action.Should().Be(DevBitsLab.Mcp.SourceGraph.Server.Cli.ClientConfigWriters.WriterAction.Insert);
         plan.ContentBytes.Should().NotBeEmpty();
@@ -220,7 +220,7 @@ public sealed class WriterContractTests : IDisposable
     {
         var existing = Encoding.UTF8.GetBytes("{ \"mcpServers\": { \"otherServer\": { \"command\": \"x\" } } }");
         var writer = new StubWriter();
-        var ctx = MakeContext(Path.Combine(_tempRoot, "f.json"), existing);
+        var ctx = MakeContext(Path.Join(_tempRoot, "f.json"), existing);
         var plan = writer.Plan(ctx);
         plan.Action.Should().Be(DevBitsLab.Mcp.SourceGraph.Server.Cli.ClientConfigWriters.WriterAction.Insert);
     }
@@ -229,10 +229,10 @@ public sealed class WriterContractTests : IDisposable
     public void Plan_existingMatchesOurs_isNoOp()
     {
         var writer = new StubWriter();
-        var ctx0 = MakeContext(Path.Combine(_tempRoot, "f.json"), existingContent: null);
+        var ctx0 = MakeContext(Path.Join(_tempRoot, "f.json"), existingContent: null);
         var clean = writer.Plan(ctx0).ContentBytes;
 
-        var ctx1 = MakeContext(Path.Combine(_tempRoot, "f.json"), existingContent: clean);
+        var ctx1 = MakeContext(Path.Join(_tempRoot, "f.json"), existingContent: clean);
         var plan = writer.Plan(ctx1);
         plan.Action.Should().Be(DevBitsLab.Mcp.SourceGraph.Server.Cli.ClientConfigWriters.WriterAction.NoOpAlreadyMatches);
     }
@@ -243,7 +243,7 @@ public sealed class WriterContractTests : IDisposable
         var existing = Encoding.UTF8.GetBytes(
             "{ \"mcpServers\": { \"sourcegraph\": { \"command\": \"different\" } } }");
         var writer = new StubWriter();
-        var ctx = MakeContext(Path.Combine(_tempRoot, "f.json"), existing, force: false);
+        var ctx = MakeContext(Path.Join(_tempRoot, "f.json"), existing, force: false);
         var plan = writer.Plan(ctx);
         plan.Action.Should().Be(DevBitsLab.Mcp.SourceGraph.Server.Cli.ClientConfigWriters.WriterAction.SkipExistingDiffers);
     }
@@ -254,7 +254,7 @@ public sealed class WriterContractTests : IDisposable
         var existing = Encoding.UTF8.GetBytes(
             "{ \"mcpServers\": { \"sourcegraph\": { \"command\": \"different\" } } }");
         var writer = new StubWriter();
-        var ctx = MakeContext(Path.Combine(_tempRoot, "f.json"), existing, force: true);
+        var ctx = MakeContext(Path.Join(_tempRoot, "f.json"), existing, force: true);
         var plan = writer.Plan(ctx);
         plan.Action.Should().Be(DevBitsLab.Mcp.SourceGraph.Server.Cli.ClientConfigWriters.WriterAction.ReplaceOurs);
     }
@@ -262,7 +262,7 @@ public sealed class WriterContractTests : IDisposable
     [Fact]
     public void Apply_writesContentToTarget()
     {
-        var path = Path.Combine(_tempRoot, "subdir", "f.json");
+        var path = Path.Join(_tempRoot, "subdir", "f.json");
         var writer = new StubWriter();
         var plan = writer.Plan(MakeContext(path, existingContent: null));
         writer.Apply(plan);
@@ -273,7 +273,7 @@ public sealed class WriterContractTests : IDisposable
     [Fact]
     public void Apply_isNoOp_whenActionIsNoOpOrSkip()
     {
-        var path = Path.Combine(_tempRoot, "f.json");
+        var path = Path.Join(_tempRoot, "f.json");
         var writer = new StubWriter();
         var plan = new DevBitsLab.Mcp.SourceGraph.Server.Cli.ClientConfigWriters.WriterPlan(
             TargetPath: path,
@@ -292,7 +292,7 @@ public sealed class WriterContractTests : IDisposable
     private sealed class StubWriter : DevBitsLab.Mcp.SourceGraph.Server.Cli.ClientConfigWriters.IClientConfigWriter
     {
         public ClientId ClientId => ClientId.ClaudeCode;
-        public string? DefaultProjectPath(string root) => Path.Combine(root, ".mcp.json");
+        public string? DefaultProjectPath(string root) => Path.Join(root, ".mcp.json");
         public string? DefaultUserPath() => null;
 
         public DevBitsLab.Mcp.SourceGraph.Server.Cli.ClientConfigWriters.WriterPlan Plan(

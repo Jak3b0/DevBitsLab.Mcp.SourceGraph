@@ -19,13 +19,13 @@ public sealed class ClientConfigWritersTests : IDisposable
 
     public ClientConfigWritersTests()
     {
-        _tempRoot = Path.Combine(Path.GetTempPath(), "sg-writers-tests-" + Guid.NewGuid().ToString("N"));
+        _tempRoot = Path.Join(Path.GetTempPath(), "sg-writers-tests-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_tempRoot);
     }
 
     public void Dispose()
     {
-        try { Directory.Delete(_tempRoot, recursive: true); } catch { }
+        try { Directory.Delete(_tempRoot, recursive: true); } catch (IOException) { /* best-effort cleanup */ } catch (UnauthorizedAccessException) { /* best-effort cleanup */ }
     }
 
     private WriterContext MakeContext(IClientConfigWriter writer, byte[]? existingContent, bool force = false, bool userScope = false)
@@ -34,7 +34,7 @@ public sealed class ClientConfigWritersTests : IDisposable
             ? writer.DefaultUserPath() ?? throw new InvalidOperationException("no user path")
             : writer.DefaultProjectPath(_tempRoot) ?? throw new InvalidOperationException("no project path");
         // Re-root user paths under temp so the test doesn't write to the real home dir.
-        if (userScope) path = Path.Combine(_tempRoot, "home", Path.GetFileName(path));
+        if (userScope) path = Path.Join(_tempRoot, "home", Path.GetFileName(path));
         return new WriterContext(
             Root: _tempRoot,
             TargetPath: path,
@@ -139,7 +139,7 @@ public sealed class ClientConfigWritersTests : IDisposable
     public void Copilot_targetPath_isVscodeSubdir()
     {
         var w = new CopilotWriter();
-        w.DefaultProjectPath(_tempRoot).Should().Be(Path.Combine(_tempRoot, ".vscode", "mcp.json"));
+        w.DefaultProjectPath(_tempRoot).Should().Be(Path.Join(_tempRoot, ".vscode", "mcp.json"));
     }
 
     [Fact]
@@ -161,7 +161,7 @@ public sealed class ClientConfigWritersTests : IDisposable
     public void Cursor_targetPath_isCursorSubdir()
     {
         var w = new CursorWriter();
-        w.DefaultProjectPath(_tempRoot).Should().Be(Path.Combine(_tempRoot, ".cursor", "mcp.json"));
+        w.DefaultProjectPath(_tempRoot).Should().Be(Path.Join(_tempRoot, ".cursor", "mcp.json"));
     }
 
     [Fact]
@@ -207,7 +207,7 @@ public sealed class ClientConfigWritersTests : IDisposable
     {
         var w = new ContinueWriter();
         w.DefaultProjectPath(_tempRoot).Should().Be(
-            Path.Combine(_tempRoot, ".continue", "mcp", "sourcegraph.yaml"));
+            Path.Join(_tempRoot, ".continue", "mcp", "sourcegraph.yaml"));
     }
 
     [Fact]
@@ -274,7 +274,7 @@ public sealed class ClientConfigWritersTests : IDisposable
         // Use a temp-rooted target so we don't write to the real home dir during tests.
         var ctx = new WriterContext(
             Root: _tempRoot,
-            TargetPath: Path.Combine(_tempRoot, "claude_desktop_config.json"),
+            TargetPath: Path.Join(_tempRoot, "claude_desktop_config.json"),
             UseUserScope: true,
             InstallMode: InstallMode.Global,
             SolutionPath: "${workspaceFolder}/MyApp.slnx",

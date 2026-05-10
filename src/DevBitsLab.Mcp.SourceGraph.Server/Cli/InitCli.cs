@@ -113,7 +113,13 @@ internal static class InitCli
             {
                 writer.Apply(plan);
             }
-            catch (Exception ex)
+            catch (IOException ex)
+            {
+                results.Add(new WriterRunResult(clientId, useUserScope, plan.TargetPath,
+                    WriterAction.SkipExistingDiffers, $"apply failed: {ex.Message}"));
+                continue;
+            }
+            catch (UnauthorizedAccessException ex)
             {
                 results.Add(new WriterRunResult(clientId, useUserScope, plan.TargetPath,
                     WriterAction.SkipExistingDiffers, $"apply failed: {ex.Message}"));
@@ -158,7 +164,7 @@ internal static class InitCli
     private static bool IsStdinInteractive()
     {
         try { return !Console.IsInputRedirected; }
-        catch { return false; }
+        catch (IOException) { return false; }
     }
 
     private static void PrintDetectionSummary(OnboardingDetectionResult d)
@@ -405,7 +411,7 @@ internal static class InitCli
         // Resolve to an absolute path. ${workspaceFolder} expansion handled by ExpandTokens.
         var expanded = CommandLine.ExpandTokens(solutionPath)
             .Replace("${workspaceFolder}", root, StringComparison.Ordinal);
-        var abs = Path.IsPathRooted(expanded) ? expanded : Path.Combine(root, expanded);
+        var abs = Path.IsPathRooted(expanded) ? expanded : Path.Join(root, expanded);
         if (!File.Exists(abs))
         {
             Console.Error.WriteLine($"warn: --prewarm requested but solution not found at {abs}");
@@ -441,9 +447,17 @@ internal static class InitCli
             sw.Stop();
             Console.WriteLine($"  pre-warm: exit {p.ExitCode} in {sw.Elapsed.TotalSeconds:F1}s");
         }
-        catch (Exception ex)
+        catch (System.ComponentModel.Win32Exception ex)
         {
-            Console.Error.WriteLine($"warn: pre-warm failed: {ex.Message}");
+            Console.Error.WriteLine($"warn: pre-warm failed (process start): {ex.Message}");
+        }
+        catch (IOException ex)
+        {
+            Console.Error.WriteLine($"warn: pre-warm failed (i/o): {ex.Message}");
+        }
+        catch (InvalidOperationException ex)
+        {
+            Console.Error.WriteLine($"warn: pre-warm failed (process state): {ex.Message}");
         }
     }
 

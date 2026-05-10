@@ -8,13 +8,13 @@ internal sealed class CursorWriter : JsonMcpServerWriter
 {
     public override ClientId ClientId => ClientId.Cursor;
 
-    public override string? DefaultProjectPath(string root) => Path.Combine(root, ".cursor", "mcp.json");
+    public override string? DefaultProjectPath(string root) => Path.Join(root, ".cursor", "mcp.json");
 
     public override string? DefaultUserPath()
     {
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile,
             Environment.SpecialFolderOption.DoNotVerify);
-        return string.IsNullOrEmpty(home) ? null : Path.Combine(home, ".cursor", "mcp.json");
+        return string.IsNullOrEmpty(home) ? null : Path.Join(home, ".cursor", "mcp.json");
     }
 
     protected override string TopLevelKey => "mcpServers";

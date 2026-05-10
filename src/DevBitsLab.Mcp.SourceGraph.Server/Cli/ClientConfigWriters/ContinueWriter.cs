@@ -17,13 +17,13 @@ internal sealed class ContinueWriter : IClientConfigWriter
     public ClientId ClientId => ClientId.Continue;
 
     public string? DefaultProjectPath(string root) =>
-        Path.Combine(root, ".continue", "mcp", "sourcegraph.yaml");
+        Path.Join(root, ".continue", "mcp", "sourcegraph.yaml");
 
     public string? DefaultUserPath()
     {
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile,
             Environment.SpecialFolderOption.DoNotVerify);
-        return string.IsNullOrEmpty(home) ? null : Path.Combine(home, ".continue", "mcp", "sourcegraph.yaml");
+        return string.IsNullOrEmpty(home) ? null : Path.Join(home, ".continue", "mcp", "sourcegraph.yaml");
     }
 
     public WriterPlan Plan(WriterContext ctx)

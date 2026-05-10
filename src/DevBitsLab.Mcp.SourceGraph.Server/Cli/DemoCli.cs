@@ -136,7 +136,8 @@ internal static class DemoCli
             if (!string.IsNullOrEmpty(cfg.DefaultScope)) return cfg.DefaultScope!;
             if (cfg.Scopes.Count > 0) return cfg.Scopes[0].Id;
         }
-        catch { /* fall through to synthesised default */ }
+        catch (ScopeConfigException) { /* malformed config — fall through to synthesised default */ }
+        catch (IOException) { /* unreadable config — fall through */ }
         return "default";
     }
 

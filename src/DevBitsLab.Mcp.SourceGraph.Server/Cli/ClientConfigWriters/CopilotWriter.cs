@@ -14,7 +14,7 @@ internal sealed class CopilotWriter : JsonMcpServerWriter
 {
     public override ClientId ClientId => ClientId.Copilot;
 
-    public override string? DefaultProjectPath(string root) => Path.Combine(root, ".vscode", "mcp.json");
+    public override string? DefaultProjectPath(string root) => Path.Join(root, ".vscode", "mcp.json");
 
     public override string? DefaultUserPath() => null;
 

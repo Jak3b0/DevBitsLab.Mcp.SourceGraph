@@ -80,7 +80,7 @@ internal static class OnboardingDetector
 
     private static (SourceGraphConfigStatus, string?) DetectSourceGraphConfigStatus(string root)
     {
-        var path = Path.Combine(root, ScopeConfigLoader.FileName);
+        var path = Path.Join(root, ScopeConfigLoader.FileName);
         if (!File.Exists(path)) return (SourceGraphConfigStatus.Missing, null);
         try
         {
@@ -113,10 +113,10 @@ internal static class OnboardingDetector
 
     private static IEnumerable<(ClientId Client, string Path)> ProjectConfigPaths(string root)
     {
-        yield return (ClientId.ClaudeCode, Path.Combine(root, ".mcp.json"));
-        yield return (ClientId.Copilot, Path.Combine(root, ".vscode", "mcp.json"));
-        yield return (ClientId.Cursor, Path.Combine(root, ".cursor", "mcp.json"));
-        yield return (ClientId.Continue, Path.Combine(root, ".continue", "mcp", "sourcegraph.yaml"));
+        yield return (ClientId.ClaudeCode, Path.Join(root, ".mcp.json"));
+        yield return (ClientId.Copilot, Path.Join(root, ".vscode", "mcp.json"));
+        yield return (ClientId.Cursor, Path.Join(root, ".cursor", "mcp.json"));
+        yield return (ClientId.Continue, Path.Join(root, ".continue", "mcp", "sourcegraph.yaml"));
     }
 
     private static IEnumerable<(ClientId Client, string Path)> UserConfigPaths()
@@ -124,9 +124,9 @@ internal static class OnboardingDetector
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile,
             Environment.SpecialFolderOption.DoNotVerify);
         if (string.IsNullOrEmpty(home)) yield break;
-        yield return (ClientId.ClaudeCode, Path.Combine(home, ".claude", ".mcp.json"));
-        yield return (ClientId.Cursor, Path.Combine(home, ".cursor", "mcp.json"));
-        yield return (ClientId.Continue, Path.Combine(home, ".continue", "mcp", "sourcegraph.yaml"));
+        yield return (ClientId.ClaudeCode, Path.Join(home, ".claude", ".mcp.json"));
+        yield return (ClientId.Cursor, Path.Join(home, ".cursor", "mcp.json"));
+        yield return (ClientId.Continue, Path.Join(home, ".continue", "mcp", "sourcegraph.yaml"));
         // Claude Desktop is user-scope only and platform-specific.
         var desktop = ClaudeDesktopUserPath(home);
         if (!string.IsNullOrEmpty(desktop)) yield return (ClientId.ClaudeDesktop, desktop);
@@ -143,13 +143,13 @@ internal static class OnboardingDetector
             var appData = Environment.GetEnvironmentVariable("APPDATA");
             return string.IsNullOrEmpty(appData)
                 ? string.Empty
-                : Path.Combine(appData, "Claude", "claude_desktop_config.json");
+                : Path.Join(appData, "Claude", "claude_desktop_config.json");
         }
         if (OperatingSystem.IsMacOS())
         {
-            return Path.Combine(home, "Library", "Application Support", "Claude", "claude_desktop_config.json");
+            return Path.Join(home, "Library", "Application Support", "Claude", "claude_desktop_config.json");
         }
-        return Path.Combine(home, ".config", "Claude", "claude_desktop_config.json");
+        return Path.Join(home, ".config", "Claude", "claude_desktop_config.json");
     }
 
     private static bool FileContainsSourcegraphEntry(ClientId client, string path)
@@ -196,10 +196,9 @@ internal static class OnboardingDetector
             await p.WaitForExitAsync(ct).ConfigureAwait(false);
             return p.ExitCode == 0 ? stdout.Trim() : null;
         }
-        catch (Exception)
-        {
-            return null;
-        }
+        catch (System.ComponentModel.Win32Exception) { return null; }
+        catch (IOException) { return null; }
+        catch (InvalidOperationException) { return null; }
     }
 
     private static async Task<bool> DetectGitOnPathAsync(CancellationToken ct)
@@ -218,10 +217,9 @@ internal static class OnboardingDetector
             await p.WaitForExitAsync(ct).ConfigureAwait(false);
             return p.ExitCode == 0;
         }
-        catch (Exception)
-        {
-            return false;
-        }
+        catch (System.ComponentModel.Win32Exception) { return false; }
+        catch (IOException) { return false; }
+        catch (InvalidOperationException) { return false; }
     }
 }
 

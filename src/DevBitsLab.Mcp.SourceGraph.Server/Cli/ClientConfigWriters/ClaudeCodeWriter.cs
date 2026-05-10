@@ -8,13 +8,13 @@ internal sealed class ClaudeCodeWriter : JsonMcpServerWriter
 {
     public override ClientId ClientId => ClientId.ClaudeCode;
 
-    public override string? DefaultProjectPath(string root) => Path.Combine(root, ".mcp.json");
+    public override string? DefaultProjectPath(string root) => Path.Join(root, ".mcp.json");
 
     public override string? DefaultUserPath()
     {
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile,
             Environment.SpecialFolderOption.DoNotVerify);
-        return string.IsNullOrEmpty(home) ? null : Path.Combine(home, ".claude", ".mcp.json");
+        return string.IsNullOrEmpty(home) ? null : Path.Join(home, ".claude", ".mcp.json");
     }
 
     protected override string TopLevelKey => "mcpServers";

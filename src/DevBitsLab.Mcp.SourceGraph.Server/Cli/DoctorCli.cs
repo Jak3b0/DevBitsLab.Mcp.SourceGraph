@@ -74,10 +74,13 @@ internal static class DoctorCli
             {
                 foreach (var f in Directory.EnumerateFiles(modelCachePath, "*", SearchOption.AllDirectories))
                 {
-                    try { total += new FileInfo(f).Length; } catch { /* best-effort */ }
+                    try { total += new FileInfo(f).Length; }
+                    catch (IOException) { /* best-effort: skip unreadable files */ }
+                    catch (UnauthorizedAccessException) { /* best-effort */ }
                 }
             }
-            catch { /* best-effort */ }
+            catch (IOException) { /* best-effort: cache dir disappeared mid-walk */ }
+            catch (UnauthorizedAccessException) { /* best-effort */ }
             checks.Add(new("embedding-cache", DoctorStatus.Pass,
                 $"embedding model cache present at {modelCachePath} ({total / 1024 / 1024} MB)"));
         }
@@ -88,7 +91,7 @@ internal static class DoctorCli
         }
 
         // 7. Per-scope DB writability.
-        var scopeDir = Path.Combine(detection.RepoRootPath, ".sourcegraph", "scopes");
+        var scopeDir = Path.Join(detection.RepoRootPath, ".sourcegraph", "scopes");
         var dbWritable = TestWritability(scopeDir);
         checks.Add(new("db-writable", dbWritable ? DoctorStatus.Pass : DoctorStatus.Fail,
             dbWritable ? $"per-scope DB dir writable: {scopeDir}"
@@ -190,8 +193,8 @@ internal static class DoctorCli
             Environment.SpecialFolderOption.DoNotVerify);
         var cacheRoot = Environment.GetEnvironmentVariable("XDG_CACHE_HOME")
             ?? Environment.GetEnvironmentVariable("LOCALAPPDATA")
-            ?? Path.Combine(home, ".cache");
-        return Path.Combine(cacheRoot, "sourcegraph-mcp", "models");
+            ?? Path.Join(home, ".cache");
+        return Path.Join(cacheRoot, "sourcegraph-mcp", "models");
     }
 
     private static bool TestWritability(string dir)
@@ -199,15 +202,13 @@ internal static class DoctorCli
         try
         {
             Directory.CreateDirectory(dir);
-            var probe = Path.Combine(dir, ".sg-doctor-probe-" + Guid.NewGuid().ToString("N"));
+            var probe = Path.Join(dir, ".sg-doctor-probe-" + Guid.NewGuid().ToString("N"));
             File.WriteAllBytes(probe, Array.Empty<byte>());
             File.Delete(probe);
             return true;
         }
-        catch
-        {
-            return false;
-        }
+        catch (IOException) { return false; }
+        catch (UnauthorizedAccessException) { return false; }
     }
 
     private sealed record DoctorCheck(string Name, DoctorStatus Status, string Message);

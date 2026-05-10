@@ -25,6 +25,9 @@ public sealed class ColdStartProgressTests
         // to settle after each emission.
 
         // Mirror the wrapper's subscribe-await-unsubscribe pattern.
+        // The cast to IProgress<T> is required: Progress<T>.Report is an explicit interface
+        // implementation, not a public method on the class itself. CodeQL flags this as
+        // cs/useless-upcast — it isn't.
         Action<ProgressNotificationValue> handler = ((IProgress<ProgressNotificationValue>)progress).Report;
         source.Reported += handler;
         try

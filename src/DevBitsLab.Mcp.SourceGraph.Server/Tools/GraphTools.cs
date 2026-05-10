@@ -4,6 +4,7 @@ using System.Text.Json;
 using DevBitsLab.Mcp.SourceGraph.Core;
 using DevBitsLab.Mcp.SourceGraph.Embeddings;
 using DevBitsLab.Mcp.SourceGraph.Sdk;
+using DevBitsLab.Mcp.SourceGraph.Sdk.Validation;
 using DevBitsLab.Mcp.SourceGraph.Server.Observability;
 using DevBitsLab.Mcp.SourceGraph.Server.Resources;
 using DevBitsLab.Mcp.SourceGraph.Server.Scoping;
@@ -975,9 +976,15 @@ public static class GraphTools
 
                 // All-filters-null detection: emit the documented note but still run the storage
                 // call so the agent sees what's available. Path/mode/converter are pure strings;
-                // a non-null target/source that failed to resolve is treated as "no filter."
+                // a non-null target/source that failed to resolve is treated as "no filter." Per
+                // the spec scenario "All filters null returns hint" — the trigger is "every
+                // filter null AND no scope restriction"; an explicit scope (single id or list,
+                // anything other than the wildcard "*") narrows the query enough that the
+                // hint becomes noise, so it counts as a filter here.
+                var scopeIsRestrictive = !string.IsNullOrEmpty(scope) && scope.Trim() != "*";
                 var anyFilter = targetKey is not null || sourceKey is not null
-                    || !string.IsNullOrEmpty(path) || !string.IsNullOrEmpty(mode) || !string.IsNullOrEmpty(converter);
+                    || !string.IsNullOrEmpty(path) || !string.IsNullOrEmpty(mode) || !string.IsNullOrEmpty(converter)
+                    || scopeIsRestrictive;
 
                 var bindings = await host.Store.FindDataBindingsAsync(
                     targetCanonicalKey: targetKey,
@@ -1044,33 +1051,23 @@ public static class GraphTools
 
     /// <summary>
     /// Resolve a free-form symbol identifier (canonical key, name, or FQN suffix) to a canonical
-    /// key. Inputs starting with a known canonical-key scheme prefix
-    /// (see <see cref="CanonicalKeySchemes"/>) are passed through verbatim so the storage WHERE
-    /// clause matches by key. Other inputs go through the same name-lookup path
-    /// <c>find_definition</c> uses; the top hit's canonical key wins. Returns <c>null</c> for
-    /// null/empty input or when the lookup produces no hits.
+    /// key. Inputs that pass <see cref="CanonicalKeyValidator.IsValid"/> are passed through
+    /// verbatim so the storage WHERE clause matches by key — single source of truth for the
+    /// scheme list (delegating to the SDK keeps this in lockstep when new languages get
+    /// promoted into <see cref="CanonicalKeyValidator.EnforcedSchemes"/>). Other inputs go
+    /// through the same name-lookup path <c>find_definition</c> uses; the top hit's canonical
+    /// key wins. Returns <c>null</c> for null/empty input or when the lookup produces no hits.
     /// </summary>
     private static async Task<string?> ResolveCanonicalKeyAsync(IGraphStore store, string? identifier, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(identifier)) return null;
-        if (LooksLikeCanonicalKey(identifier)) return identifier;
+        // CanonicalKeyValidator rejects inputs whose scheme isn't an enforced one — XAML
+        // placeholder FQNs like `binding-target:Views/Main.xaml#Text@12:24` fail (the leading
+        // token isn't a valid scheme), so they correctly fall through to FindSymbolsAsync.
+        if (CanonicalKeyValidator.IsValid(identifier)) return identifier;
         var hits = await store.FindSymbolsAsync(identifier, filePathHint: null, limit: 1, ct).ConfigureAwait(false);
         return hits.Count == 0 ? null : hits[0].CanonicalKey;
     }
-
-    /// <summary>
-    /// Known canonical-key scheme prefixes — the tokens that precede the first colon in an
-    /// indexer-emitted canonical key (e.g. <c>csharp:T:Foo.Bar</c>, <c>xaml:element:Views/Foo.xaml#El</c>).
-    /// Used by <see cref="LooksLikeCanonicalKey"/> to discriminate canonical-key inputs from
-    /// FQNs that happen to contain a colon (XAML placeholder FQNs like
-    /// <c>binding-target:Views/Main.xaml#Text@12:24</c> contain colons but are NOT canonical keys —
-    /// the real canonical key is <c>xaml:binding-target:…</c>). Plugin-emitted schemes get added
-    /// here as new languages land; the list is short and the maintenance cost is acceptable.
-    /// </summary>
-    private static readonly string[] CanonicalKeySchemes = { "csharp:", "xaml:" };
-
-    private static bool LooksLikeCanonicalKey(string identifier) =>
-        CanonicalKeySchemes.Any(scheme => identifier.StartsWith(scheme, StringComparison.Ordinal));
 
     private const string EdgeKindBindsPath = "binds-path";
     private const string EdgeKindHandlesEvent = "handles-event";

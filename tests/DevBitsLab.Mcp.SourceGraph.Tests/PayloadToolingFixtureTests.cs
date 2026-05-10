@@ -183,6 +183,30 @@ public sealed class PayloadToolingFixtureTests : IAsyncLifetime, IDisposable
     }
 
     [Fact]
+    public async Task FindDataBindings_explicitScope_suppressesAllFiltersNullHint()
+    {
+        // Regression for the Copilot review on PR #33: the all-filters-null hint used to fire
+        // whenever target/source/path/mode/converter were empty, even when the caller restricted
+        // `scope`. The spec scenario "All filters null returns hint" only calls for the note when
+        // every filter is null AND no scope restriction is in effect — an explicit scope id (or
+        // comma list, anything other than wildcard `*`) already narrows the query and makes the
+        // hint noise.
+        var result = await GraphTools.FindDataBindingsAsync(
+            router: _wpfRouter!,
+            target: null, source: null, path: null, mode: null, converter: null,
+            scope: "default", // explicit non-wildcard scope counts as narrowing
+            limit: 50);
+
+        result.IsError.Should().NotBe(true);
+        var dto = JsonSerializer.Deserialize<FindDataBindingsResult>(
+            result.StructuredContent!.Value.GetRawText(),
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower });
+        dto.Should().NotBeNull();
+        dto!.Note.Should().BeNull(
+            "an explicit non-wildcard scope already narrows the query — the all-filters-null hint should be suppressed");
+    }
+
+    [Fact]
     public async Task FindDataBindings_resolvesXamlPlaceholderFqn_viaNameLookup_notVerbatimPassthrough()
     {
         // Regression for the Copilot review feedback on PR #33: `ResolveCanonicalKeyAsync` used

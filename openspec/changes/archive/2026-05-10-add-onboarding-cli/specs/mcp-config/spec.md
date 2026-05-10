@@ -35,7 +35,16 @@ The `init` subcommand SHALL default each client's write target to that client's 
 - **THEN** `~/.cursor/mcp.json` is written or merged into; `<root>/.cursor/mcp.json` is not touched; the closing report names the home-tree path explicitly
 
 ### Requirement: Merge-by-server-name semantics
-Each writer SHALL read any pre-existing target file before writing, parse it, and produce one of four plans: `Insert` (no `sourcegraph` server present — add ours), `ReplaceOurs` (a `sourcegraph` entry exists and matches, or `--force` was passed), `NoOpAlreadyMatches` (a `sourcegraph` entry exists and is byte-for-byte equivalent to ours), or `SkipExistingDiffers` (a `sourcegraph` entry exists, differs, and `--force` was not passed). Other servers' entries SHALL never be removed, modified, or reordered by any writer.
+Each writer SHALL read any pre-existing target file before writing, parse it, and produce one of six plans:
+
+- `Insert` — target file is absent OR exists without a `sourcegraph` server entry; the plan emits a fresh document or a merged document that adds ours.
+- `NoOpAlreadyMatches` — a `sourcegraph` entry already exists and is logically equivalent to ours; no write is performed.
+- `ReplaceOurs` — a `sourcegraph` entry exists and **differs** from ours, AND `--force` is set; the plan emits the new merged document.
+- `SkipExistingDiffers` — a `sourcegraph` entry exists and differs, AND `--force` is NOT set; the file is left alone, the run reports a conflict, and `init` exits `2` (CI-failure signal).
+- `SkipHasComments` — the existing target file contains JS-style line/block comments outside string literals; round-tripping through the JSON parser would silently strip them. The file is left alone and the writer prints the would-be snippet to stdout for the user to paste manually. Informational, exit `0`.
+- `SkipUnsupported` — the selected client / scope combination has no writer support in v1 (e.g. `--user-copilot`, since Copilot's user-scope config requires editing VS Code's `settings.json` under `chat.mcp.servers`, which has no dedicated writer). Informational, exit `0`.
+
+Other servers' entries SHALL never be removed, modified, or reordered by any writer.
 
 #### Scenario: Existing other-server is preserved
 - **WHEN** `<root>/.mcp.json` already contains `mcpServers.other-server` and `init --yes --client claude-code` runs

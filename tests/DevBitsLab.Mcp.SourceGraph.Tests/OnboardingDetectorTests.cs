@@ -151,7 +151,7 @@ public sealed class OnboardingDetectorTests : IDisposable
     }
 
     [Fact]
-    public async Task ClientId_slugs_roundTrip()
+    public void ClientId_slugs_roundTrip()
     {
         foreach (var id in Enum.GetValues<ClientId>())
         {
@@ -162,7 +162,7 @@ public sealed class OnboardingDetectorTests : IDisposable
     }
 
     [Fact]
-    public async Task ClaudeDesktopUserPath_isNeverEmpty_onUnix()
+    public void ClaudeDesktopUserPath_isNeverEmpty_onUnix()
     {
         if (OperatingSystem.IsWindows()) return;
         var path = OnboardingDetector.ClaudeDesktopUserPath("/home/test");

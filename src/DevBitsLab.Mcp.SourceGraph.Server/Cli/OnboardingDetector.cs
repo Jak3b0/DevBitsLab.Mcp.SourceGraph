@@ -62,16 +62,20 @@ internal static class OnboardingDetector
         return hits;
     }
 
-    private static IEnumerable<string> SafeEnumerateTopDirs(string root)
+    private static IReadOnlyList<string> SafeEnumerateTopDirs(string root)
     {
-        try { return Directory.EnumerateDirectories(root); }
+        // Materialise inside the try so exceptions thrown during enumeration (not just at
+        // call time) are caught — `Directory.EnumerateDirectories` is lazy and can throw
+        // UnauthorizedAccessException / IOException on the iterator's MoveNext, which would
+        // bypass a return-only catch clause.
+        try { return Directory.EnumerateDirectories(root).ToArray(); }
         catch (UnauthorizedAccessException) { return Array.Empty<string>(); }
         catch (IOException) { return Array.Empty<string>(); }
     }
 
-    private static IEnumerable<string> SafeEnumerateFiles(string dir, string pattern)
+    private static IReadOnlyList<string> SafeEnumerateFiles(string dir, string pattern)
     {
-        try { return Directory.EnumerateFiles(dir, pattern, SearchOption.TopDirectoryOnly); }
+        try { return Directory.EnumerateFiles(dir, pattern, SearchOption.TopDirectoryOnly).ToArray(); }
         catch (UnauthorizedAccessException) { return Array.Empty<string>(); }
         catch (IOException) { return Array.Empty<string>(); }
     }

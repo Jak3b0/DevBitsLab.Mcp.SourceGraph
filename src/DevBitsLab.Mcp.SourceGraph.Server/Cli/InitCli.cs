@@ -97,6 +97,11 @@ internal static class InitCli
                     WriterAction.SkipExistingDiffers, $"could not read existing file: {ex.Message}"));
                 continue;
             }
+            // Force `--no-history` into the emitted args when git isn't on PATH. Without git the
+            // server's history pipeline can't function, and the detection summary already told
+            // the user this would happen — making the implication explicit avoids a confusing
+            // half-broken first run.
+            var noHistory = cli.NoHistory || !detection.GitOnPath;
             var ctx = new WriterContext(
                 Root: root,
                 TargetPath: targetPath,
@@ -105,7 +110,7 @@ internal static class InitCli
                 SolutionPath: useRootMode ? null : solutionPath,
                 ServerProjectPath: null,
                 NoEmbeddings: cli.NoEmbeddings,
-                NoHistory: cli.NoHistory,
+                NoHistory: noHistory,
                 Force: cli.Force,
                 ExistingContent: existing);
             var plan = writer.Plan(ctx);

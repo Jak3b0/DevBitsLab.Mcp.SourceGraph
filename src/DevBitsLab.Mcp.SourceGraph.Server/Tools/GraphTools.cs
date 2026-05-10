@@ -37,6 +37,7 @@ public static class GraphTools
         [Description("Symbol name (e.g. 'Calculator', 'Divide') or FQN suffix (e.g. 'Calculator.Add', 'Sample.Domain.Calculator')")] string symbol,
         [Description("Optional substring to narrow the search to specific file paths")] string? fileHint = null,
         [Description(ScopeDescription)] string? scope = null,
+        IProgress<ModelContextProtocol.ProgressNotificationValue>? progress = null,
         CancellationToken ct = default) =>
         ToolMetrics.TrackAsync("find_definition", new { symbol, fileHint, scope }, () =>
             ScopedExecution.RunAsync(router, scope, async host =>
@@ -95,7 +96,7 @@ public static class GraphTools
                     structuredHits: structuredHits,
                     scopeId: host.Scope.Id,
                     elapsedMs: sw.ElapsedMilliseconds);
-            }, ct));
+            }, ct, progress));
 
     /// <summary>
     /// Compose the multi-content <see cref="CallToolResult"/> for <c>find_definition</c>: the
@@ -1706,7 +1707,7 @@ public static class GraphTools
                     rows: rows,
                     scopeId: host.Scope.Id,
                     elapsedMs: sw.ElapsedMilliseconds);
-            }, ct));
+            }, ct, progress));
 
     private static CallToolResult BuildModuleSummaryResult(
         string prose,
@@ -1834,7 +1835,7 @@ public static class GraphTools
                     maxDepth: maxDepth,
                     scopeId: host.Scope.Id,
                     elapsedMs: sw.ElapsedMilliseconds);
-            }, ct));
+            }, ct, progress));
 
     private static CallToolResult BuildImpactOfChangeResult(
         string prose,
@@ -2138,7 +2139,7 @@ public static class GraphTools
                     scopeId: host.Scope.Id,
                     elapsedMs: sw.ElapsedMilliseconds,
                     omittedSize: hitsOmitted);
-            }, ct));
+            }, ct, progress));
 
     private static CallToolResult BuildSemanticSearchResult(
         string prose,

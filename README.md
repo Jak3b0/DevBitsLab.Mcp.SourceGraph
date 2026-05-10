@@ -20,6 +20,7 @@ calls with a single structured tool call:
 ## Contents
 
 - [Features](#features)
+- [Why not just use Roslyn directly?](#why-not-just-use-roslyn-directly)
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Wiring it into an MCP client](#wiring-it-into-an-mcp-client)
@@ -71,6 +72,27 @@ calls with a single structured tool call:
   references remain valid.
 - **Stable plugin SDK.** `DevBitsLab.Mcp.SourceGraph.Sdk` exposes
   `IMcpToolPlugin` for adding bespoke tools that share the same scope router.
+
+## Why not just use Roslyn directly?
+
+Roslyn is the right tool when you're writing an analyzer, a refactor, or
+anything that needs full type-system access live inside the compiler. This
+server is the right tool when an LLM (or any out-of-process client) needs many
+cheap structural queries against a stable solution.
+
+| | Roslyn directly (`MSBuildWorkspace` / `SymbolFinder`) | This server |
+|---|---|---|
+| **Cold start** | 10–60 s to load a real solution into a workspace | Milliseconds — indexing happens once, in the background |
+| **Where it runs** | In-process API — every client hosts its own workspace | Cross-process MCP server — one host, many clients (Claude Code, Cursor, scripts) |
+| **Search shape** | Exact-identity lookups (`SymbolFinder.FindReferencesAsync`) | Same exact lookups *plus* FTS5 fragment search and ONNX semantic search |
+| **Languages** | C# / VB only | C# + XAML today, with cross-language joins; plugin SDK for more |
+| **Multi-solution** | One workspace per solution | Native scope router with isolation flags for vendored / generated code |
+| **Freshness** | Caller's problem | File watcher + `.git/HEAD` watcher with 200 ms debounce |
+| **Semantic accuracy** | 100% live | Snapshot-accurate, refreshed on file changes |
+| **Type system access** | Full (overload resolution, conversions, generic substitution) | Not exposed — graph queries only |
+
+In one line: Roslyn is a compiler API; this is a query layer tuned for agents
+that ask *"where does this go?"* forty times an hour.
 
 ## Requirements
 

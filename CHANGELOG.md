@@ -174,15 +174,17 @@ below note which package the change applies to.
   that the SDK's context handles natively. Wire shape unchanged.
   (`fix-initialize-vocabulary-serialization` — landed independently from
   main's `harden-sdk-pre-xaml` change, which carries the same fix.)
-
-### Documentation
-- New OpenSpec proposals drafted but not yet applied:
-  - `fix-stranded-reference-edges` — defensive recovery for the incremental
-    indexer's "zombie file" state (file's outgoing references cleared in
-    pass 1 but never repopulated; SHA-skip preserves the empty state
-    indefinitely). Reproduced today against `HistoryTools.cs`. Fix proposal
-    adds an `IGraphStore.HasOutgoingReferencesAsync` integrity check at the
-    skip boundary plus a try/catch around pass 2's per-file walk.
+- **Self-heal stranded reference edges.** Pass 1's "unchanged file"
+  SHA-skip path now requires that a symbol-bearing file's outgoing
+  references are demonstrably present in the store before skipping
+  pass 2; files whose refs were cleared but never repopulated (transient
+  compile gap, exception in the per-file walk) get re-walked
+  automatically on the next index. Pass 2's per-file body is wrapped in
+  a try/catch so one file's walk failure no longer aborts the whole
+  loop. New `IGraphStore.HasOutgoingReferencesAsync` storage method
+  (default `true`; `SqliteGraphStore` overrides with an indexed EXISTS
+  probe). Recovery emits an info-level log line per affected file.
+  (`fix-stranded-reference-edges`)
 
 ## [0.7.0] - 2026-05-06
 

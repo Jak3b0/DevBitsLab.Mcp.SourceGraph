@@ -79,14 +79,18 @@ public static class ScopeTools
             foreach (var host in hosts)
             {
                 if (host.FailedProjects.Count == 0 && host.FailedFiles.Count == 0) continue;
-                sb.AppendLine($"- `{host.Scope.Id}`:");
+                // Names + paths go inside inline-code spans; reason strings sit as plain
+                // prose. Both populations come from arbitrary user-controlled text (csproj
+                // names, file paths, exception messages), so a literal backtick or newline
+                // would otherwise break the bullet structure.
+                sb.AppendLine($"- `{MarkdownTable.EscapeInlineCode(host.Scope.Id)}`:");
                 foreach (var pf in host.FailedProjects)
                 {
-                    sb.AppendLine($"  - project `{pf.Name}` — {pf.Reason}");
+                    sb.AppendLine($"  - project `{MarkdownTable.EscapeInlineCode(pf.Name)}` — {MarkdownTable.CollapseLines(pf.Reason)}");
                 }
                 foreach (var ff in host.FailedFiles)
                 {
-                    sb.AppendLine($"  - file `{ff.Path}` — {ff.Reason}");
+                    sb.AppendLine($"  - file `{MarkdownTable.EscapeInlineCode(ff.Path)}` — {MarkdownTable.CollapseLines(ff.Reason)}");
                 }
             }
         }

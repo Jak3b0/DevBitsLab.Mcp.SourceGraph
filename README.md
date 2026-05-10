@@ -488,9 +488,13 @@ Status semantics:
 | `degraded` | Workspace failed to open, OR every project failed. Tools return `"scope is degraded: <error>"`.   |
 | `indexing` | Cold index in progress.                                                                           |
 
-Tool fan-out (`scope = "*"`) includes `partial` scopes alongside `ok` scopes;
-only `degraded` is excluded. Querying a `partial` scope by id returns the
-indexed symbols (best-effort); use `list_scopes` to see what's missing.
+Tool fan-out (`scope = "*"`) targets every non-isolated scope regardless
+of status. Healthy and `partial` scopes return query results; `degraded`
+scopes contribute a per-scope error block (`scope is degraded: <message>`)
+to the merged response so operators see why a scope returned no data
+without the call failing as a whole. Querying a `partial` scope by id
+returns the indexed symbols (best-effort); use `list_scopes` to see
+what's missing.
 
 ## Command-line interface
 

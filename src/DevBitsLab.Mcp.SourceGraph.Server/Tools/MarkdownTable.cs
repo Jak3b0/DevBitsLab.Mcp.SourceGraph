@@ -24,4 +24,27 @@ internal static class MarkdownTable
         => string.IsNullOrEmpty(value)
             ? string.Empty
             : value.Replace("|", "\\|").Replace("\r\n", " ").Replace('\n', ' ').Replace('\r', ' ');
+
+    /// <summary>
+    /// Sanitise a value for embedding inside an inline-code span (the <c>`value`</c> form).
+    /// Backticks would terminate the span and bleed the surrounding text into raw markdown;
+    /// embedded line breaks would split the bullet across rows. Replaces backticks with
+    /// the visually-identical <c>ʼ</c> (modifier letter apostrophe, U+02BC) and collapses
+    /// newlines into spaces. Used by <c>list_scopes</c>'s failure-detail sub-list to wrap
+    /// project names and file paths sourced from arbitrary on-disk text.
+    /// </summary>
+    public static string EscapeInlineCode(string? value)
+        => string.IsNullOrEmpty(value)
+            ? string.Empty
+            : value.Replace('`', 'ʼ').Replace("\r\n", " ").Replace('\n', ' ').Replace('\r', ' ');
+
+    /// <summary>
+    /// Sanitise a value for embedding inside a bullet-list line as plain prose. Strips
+    /// embedded line breaks (collapsing into spaces) so a multi-line exception message
+    /// doesn't split the bullet across multiple list items.
+    /// </summary>
+    public static string CollapseLines(string? value)
+        => string.IsNullOrEmpty(value)
+            ? string.Empty
+            : value.Replace("\r\n", " ").Replace('\n', ' ').Replace('\r', ' ');
 }

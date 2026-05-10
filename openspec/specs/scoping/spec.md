@@ -52,7 +52,7 @@ When a scope has `isolated: true`, it SHALL be excluded from `scope = "*"` fan-o
 - **THEN** results come from `frontend` and `backend` only; rows from `vendor` are excluded unless `scope` explicitly includes `"vendor"`
 
 ### Requirement: Partial scope reports per-project failures
-A scope whose cold-index completed and produced symbols for at least one project, but where one or more projects or files failed, SHALL be marked with status `partial`. A partial scope SHALL be queryable: tools targeting `scope = "<id>"` against a partial scope SHALL return whatever symbols were indexed (best-effort); `scope = "*"` fan-out SHALL include partial scopes alongside `ok` scopes (excluding only `indexing` and `degraded`). The registry SHALL persist the failure lists alongside the scope row so `list_scopes` returns accurate failure detail even after a server restart that hasn't yet re-triggered indexing.
+A scope whose cold-index completed and produced symbols for at least one project, but where one or more projects or files failed, SHALL be marked with status `partial`. A partial scope SHALL be queryable: tools targeting `scope = "<id>"` against a partial scope SHALL return whatever symbols were indexed (best-effort); `scope = "*"` fan-out SHALL include partial scopes alongside `ok` scopes (and SHALL also reach `degraded` scopes per the existing `Degraded scope doesn't crash the host` requirement — those contribute a `"scope is degraded: <error>"` block to the merged response instead of running the query). The registry SHALL persist the failure lists alongside the scope row so `list_scopes` returns accurate failure detail even after a server restart that hasn't yet re-triggered indexing.
 
 A scope status SHALL be:
 - `ok` — every project and file indexed cleanly; `failed_projects` and `failed_files` are empty
@@ -73,7 +73,7 @@ A scope status SHALL be:
 #### Scenario: All-projects-fail scope is `degraded`, not `partial`
 - **GIVEN** a solution where every project's compilation fails
 - **WHEN** `LiveIndexService` cold-indexes the scope
-- **THEN** the scope's status is `degraded` (because zero files were indexed); `failed_projects` enumerates every project; tools targeting the scope return the existing degraded-scope error message; `scope = "*"` excludes this scope as today
+- **THEN** the scope's status is `degraded` (because zero files were indexed); `failed_projects` enumerates every project; tools targeting the scope return the existing degraded-scope error message; `scope = "*"` reaches the scope as today (per `Degraded scope doesn't crash the host`) and contributes the per-scope error block to the merged response without breaking the call
 
 ### Requirement: Degraded scope doesn't crash the host
 If a scope's initial index fails with no recoverable output (workspace error, missing solution, every project failed to compile, or an unanticipated exception escaped to the scope-level safety net), the registry SHALL mark that scope as `degraded`; queries against it return an empty result with a status note, while every other scope continues to serve. A scope with at least one project that produced symbols SHALL be marked `partial` instead — `degraded` is reserved for the no-recoverable-output case.

@@ -89,14 +89,9 @@ public sealed class ListScopesPartialOutputTests : IAsyncLifetime
         return host;
     }
 
-    private static (string Prose, ListScopesResult Structured) RenderViaTool(ScopeRouter router)
+    private static async Task<(string Prose, ListScopesResult Structured)> RenderViaTool(ScopeRouter router)
     {
-        // ListScopesAsync is async only because it routes through ToolMetrics.TrackAsync. The
-        // body is synchronous. Wait synchronously here — we know the future is already settled
-        // by the time TrackAsync wraps it (Task.FromResult).
-        var task = ScopeTools.ListScopesAsync(router);
-        task.Wait();
-        var result = task.Result;
+        var result = await ScopeTools.ListScopesAsync(router).ConfigureAwait(false);
 
         // The result has two content blocks in order: (1) the markdown table+failure detail,
         // (2) the audience-restricted metadata block (latency/scopes count). Grab the first
@@ -130,7 +125,7 @@ public sealed class ListScopesPartialOutputTests : IAsyncLifetime
     }
 
     [Fact]
-    public void Partial_scope_renders_failed_projects_and_files_in_prose_and_structured()
+    public async Task Partial_scope_renders_failed_projects_and_files_in_prose_and_structured()
     {
         var router = new ScopeRouter();
         var failedProjects = new[]
@@ -148,7 +143,7 @@ public sealed class ListScopesPartialOutputTests : IAsyncLifetime
             failedProjects: failedProjects,
             failedFiles: failedFiles));
 
-        var (prose, structured) = RenderViaTool(router);
+        var (prose, structured) = await RenderViaTool(router);
 
         // Markdown: status cell shows partial(message); failure sub-list carries each entry.
         prose.Should().Contain("partial (1 project(s), 1 file(s) failed to index.)",
@@ -172,12 +167,12 @@ public sealed class ListScopesPartialOutputTests : IAsyncLifetime
     }
 
     [Fact]
-    public void Healthy_scope_renders_without_failure_sublist_and_with_empty_arrays()
+    public async Task Healthy_scope_renders_without_failure_sublist_and_with_empty_arrays()
     {
         var router = new ScopeRouter();
         router.Register(BuildHost(id: "frontend", status: "ok", statusMessage: null));
 
-        var (prose, structured) = RenderViaTool(router);
+        var (prose, structured) = await RenderViaTool(router);
 
         // Healthy scopes don't trigger the failure sub-list — keeps the prose clean.
         prose.Should().NotContain("**Failed projects / files (last cold index):**",
@@ -194,7 +189,51 @@ public sealed class ListScopesPartialOutputTests : IAsyncLifetime
     }
 
     [Fact]
-    public void Mixed_scope_set_only_emits_failure_sublist_for_partial_scopes()
+    public async Task Failure_sublist_sanitises_backticks_and_newlines_in_names_and_reasons()
+    {
+        // Failure detail lives inside a markdown bullet list with inline-code spans wrapping
+        // names/paths. A backtick inside a name would terminate the span; a newline inside a
+        // reason would split the bullet. The MarkdownTable.EscapeInlineCode / CollapseLines
+        // helpers guard against both.
+        var router = new ScopeRouter();
+        router.Register(BuildHost(
+            id: "backend",
+            status: "partial",
+            statusMessage: "1 project, 1 file failed.",
+            failedProjects: new[]
+            {
+                new ProjectFailure("Has`Backtick.Project", "compilation null"),
+            },
+            failedFiles: new[]
+            {
+                new FileFailure(
+                    "/repo/Quirky.cs",
+                    "Pass 1 walk failed:\nNullReferenceException at line 42\nat call site"),
+            }));
+
+        var (prose, _) = await RenderViaTool(router);
+
+        // Backtick in the project name is replaced with the modifier-letter apostrophe so the
+        // surrounding inline-code span stays intact.
+        prose.Should().Contain("`Hasʼbacktick`".Replace("backtick", "Backtick.Project"),
+            "the backtick in the project name must be neutralised so the inline-code wrapper isn't terminated mid-cell");
+        prose.Should().NotContain("Has`Backtick.Project",
+            "the raw backtick must not survive into the rendered prose");
+
+        // Newlines in the reason are collapsed to spaces so the bullet stays on one line and
+        // doesn't accidentally start a new list item from the second half of the message.
+        var reasonStart = prose.IndexOf("Pass 1 walk failed", StringComparison.Ordinal);
+        reasonStart.Should().BeGreaterThan(-1);
+        var reasonEnd = prose.IndexOf("\n", reasonStart, StringComparison.Ordinal);
+        var reasonLine = reasonEnd > reasonStart ? prose.Substring(reasonStart, reasonEnd - reasonStart) : prose.Substring(reasonStart);
+        reasonLine.Should().Contain("NullReferenceException at line 42",
+            "the second line of the multi-line exception message must be folded into the same bullet, not split off");
+        reasonLine.Should().Contain("at call site",
+            "the third line of the message must also be folded onto the same bullet");
+    }
+
+    [Fact]
+    public async Task Mixed_scope_set_only_emits_failure_sublist_for_partial_scopes()
     {
         var router = new ScopeRouter();
         router.Register(BuildHost(id: "frontend", status: "ok", statusMessage: null));
@@ -204,7 +243,7 @@ public sealed class ListScopesPartialOutputTests : IAsyncLifetime
             statusMessage: "1 project failed.",
             failedProjects: new[] { new ProjectFailure("Bad.Project", "compilation null") }));
 
-        var (prose, structured) = RenderViaTool(router);
+        var (prose, structured) = await RenderViaTool(router);
 
         // Only the partial scope shows a failure entry.
         prose.Should().Contain("**Failed projects / files (last cold index):**");

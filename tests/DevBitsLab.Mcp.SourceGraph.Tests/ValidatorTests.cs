@@ -90,7 +90,8 @@ public sealed class CanonicalKeyValidatorTests
     }
 
     [Theory]
-    [InlineData("python:M:foo")]                       // unknown scheme
+    [InlineData("klingon:M:foo")]                      // truly unknown scheme
+    [InlineData("python:M:foo")]                       // reserved-but-not-enforced
     [InlineData("vbnet:T:Foo")]                        // reserved-but-not-enforced
     [InlineData("vue:component:Header.vue")]           // reserved-but-not-enforced (was previously ts:T:Foo before add-typescript-language-indexer lifted that scheme)
     [InlineData("xaml:element:Views\\Main.xaml#X")]    // backslash forbidden
@@ -135,7 +136,10 @@ public sealed class CanonicalKeyValidatorTests
     [Fact]
     public void Validate_messageDoesNotHintFutureUse_forCompletelyUnknownScheme()
     {
-        var act = () => CanonicalKeyValidator.Validate("python:M:foo", "key");
+        // `klingon` isn't in either accepted-or-reserved-future. The error message should be
+        // a plain "unknown scheme" without the reserved-but-not-yet-enforced hint, so plugin
+        // authors don't get a false signal that their scheme is on a roadmap.
+        var act = () => CanonicalKeyValidator.Validate("klingon:M:foo", "key");
         var ex = act.Should().Throw<ArgumentException>().Which;
         ex.Message.Should().NotContain("reserved for a future language");
     }

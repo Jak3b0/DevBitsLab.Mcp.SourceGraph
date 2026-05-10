@@ -20,11 +20,12 @@ namespace DevBitsLab.Mcp.SourceGraph.Indexing.TreeSitter;
 ///
 /// <para>"Malformed source" surfaces in two distinguishable shapes from
 /// <c>TreeSitter.DotNet</c>: a <c>null</c> tree (binary file masquerading as source) and a
-/// non-null tree containing <c>ERROR</c> nodes (syntactically invalid input). The base
-/// handles both: <c>null</c> trees skip the walk; <c>ERROR</c> nodes are skipped during the
-/// walk because the subclass's <see cref="INodeKindMapper"/> won't recognise them. Either
-/// way the file's <see cref="IndexEvent.FileScanned"/> still fires so the watcher records
-/// the SHA and won't re-scan unchanged content next pass.</para>
+/// non-null tree whose root reports <c>HasError == true</c> (syntactically invalid input).
+/// The base treats both as malformed and skips the walk — partial recovery from an
+/// ERROR-tainted parse tree tends to emit half-formed symbols whose canonical keys collide
+/// with the next clean re-index, which is worse than emitting nothing. Either way the file's
+/// <see cref="IndexEvent.FileScanned"/> still fires so the watcher records the SHA and
+/// doesn't re-scan unchanged content next pass.</para>
 ///
 /// <para>The variation that <em>must</em> live per-language is canonical-key construction
 /// (each language picks its own scheme prefix + lexical-path shape) and reference target
@@ -92,6 +93,15 @@ public abstract class TreeSitterLanguageIndexer<TGrammarConfig> : ILanguageIndex
         if (tree is null)
         {
             Logger.LogDebug("Parser returned null tree for {Path}; treating as empty.", ctx.FilePath);
+        }
+        else if (tree.RootNode.HasError)
+        {
+            // Match XAML's posture for malformed input: a syntactically-invalid tree could be
+            // walked through the mapper, but the partial recovery would emit half-formed
+            // symbols whose canonical keys collide with the next clean re-index. Skip the walk
+            // and let the next file change try again. FileScanned still fires below so the
+            // watcher's SHA cache stays accurate.
+            Logger.LogDebug("Parse tree for {Path} contains ERROR nodes; treating as malformed and emitting empty events.", ctx.FilePath);
         }
         else
         {

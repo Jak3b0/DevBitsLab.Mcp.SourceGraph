@@ -69,6 +69,23 @@ public sealed class TreeSitterLanguageIndexerTests
     }
 
     [Fact]
+    public async Task Malformed_source_with_error_nodes_emits_only_filescanned()
+    {
+        var indexer = new StubJsIndexer();
+        // Tree-sitter recovers from `function ;{` partially — the resulting tree's root
+        // reports HasError = true. The base treats the whole tree as malformed and skips
+        // emitting symbols (matching XAML's posture for malformed input). FileScanned still
+        // fires so the watcher's SHA cache stays accurate.
+        var bytes = Encoding.UTF8.GetBytes("function ;{ this is not js");
+        var ctx = new IndexContext("/repo/src/broken.js", bytes, "test", "/repo");
+
+        var events = await indexer.IndexAsync(ctx, CancellationToken.None);
+
+        events.Should().ContainSingle(e => e is IndexEvent.FileScanned);
+        events.OfType<IndexEvent.SymbolDeclared>().Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task Empty_source_yields_only_filescanned()
     {
         var indexer = new StubJsIndexer();

@@ -1,4 +1,5 @@
 using System.IO;
+using System.Text.Json;
 using DevBitsLab.Mcp.SourceGraph.Indexing.TreeSitter;
 using DevBitsLab.Mcp.SourceGraph.Sdk;
 using Microsoft.Extensions.Logging;
@@ -88,19 +89,7 @@ public sealed class TypeScriptLanguageIndexer : TreeSitterLanguageIndexer<TypeSc
         // different classes would collide on the same `ts:M:foo.ts::tick` key.
         var ancestorPath = BuildContainerLexicalPath(node);
         var fqn = ancestorPath is null ? name : $"{ancestorPath}.{name}";
-
-        string canonicalKey;
-        if (kindPrefix == TypeScriptCanonicalKeys.PrefixProperty && ancestorPath is not null)
-        {
-            // Properties / fields use `#` to separate the type-name from the member-name; the
-            // helper handles the formatting so consumers don't need to remember the convention.
-            canonicalKey = TypeScriptCanonicalKeys.BuildProperty(scheme, repoRelativePath, ancestorPath, name);
-        }
-        else
-        {
-            var lexicalPath = ancestorPath is null ? name : $"{ancestorPath}::{name}";
-            canonicalKey = TypeScriptCanonicalKeys.Build(scheme, kindPrefix, repoRelativePath, lexicalPath);
-        }
+        var canonicalKey = BuildDeclarationCanonicalKey(scheme, kindPrefix, repoRelativePath, ancestorPath, name);
 
         return new IndexEvent.SymbolDeclared(
             canonicalKey: canonicalKey,
@@ -111,6 +100,25 @@ public sealed class TypeScriptLanguageIndexer : TreeSitterLanguageIndexer<TypeSc
             startColumn: col,
             endLine: endLine,
             endColumn: endCol);
+    }
+
+    /// <summary>
+    /// Construct the canonical key for a declaration given its scheme, kind prefix, file path,
+    /// optional container lexical path, and leaf name. Centralised so
+    /// <see cref="OnDeclarationNode"/> and <see cref="TryFindEnclosingDeclarationKey"/> can't
+    /// drift on the formatting rules — JSX edges' source keys must match the declaration's
+    /// emitted SymbolDeclared key exactly or GraphStoreEmitter will drop the edge.
+    /// </summary>
+    private static string BuildDeclarationCanonicalKey(string scheme, string kindPrefix, string repoRelativePath, string? containerLexical, string name)
+    {
+        if (kindPrefix == TypeScriptCanonicalKeys.PrefixProperty && containerLexical is not null)
+        {
+            // Properties / fields use `#` to separate the type-name from the member-name; the
+            // helper handles the formatting so consumers don't need to remember the convention.
+            return TypeScriptCanonicalKeys.BuildProperty(scheme, repoRelativePath, containerLexical, name);
+        }
+        var lexicalPath = containerLexical is null ? name : $"{containerLexical}::{name}";
+        return TypeScriptCanonicalKeys.Build(scheme, kindPrefix, repoRelativePath, lexicalPath);
     }
 
     /// <summary>
@@ -225,11 +233,12 @@ public sealed class TypeScriptLanguageIndexer : TreeSitterLanguageIndexer<TypeSc
         {
             metadata = new Dictionary<string, string>(StringComparer.Ordinal)
             {
-                // JSON-encoded array so consumers can parse structurally and the existing
-                // `payload: { ... }` markdown sub-line renders something sensible. Plain
-                // comma-joined values would round-trip but lose the list shape and break if a
-                // value ever needs an embedded comma.
-                ["props"] = "[" + string.Join(",", props.Select(p => "\"" + p + "\"")) + "]",
+                // JSON-encoded array via JsonSerializer so consumers can parse structurally
+                // and the existing `payload: { ... }` markdown sub-line renders something
+                // sensible. Hand-rolled string concatenation would silently corrupt prop
+                // names containing quotes, backslashes, or other JSON-significant characters
+                // (legal in TS identifiers via `\u00xx` escapes, even if uncommon).
+                ["props"] = JsonSerializer.Serialize(props),
             };
         }
 
@@ -288,7 +297,12 @@ public sealed class TypeScriptLanguageIndexer : TreeSitterLanguageIndexer<TypeSc
                 if (!string.IsNullOrEmpty(name))
                 {
                     var prefix = SelectKindPrefix(mapping.Kind);
-                    return TypeScriptCanonicalKeys.Build(scheme, prefix, repoRelativePath, name);
+                    // The enclosing declaration's canonical key MUST match the
+                    // SymbolDeclared key OnDeclarationNode emits for the same node, otherwise
+                    // GraphStoreEmitter drops every edge whose source we resolve here. Use the
+                    // shared builder + container-aware lexical path so they can't drift.
+                    var containerLexical = BuildContainerLexicalPath(cursor);
+                    return BuildDeclarationCanonicalKey(scheme, prefix, repoRelativePath, containerLexical, name!);
                 }
             }
             cursor = cursor.Parent;

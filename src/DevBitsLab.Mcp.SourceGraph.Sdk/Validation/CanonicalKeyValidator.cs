@@ -16,7 +16,7 @@ namespace DevBitsLab.Mcp.SourceGraph.Sdk.Validation;
 ///
 /// <para>Reserved-but-not-yet-enforced (documented for cross-language joins; emissions using these
 /// schemes are rejected by the host until the corresponding language indexer ships): <c>vbnet</c>,
-/// <c>fsharp</c>, <c>razor</c>, <c>vue</c>, <c>svelte</c>.</para>
+/// <c>fsharp</c>, <c>razor</c>, <c>vue</c>, <c>svelte</c>, <c>python</c>, <c>go</c>, <c>rust</c>.</para>
 /// </summary>
 public static class CanonicalKeyValidator
 {
@@ -39,6 +39,12 @@ public static class CanonicalKeyValidator
         "razor",
         "vue",
         "svelte",
+        // Documented across the live extensibility/spec.md as reserved-for-future-use; listed
+        // here so the validator's error hint mentions "reserved for a future language" rather
+        // than a generic "unknown scheme" when a plugin emits one of these too early.
+        "python",
+        "go",
+        "rust",
     };
 
     /// <summary>

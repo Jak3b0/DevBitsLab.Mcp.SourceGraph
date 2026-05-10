@@ -285,12 +285,25 @@ public static class ToolMetrics
     private static void AppendJsonl(string toolName, object? args, int responseLen, TimeSpan elapsed, bool ok, string? scope)
     {
         if (_logPath is null) return;
+        // Pre-serialise args so request_len reflects the wire-shaped JSON the agent actually sent
+        // (rather than e.g. .ToString() of an anonymous arg bag). Defensive try/catch — args may be
+        // a non-serialisable shape from a misbehaving caller; record 0 rather than skipping the row.
+        int requestLen;
+        try
+        {
+            requestLen = args is null ? 0 : JsonSerializer.Serialize(args).Length;
+        }
+        catch
+        {
+            requestLen = 0;
+        }
         var entry = new
         {
             ts = DateTimeOffset.UtcNow,
             tool = toolName,
             ok,
             ms = elapsed.TotalMilliseconds,
+            request_len = requestLen,
             response_len = responseLen,
             scope,
             args

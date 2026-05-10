@@ -15,8 +15,15 @@ namespace DevBitsLab.Mcp.SourceGraph.Storage;
 public sealed class SqliteScopeRegistry : IScopeRegistry
 {
     // v2 adds failed_projects_json + failed_files_json columns for partial-scope reporting.
-    // The schema migration is destructive (DROP + recreate); failure lists are display-only
-    // so losing them on upgrade is acceptable — they repopulate on the next index pass.
+    // EnsureSchemaAsync's existing version-bump handler does a destructive DROP + recreate of
+    // the entire `scopes` table when the on-disk version trails the current SchemaVersion;
+    // every scope row (id, name, root, status, project_set_json, last_indexed_at, …) is lost
+    // and repopulated by the host's bring-up loop on the next start. That's fine for this
+    // change because LiveIndexService re-upserts every configured scope from `.sourcegraph.json`
+    // on startup, and the failure lists are themselves display-only — they fill back in on
+    // the first cold index after the upgrade. If a future schema change touches a column
+    // whose value is NOT trivially recoverable from config + index, the migration strategy
+    // will need to switch to ALTER TABLE rather than DROP.
     private const int SchemaVersion = 2;
 
     private readonly SqliteConnection _connection;

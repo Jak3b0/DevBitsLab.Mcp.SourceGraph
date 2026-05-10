@@ -328,27 +328,35 @@ public sealed class LiveIndexService : BackgroundService
             }
 
             // Settle status per the decision matrix in design.md §Decision 3:
-            //   - degraded if FilesIndexed == 0 AND there were failures (every project failed)
+            //   - degraded if FilesIndexed == 0 AND there were failures (no usable graph)
             //   - partial if any project or file failed but the scope produced something
             //   - ok if everything indexed cleanly
             // The "no resolvable solution" early return above and the catch block below cover
             // the other degraded paths (workspace open threw, scope has no solution at all).
-            var hasFailures = initial.FailedProjects.Count > 0 || initial.FailedFiles.Count > 0;
+            var failedProjectCount = initial.FailedProjects.Count;
+            var failedFileCount = initial.FailedFiles.Count;
+            var hasFailures = failedProjectCount > 0 || failedFileCount > 0;
             if (initial.FilesIndexed == 0 && hasFailures)
             {
                 host.Status = "degraded";
-                host.StatusMessage = $"All projects failed to compile ({initial.FailedProjects.Count} project(s)).";
+                host.StatusMessage = BuildFailureSummary(
+                    "Cold index produced zero files",
+                    failedProjectCount,
+                    failedFileCount);
                 _logger.LogWarning(
                     "Scope `{Id}` cold index produced zero files; marking degraded ({ProjectFailures} project failures, {FileFailures} file failures)",
-                    scope.Id, initial.FailedProjects.Count, initial.FailedFiles.Count);
+                    scope.Id, failedProjectCount, failedFileCount);
             }
             else if (hasFailures)
             {
                 host.Status = "partial";
-                host.StatusMessage = $"{initial.FailedProjects.Count} project(s), {initial.FailedFiles.Count} file(s) failed to index.";
+                host.StatusMessage = BuildFailureSummary(
+                    "Indexed with failures",
+                    failedProjectCount,
+                    failedFileCount);
                 _logger.LogWarning(
                     "Scope `{Id}` cold index settled to partial: {ProjectFailures} project failures, {FileFailures} file failures",
-                    scope.Id, initial.FailedProjects.Count, initial.FailedFiles.Count);
+                    scope.Id, failedProjectCount, failedFileCount);
             }
             else
             {
@@ -540,6 +548,22 @@ public sealed class LiveIndexService : BackgroundService
             return Path.IsPathRooted(path) ? path : Path.Combine(scope.Root, path);
         }
         return null;
+    }
+
+    /// <summary>
+    /// Build a human-readable summary string for a partial / degraded scope status. Phrases
+    /// the count fragment based on what actually failed: "2 project(s) failed",
+    /// "3 file(s) failed", or "2 project(s), 3 file(s) failed" when both populations are
+    /// non-empty. Avoids the "0 project(s)" wart that a naive interpolation produces when only
+    /// file-level failures occurred.
+    /// </summary>
+    private static string BuildFailureSummary(string prefix, int projectCount, int fileCount)
+    {
+        if (projectCount == 0 && fileCount == 0) return prefix + ".";
+        var parts = new List<string>(2);
+        if (projectCount > 0) parts.Add($"{projectCount} project(s)");
+        if (fileCount > 0) parts.Add($"{fileCount} file(s)");
+        return $"{prefix}: {string.Join(", ", parts)} failed.";
     }
 
     private static ScopeRow ToRow(

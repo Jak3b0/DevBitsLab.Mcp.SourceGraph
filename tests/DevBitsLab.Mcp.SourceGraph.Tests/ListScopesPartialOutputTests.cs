@@ -21,7 +21,7 @@ namespace DevBitsLab.Mcp.SourceGraph.Tests;
 /// <c>FailedFiles</c> and asserts that:
 /// <list type="bullet">
 ///   <item>The status cell renders the partial status + message inline.</item>
-///   <item>A "Failed projects / files (last index)" sub-list is emitted with the failure detail.</item>
+///   <item>A "Failed projects / files (last cold index)" sub-list is emitted with the failure detail.</item>
 ///   <item>The structured output's <c>failed_projects</c> / <c>failed_files</c> arrays carry
 ///         the same data so MCP clients consuming <c>structuredContent</c> see it without
 ///         parsing prose.</item>
@@ -153,7 +153,7 @@ public sealed class ListScopesPartialOutputTests : IAsyncLifetime
         // Markdown: status cell shows partial(message); failure sub-list carries each entry.
         prose.Should().Contain("partial (1 project(s), 1 file(s) failed to index.)",
             "the status cell must surface the status + message inline so operators reading the table see why");
-        prose.Should().Contain("**Failed projects / files (last index):**",
+        prose.Should().Contain("**Failed projects / files (last cold index):**",
             "non-empty failure lists trigger the sub-list section");
         prose.Should().Contain("`Legacy.WebForms`", "failed project name must be in the prose");
         prose.Should().Contain("compilation null", "failed project reason must be in the prose");
@@ -180,7 +180,7 @@ public sealed class ListScopesPartialOutputTests : IAsyncLifetime
         var (prose, structured) = RenderViaTool(router);
 
         // Healthy scopes don't trigger the failure sub-list — keeps the prose clean.
-        prose.Should().NotContain("**Failed projects / files (last index):**",
+        prose.Should().NotContain("**Failed projects / files (last cold index):**",
             "healthy scopes must not emit the failure sub-list section");
         prose.Should().NotContain("partial",
             "healthy scopes must not show partial in the status cell");
@@ -207,10 +207,10 @@ public sealed class ListScopesPartialOutputTests : IAsyncLifetime
         var (prose, structured) = RenderViaTool(router);
 
         // Only the partial scope shows a failure entry.
-        prose.Should().Contain("**Failed projects / files (last index):**");
+        prose.Should().Contain("**Failed projects / files (last cold index):**");
         prose.Should().Contain("`Bad.Project`");
         // The healthy scope's row in the table doesn't get a failure-detail section.
-        var failureSectionStart = prose.IndexOf("**Failed projects / files (last index):**", StringComparison.Ordinal);
+        var failureSectionStart = prose.IndexOf("**Failed projects / files (last cold index):**", StringComparison.Ordinal);
         prose.Substring(failureSectionStart).Should().NotContain("- `frontend`:",
             "the healthy scope must not appear under the failure sub-list");
 

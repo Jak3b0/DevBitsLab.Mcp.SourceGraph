@@ -60,17 +60,22 @@ public static class ScopeTools
             var statusCell = (host.Status == "degraded" || host.Status == "partial") && !string.IsNullOrEmpty(host.StatusMessage)
                 ? $"{host.Status} ({host.StatusMessage})"
                 : host.Status;
-            sb.AppendLine($"| `{scope.Id}` | {scope.Name} | {statusCell} | {(scope.Isolated ? "yes" : "no")} | {projectCount} | {lastIndexed} | `{scope.Root}` |");
+            // Status messages, names, and roots can contain user data (exception messages, file
+            // paths from `.sourcegraph.json`). A literal `|` or newline in any cell would break
+            // the GFM table renderer; escape both before interpolation.
+            sb.AppendLine($"| `{scope.Id}` | {EscapeCell(scope.Name)} | {EscapeCell(statusCell)} | {(scope.Isolated ? "yes" : "no")} | {projectCount} | {lastIndexed} | `{scope.Root.Replace("|", "\\|")}` |");
         }
 
         // Per-scope failure detail: only emit when at least one scope has non-empty failure
         // lists. Healthy installs see a clean table with no trailing failure section. The
         // markdown rendering surfaces the same data carried in StructuredContent so operators
-        // reading the prose see the attribution without inspecting the typed shape.
+        // reading the prose see the attribution without inspecting the typed shape. Note: the
+        // failure lists reflect the most recent COLD index — watcher-driven incremental
+        // re-indexes don't currently refresh them. Restart the server to force a refresh.
         if (hosts.Any(h => h.FailedProjects.Count > 0 || h.FailedFiles.Count > 0))
         {
             sb.AppendLine();
-            sb.AppendLine("**Failed projects / files (last index):**");
+            sb.AppendLine("**Failed projects / files (last cold index):**");
             foreach (var host in hosts)
             {
                 if (host.FailedProjects.Count == 0 && host.FailedFiles.Count == 0) continue;
@@ -152,4 +157,13 @@ public static class ScopeTools
         Core.ScopeProjectSet.Paths g => g.Globs.Count,
         _ => 0,
     };
+
+    /// <summary>
+    /// Sanitise a value for inclusion in a GFM table cell. Escapes <c>|</c> as <c>\|</c> and
+    /// collapses any newline / carriage-return into a single space — both characters break the
+    /// table renderer when interpolated raw, and exception messages or status strings can
+    /// legitimately contain either.
+    /// </summary>
+    private static string EscapeCell(string value)
+        => value.Replace("|", "\\|").Replace("\r\n", " ").Replace('\n', ' ').Replace('\r', ' ');
 }

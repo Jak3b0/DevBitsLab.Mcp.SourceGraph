@@ -138,8 +138,14 @@ public static class FailureMessage
     /// characters with a trailing ellipsis (<c>…</c>) so callers can tell the value was cut.
     /// Null or empty input is normalised to the empty string.
     /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// Thrown when <paramref name="max"/> is less than 2. Truncation needs at least one
+    /// content character plus the ellipsis suffix, so smaller values can't produce a
+    /// meaningful result.
+    /// </exception>
     public static string Truncate(string? message, int max = MaxReasonLength)
     {
+        ArgumentOutOfRangeException.ThrowIfLessThan(max, 2);
         if (string.IsNullOrEmpty(message)) return string.Empty;
         if (message.Length <= max) return message;
         return message.AsSpan(0, max - 1).ToString() + "…";

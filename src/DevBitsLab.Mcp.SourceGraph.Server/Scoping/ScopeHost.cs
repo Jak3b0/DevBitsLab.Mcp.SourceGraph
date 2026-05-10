@@ -65,13 +65,18 @@ public sealed class ScopeHost : IAsyncDisposable
     public string? StatusMessage { get; set; }
     /// <summary>
     /// Projects whose Roslyn <c>Compilation</c> could not be obtained during the most recent
-    /// cold/incremental index. Populated by <c>LiveIndexService.RunInitialIndexAsync</c> from
+    /// COLD index. Populated by <c>LiveIndexService.RunInitialIndexAsync</c> from
     /// <c>IndexResult.FailedProjects</c>; surfaced via <c>list_scopes</c> and persisted to
-    /// <c>_meta.db</c> alongside the scope row. Empty for healthy scopes.
+    /// <c>_meta.db</c> alongside the scope row. Empty for healthy scopes. Note: watcher-driven
+    /// incremental re-indexes don't currently refresh this list — restart the server to force
+    /// a refresh.
     /// </summary>
     public IReadOnlyList<ProjectFailure> FailedProjects { get; set; } = Array.Empty<ProjectFailure>();
     /// <summary>
-    /// Files whose Pass 1 walk threw during the most recent index. Empty for healthy scopes.
+    /// Files whose Pass 1 walk threw during the most recent COLD index. Empty for healthy
+    /// scopes. Like <see cref="FailedProjects"/>, this reflects only the cold-index pass; a
+    /// watcher-driven re-index that would re-attempt the failed file does not currently
+    /// update this list.
     /// </summary>
     public IReadOnlyList<FileFailure> FailedFiles { get; set; } = Array.Empty<FileFailure>();
     /// <summary>Active solution watcher, set by <c>LiveIndexService</c> when watching is enabled.</summary>

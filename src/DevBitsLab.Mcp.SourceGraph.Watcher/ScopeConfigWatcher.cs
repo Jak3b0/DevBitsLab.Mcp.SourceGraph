@@ -88,13 +88,15 @@ public sealed class ScopeConfigWatcher : IAsyncDisposable
                     exists = File.Exists(path);
                     writeUtc = exists ? File.GetLastWriteTimeUtc(path) : DateTime.MinValue;
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException or System.Security.SecurityException)
                 {
-                    // The probe (File.Exists + GetLastWriteTimeUtc) can throw IOException,
-                    // UnauthorizedAccessException, ArgumentException, etc. Treat any failure as
+                    // Filtered catch covers everything `File.Exists` and `File.GetLastWriteTimeUtc`
+                    // realistically throw on a misbehaving filesystem. Treat any of these as
                     // "state unchanged for this tick" so the loop retries on the next tick rather
-                    // than dying. The class-level reliability contract ("watcher always survives")
-                    // overrides the cost of the broad catch.
+                    // than dying. Genuinely unforeseen exception types (NRE from a runtime bug,
+                    // OOM, etc.) are intentionally left to propagate — the class-level
+                    // reliability contract is about resilience to environmental flakiness, not
+                    // masking real bugs.
                     _logger.LogDebug(ex, "Polling .sourcegraph.json failed; will retry on next tick");
                     exists = lastExists;
                     writeUtc = lastWriteUtc;
@@ -145,10 +147,19 @@ public sealed class ScopeConfigWatcher : IAsyncDisposable
                             // the same mtime as still-changed and retry the load.
                             _logger.LogInformation(ex, ".sourcegraph.json read failed; will retry on next poll");
                         }
-                        catch (Exception ex)
+                        catch (Exception ex) // lgtm[cs/catch-of-all-exceptions]
                         {
-                            // Unforeseen exception: keep the loop alive (the watcher must never
-                            // permanently die) but don't commit the cursor — retry next tick.
+                            // Defence-in-depth last-resort catch. The two filtered catches above
+                            // cover every documented exception type from `ScopeConfigLoader.Load`
+                            // (parse, I/O, permission). This catch exists to keep the watcher
+                            // alive on a *truly unforeseen* exception type (e.g. a future SDK
+                            // change to JsonException semantics, an unhandled wrapper somewhere
+                            // in the dependency chain) — without it, the loop would die and
+                            // silently disable live config reload until process restart, which
+                            // is the failure mode this entire round of fixes was aimed at. The
+                            // cursor is intentionally not committed so the next tick still sees
+                            // mtime-changed and retries the load. Logged at error level so the
+                            // failure is visible in stderr / the JSONL log.
                             _logger.LogError(ex, ".sourcegraph.json load raised unexpectedly; will retry on next poll");
                         }
                     }

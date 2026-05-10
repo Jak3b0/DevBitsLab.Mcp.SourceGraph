@@ -238,13 +238,15 @@ public sealed class LiveIndexService : BackgroundService
         // host against `diff.Removed.Any(...)` — that pattern is O(n*m) and allocates an
         // intermediate list per save. Looking up by id via `TryGet` keeps the tear-down path
         // linear in the number of removed scopes, regardless of how many other scopes are
-        // registered.
-        foreach (var removed in diff.Removed)
+        // registered. `OfType<ScopeHost>()` filters out the lookup-miss case (a Removed entry
+        // whose id was never registered, e.g., live-add+live-remove during cold-index) without
+        // needing an explicit if-guard inside the foreach body.
+        var removedHosts = diff.Removed
+            .Select(r => _router.TryGet(r.Id, out var host) ? host : null)
+            .OfType<ScopeHost>();
+        foreach (var host in removedHosts)
         {
-            if (_router.TryGet(removed.Id, out var host))
-            {
-                await TearDownScopeAsync(host, TimeSpan.FromMilliseconds(_config.ScopeReplaceGraceMs), ct).ConfigureAwait(false);
-            }
+            await TearDownScopeAsync(host, TimeSpan.FromMilliseconds(_config.ScopeReplaceGraceMs), ct).ConfigureAwait(false);
         }
 
         foreach (var scope in diff.Added)

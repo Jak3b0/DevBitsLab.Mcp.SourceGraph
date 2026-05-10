@@ -14,13 +14,16 @@ namespace DevBitsLab.Mcp.SourceGraph.Tests;
 /// <summary>
 /// End-to-end coverage for <see cref="MultiScopeReadOnlyConnection.OpenAsync"/> against a
 /// hand-built repo layout (<c>.sourcegraph/_meta.db</c> + <c>.sourcegraph/scopes/&lt;id&gt;.db</c>).
-/// Exercises every scenario from <c>openspec/changes/add-graph-query/specs/storage/spec.md</c>'s
-/// <i>Read-only multi-scope attached connection helper</i> requirement:
+/// Exercises every scenario from the live storage spec's
+/// <i>Read-only multi-scope attached connection helper</i> requirement (folded in by the
+/// archived <c>add-graph-query</c> change):
 ///   - default <c>"*"</c> excludes isolated scopes
 ///   - explicit naming includes isolated scopes
 ///   - comma-list filter is honoured exactly
-///   - <c>?mode=ro</c> on each per-scope ATTACH rejects writes (<c>SQLITE_READONLY</c>)
+///   - <c>PRAGMA query_only = 1</c> on the connection rejects writes (<c>SQLITE_READONLY</c>)
 ///   - resolved-count overflow throws <see cref="ScopeAttachLimitExceededException"/>
+///   - empty resolved set throws <see cref="ArgumentException"/>(<c>scopeFilter</c>)
+///   - missing per-scope DB file throws <see cref="FileNotFoundException"/>
 ///   - per-call connections do not share TEMP-view state
 ///
 /// <para>The test layout is throwaway temp directories per fixture — each scope DB is built
@@ -105,10 +108,10 @@ public sealed class MultiScopeReadOnlyConnectionTests : IAsyncLifetime
         await using var conn = await MultiScopeReadOnlyConnection.OpenAsync(
             _registry!, _repoRoot, scopeFilter: "frontend");
 
-        // Try a direct INSERT against the attached scope DB. The `?mode=ro` URI bound at
-        // ATTACH time is the safety bound for the per-scope DBs — the operation should be
-        // rejected with SQLITE_READONLY (8), not silently succeed and not leak past the
-        // in-memory boundary.
+        // Try a direct INSERT against the attached scope DB. `PRAGMA query_only = 1` set on
+        // the connection (after the TEMP VIEW DDL is applied) is the safety bound for every
+        // attached DB — the operation should be rejected with SQLITE_READONLY (8), not
+        // silently succeed and not leak past the in-memory boundary.
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = "INSERT INTO frontend.symbols(id, canonical_key, name, fqn, kind_name, file_id, start_line, start_col, end_line, end_col, accessibility) "
                         + "VALUES (999, 'evil', 'evil', 'evil', 'class', 1, 1, 1, 1, 1, 6);";

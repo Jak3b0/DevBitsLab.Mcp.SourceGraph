@@ -297,11 +297,12 @@ public static class MultiScopeReadOnlyConnection
     /// the same comments natively, but only when the token references survive intact through
     /// to <c>sqlite3_prepare_v2</c>; once the substitution runs, they don't.</para>
     ///
-    /// <para>When <paramref name="resolved"/> is empty the per-view UNION block becomes a
-    /// degenerate <c>SELECT</c> that yields zero rows but matches the column shape of the
-    /// declared view. This keeps <c>v_symbols</c> / <c>v_files</c> / <c>v_edges</c> /
-    /// <c>v_references</c> queryable even when the scope filter resolves to nothing — agents
-    /// can probe the schema without hitting a hard error.</para>
+    /// <para>The empty-resolved case is unreachable here: <see cref="OpenAsync"/>'s
+    /// empty-resolution guard throws <see cref="ArgumentException"/> with
+    /// <c>ParamName = "scopeFilter"</c> before reaching this method. Tool bodies catch
+    /// that exception and surface a structured <c>no_scopes</c> error with a clear
+    /// "register a scope" hint — agents probing the schema with no scopes attached get
+    /// an actionable error rather than a silently-empty view set.</para>
     /// </remarks>
     private static string BuildViewDdl(IReadOnlyList<string> resolved)
     {

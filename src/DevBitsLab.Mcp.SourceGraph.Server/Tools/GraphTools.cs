@@ -2683,7 +2683,8 @@ public static class GraphTools
         }
         catch (ScopeAttachLimitExceededException ex)
         {
-            return BuildQueryGraphErrorResult(
+            return BuildToolErrorResult(
+                toolName: "describe_schema",
                 error: "scope_overflow",
                 message: ex.Message,
                 hint: "narrow the scope filter (e.g. `scope='backend,frontend'`)",
@@ -2697,7 +2698,8 @@ public static class GraphTools
         }
         catch (ArgumentException ex) when (ex.ParamName == "scopeFilter")
         {
-            return BuildQueryGraphErrorResult(
+            return BuildToolErrorResult(
+                toolName: "describe_schema",
                 error: "no_scopes",
                 message: ex.Message,
                 hint: "register a scope (or name an isolated one explicitly) before calling describe_schema",
@@ -2706,7 +2708,8 @@ public static class GraphTools
         }
         catch (FileNotFoundException ex)
         {
-            return BuildQueryGraphErrorResult(
+            return BuildToolErrorResult(
+                toolName: "describe_schema",
                 error: "scope_db_missing",
                 message: ex.Message,
                 hint: "re-index the scope, remove its registry entry, or restore the file",
@@ -2843,7 +2846,7 @@ public static class GraphTools
         CancellationToken ct = default) =>
         ToolMetrics.TrackAsync(
             "query_graph",
-            new { sql, scope, hasParams = parameters?.Count ?? 0 },
+            new { sql, scope, paramCount = parameters?.Count ?? 0 },
             () => QueryGraphImpl(registry, repoInfo, queryOptions, sql, parameters, scope ?? "*", ct));
 
     private static async Task<CallToolResult> QueryGraphImpl(
@@ -2867,7 +2870,8 @@ public static class GraphTools
         }
         catch (ScopeAttachLimitExceededException ex)
         {
-            return BuildQueryGraphErrorResult(
+            return BuildToolErrorResult(
+                toolName: "query_graph",
                 error: "scope_overflow",
                 message: ex.Message,
                 hint: "narrow the scope filter (e.g. `scope='backend,frontend'`)",
@@ -2884,7 +2888,8 @@ public static class GraphTools
             // Empty scope set — `*` against an all-isolated registry, or a comma-list that
             // resolved to nothing. The MultiScopeReadOnlyConnection message carries the
             // diagnosis (zero scopes vs all-isolated); pass it through verbatim as the hint.
-            return BuildQueryGraphErrorResult(
+            return BuildToolErrorResult(
+                toolName: "query_graph",
                 error: "no_scopes",
                 message: ex.Message,
                 hint: "register a scope (or name an isolated one explicitly) before calling query_graph",
@@ -2895,7 +2900,8 @@ public static class GraphTools
         {
             // A scope is registered but its DB file is missing — re-index, remove the registry
             // entry, or restore from backup. The exception message names the scope and path.
-            return BuildQueryGraphErrorResult(
+            return BuildToolErrorResult(
+                toolName: "query_graph",
                 error: "scope_db_missing",
                 message: ex.Message,
                 hint: "re-index the scope, remove its registry entry, or restore the file",
@@ -2906,7 +2912,35 @@ public static class GraphTools
 
         try
         {
-            // Step 2 — single-statement enforcement. Split on top-level `;` (string-literal +
+            // Step 2a — statement-type enforcement. The contract says SELECT or WITH; reject
+            // PRAGMA / EXPLAIN / VACUUM / ATTACH / DETACH / etc. before they reach SQLite even
+            // though PRAGMA query_only would let read-only ones pass at the engine level. The
+            // structured `read_only` error is the closest match in the existing error vocabulary
+            // — agents that hit it learn "this tool only runs queries, not statements".
+            var firstKeyword = SingleStatementCheck.GetFirstKeyword(sql);
+            if (firstKeyword is null)
+            {
+                return BuildToolErrorResult(
+                    toolName: "query_graph",
+                    error: "read_only",
+                    message: "Empty SQL statement (only whitespace and/or comments).",
+                    hint: "query_graph is read-only; use a SELECT or WITH statement",
+                    scope: scope,
+                    elapsedMs: sw.ElapsedMilliseconds);
+            }
+            if (firstKeyword is not "SELECT" and not "WITH")
+            {
+                return BuildToolErrorResult(
+                    toolName: "query_graph",
+                    error: "read_only",
+                    message: $"query_graph only accepts SELECT and WITH statements; got `{firstKeyword}`. PRAGMA / EXPLAIN / VACUUM / ATTACH and write statements are not supported.",
+                    hint: "query_graph is read-only; use a SELECT or WITH statement",
+                    scope: scope,
+                    elapsedMs: sw.ElapsedMilliseconds,
+                    extras: new Dictionary<string, object?> { ["first_keyword"] = firstKeyword });
+            }
+
+            // Step 2b — single-statement enforcement. Split on top-level `;` (string-literal +
             // line-comment aware) and reject if any non-whitespace remains after the first
             // statement. See SingleStatementCheck for the rationale.
             var leftover = SingleStatementCheck.GetLeftoverAfterFirstStatement(sql);
@@ -3028,7 +3062,8 @@ public static class GraphTools
         }
         catch (MultiStatementRejectedException ex)
         {
-            return BuildQueryGraphErrorResult(
+            return BuildToolErrorResult(
+                toolName: "query_graph",
                 error: "multi_statement",
                 message: ex.Message,
                 hint: "send one SELECT/WITH statement per call",
@@ -3043,7 +3078,8 @@ public static class GraphTools
         }
         catch (SqliteException ex) when (IsReadOnlyError(ex))
         {
-            return BuildQueryGraphErrorResult(
+            return BuildToolErrorResult(
+                toolName: "query_graph",
                 error: "read_only",
                 message: ex.Message,
                 hint: "query_graph is read-only; use a SELECT or WITH statement",
@@ -3056,7 +3092,8 @@ public static class GraphTools
         {
             // Statement timeout — Microsoft.Data.Sqlite's CommandTimeout calls sqlite3_interrupt
             // on timer expiry, which surfaces as SQLITE_INTERRUPT (9) on the next progress callback.
-            return BuildQueryGraphErrorResult(
+            return BuildToolErrorResult(
+                toolName: "query_graph",
                 error: "timeout",
                 message: ex.Message,
                 hint: "narrow your WHERE clause or raise --query-timeout-seconds",
@@ -3065,7 +3102,8 @@ public static class GraphTools
         }
         catch (SqliteException ex)
         {
-            return BuildQueryGraphErrorResult(
+            return BuildToolErrorResult(
+                toolName: "query_graph",
                 error: "sqlite",
                 message: ex.Message,
                 hint: "check your SQL against describe_schema",
@@ -3142,13 +3180,20 @@ public static class GraphTools
     }
 
     /// <summary>
-    /// Build a structured-error <see cref="CallToolResult"/> for <c>query_graph</c>. Wraps the
-    /// inline JSON shape <c>{ "error": "...", "hint": "...", ... }</c> in a JsonElement via the
-    /// reflection-based serializer (cold path; only on error). The prose carries
-    /// <c>🌿 query_graph error: type: message</c> so the agent reads a clear failure reason
-    /// even before parsing structured content.
+    /// Build a structured-error <see cref="CallToolResult"/> for either <c>query_graph</c> or
+    /// <c>describe_schema</c>. Wraps the inline JSON shape
+    /// <c>{ "error": "...", "hint": "...", ... }</c> in a JsonElement via the reflection-based
+    /// serializer (cold path; only on error). The prose carries
+    /// <c>🌿 &lt;tool_name&gt; error: type: message</c> so the agent reads a clear failure
+    /// reason — naming the tool that errored — even before parsing structured content.
+    ///
+    /// Note that on error <c>StructuredContent</c> intentionally carries the error envelope
+    /// rather than the tool's declared <c>OutputSchemaType</c>; the MCP convention is that
+    /// <c>IsError = true</c> signals a different shape, so strict-schema clients gate
+    /// validation on <c>IsError</c>.
     /// </summary>
-    private static CallToolResult BuildQueryGraphErrorResult(
+    private static CallToolResult BuildToolErrorResult(
+        string toolName,
         string error,
         string message,
         string hint,
@@ -3181,7 +3226,7 @@ public static class GraphTools
             IsError = true,
             Content = new List<ContentBlock>
             {
-                new TextContentBlock { Text = $"{leaf}query_graph error: {error}: {message}" },
+                new TextContentBlock { Text = $"{leaf}{toolName} error: {error}: {message}" },
                 AudienceMetadata.Build(
                     scopeId: scope,
                     latencyMs: elapsedMs,
@@ -3252,6 +3297,56 @@ public static class GraphTools
 /// </summary>
 internal static class SingleStatementCheck
 {
+    /// <summary>
+    /// Return the first SQL keyword (uppercased ASCII) after skipping leading whitespace,
+    /// <c>--</c> line comments, and <c>/* … */</c> block comments. Returns <c>null</c> when
+    /// the input is empty or contains only whitespace / comments. Used by <c>query_graph</c>
+    /// to enforce the contract that the statement begins with <c>SELECT</c> or <c>WITH</c>
+    /// (rather than <c>PRAGMA</c>, <c>EXPLAIN</c>, <c>VACUUM</c>, or any other read-only-ish
+    /// statement that the connection's <c>PRAGMA query_only = 1</c> would let through but
+    /// the spec doesn't promise to support).
+    /// </summary>
+    public static string? GetFirstKeyword(string sql)
+    {
+        if (string.IsNullOrEmpty(sql)) return null;
+
+        var i = 0;
+        var len = sql.Length;
+        while (i < len)
+        {
+            var c = sql[i];
+
+            // Skip whitespace.
+            if (char.IsWhiteSpace(c)) { i++; continue; }
+
+            // Skip line comments: -- … to EOL.
+            if (c == '-' && i + 1 < len && sql[i + 1] == '-')
+            {
+                i += 2;
+                while (i < len && sql[i] != '\n') i++;
+                continue;
+            }
+
+            // Skip block comments: /* … */
+            if (c == '/' && i + 1 < len && sql[i + 1] == '*')
+            {
+                i += 2;
+                while (i + 1 < len && !(sql[i] == '*' && sql[i + 1] == '/')) i++;
+                i = Math.Min(i + 2, len);
+                continue;
+            }
+
+            // First non-whitespace, non-comment character — start of a keyword. Walk the
+            // contiguous identifier characters. SQL keywords are ASCII letters; we collect
+            // until we hit whitespace, punctuation, or end-of-input, then uppercase.
+            var start = i;
+            while (i < len && (char.IsAsciiLetter(sql[i]) || sql[i] == '_')) i++;
+            if (i == start) return null;
+            return sql[start..i].ToUpperInvariant();
+        }
+        return null;
+    }
+
     public static string? GetLeftoverAfterFirstStatement(string sql)
     {
         if (string.IsNullOrEmpty(sql)) return null;

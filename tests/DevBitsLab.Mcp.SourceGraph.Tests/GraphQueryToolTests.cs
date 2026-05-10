@@ -389,6 +389,69 @@ public sealed class GraphQueryToolTests : IAsyncLifetime, IDisposable
         error.GetProperty("message").GetString().Should().Contain("no_such_view");
     }
 
+    [Theory]
+    [InlineData("PRAGMA table_info(v_symbols)", "PRAGMA")]
+    [InlineData("EXPLAIN QUERY PLAN SELECT * FROM v_symbols", "EXPLAIN")]
+    [InlineData("VACUUM", "VACUUM")]
+    [InlineData("ATTACH DATABASE 'evil.db' AS evil", "ATTACH")]
+    [InlineData("INSERT INTO v_symbols(name) VALUES ('x')", "INSERT")]
+    [InlineData("UPDATE v_symbols SET name='x'", "UPDATE")]
+    [InlineData("DROP VIEW v_symbols", "DROP")]
+    public async Task QueryGraph_nonSelectFirstKeyword_isRejectedAsReadOnly(string sql, string expectedKeyword)
+    {
+        // The contract is "SELECT or WITH". Anything else surfaces as `read_only` with a
+        // hint that names the offending keyword — even if PRAGMA query_only would let
+        // some of these statements through at the engine level.
+        var opts = new GraphQueryOptions(TimeoutSeconds: 5, RowLimit: 5000);
+        var result = await GraphTools.QueryGraphAsync(
+            _registry!, new RepoRootInfo(_repoRoot), opts,
+            sql: sql, parameters: null, scope: "*", ct: CancellationToken.None);
+
+        result.IsError.Should().BeTrue();
+        var error = result.StructuredContent!.Value;
+        error.GetProperty("error").GetString().Should().Be("read_only");
+        error.GetProperty("first_keyword").GetString().Should().Be(expectedKeyword);
+        error.GetProperty("message").GetString().Should().Contain(expectedKeyword);
+    }
+
+    [Theory]
+    [InlineData("SELECT 1")]
+    [InlineData("select 1")]
+    [InlineData("SeLeCt 1")]
+    [InlineData("WITH x AS (SELECT 1) SELECT * FROM x")]
+    [InlineData("with X as (select 1) select * from X")]
+    [InlineData("   SELECT 1   ")]
+    [InlineData("-- leading comment\nSELECT 1")]
+    [InlineData("/* block */ SELECT 1")]
+    [InlineData("/* nested\n   multi-line\n   block */ WITH t(x) AS (VALUES(1)) SELECT * FROM t")]
+    public async Task QueryGraph_validFirstKeywordVariants_arePassedThrough(string sql)
+    {
+        // SELECT and WITH (case-insensitive) survive the keyword gate. Leading whitespace,
+        // line comments, and block comments are skipped before keyword detection.
+        var opts = new GraphQueryOptions(TimeoutSeconds: 5, RowLimit: 5000);
+        var result = await GraphTools.QueryGraphAsync(
+            _registry!, new RepoRootInfo(_repoRoot), opts,
+            sql: sql, parameters: null, scope: "*", ct: CancellationToken.None);
+
+        result.IsError.Should().NotBe(true,
+            "SELECT / WITH (any case, optionally preceded by whitespace and comments) is the contract");
+    }
+
+    [Fact]
+    public async Task QueryGraph_emptyOrCommentOnly_returnsReadOnlyError()
+    {
+        var opts = new GraphQueryOptions(TimeoutSeconds: 5, RowLimit: 5000);
+        var result = await GraphTools.QueryGraphAsync(
+            _registry!, new RepoRootInfo(_repoRoot), opts,
+            sql: "   -- only a comment\n  /* and another */  ",
+            parameters: null, scope: "*", ct: CancellationToken.None);
+
+        result.IsError.Should().BeTrue();
+        var error = result.StructuredContent!.Value;
+        error.GetProperty("error").GetString().Should().Be("read_only");
+        error.GetProperty("message").GetString().Should().Contain("Empty SQL statement");
+    }
+
     // ─── proposal worked example + multi-scope shape ──────────────────────────────────
 
     [Fact]

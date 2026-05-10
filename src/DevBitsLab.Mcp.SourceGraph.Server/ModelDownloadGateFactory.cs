@@ -28,7 +28,8 @@ internal static class ModelDownloadGateFactory
         EmbeddingModelInfo modelInfo,
         bool embeddingsEnabled,
         bool noModelDownload,
-        ILogger logger)
+        ILogger logger,
+        CancellationToken cancellationToken = default)
     {
         if (!embeddingsEnabled) return ModelDownloadGate.Open();
 
@@ -50,11 +51,16 @@ internal static class ModelDownloadGateFactory
             ? DefaultEmbeddingModel.Manifest
             : new[] { new ModelFile("model.onnx"), new ModelFile("tokenizer.json") };
 
+        // Pass the cancellation token to both Task.Run and EnsureAsync so a host shutdown can
+        // tear the in-flight HTTP/IO work down promptly. Awaiters of Ready (LiveIndexService,
+        // EmbeddingsHostedService) honour the same token at their await sites, so a cancelled
+        // gate unblocks them via OperationCanceledException — the documented contract for
+        // shutdown.
         var task = Task.Run(async () =>
         {
             try
             {
-                await store.EnsureAsync(modelInfo.ModelId, manifest, default).ConfigureAwait(false);
+                await store.EnsureAsync(modelInfo.ModelId, manifest, cancellationToken).ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -70,7 +76,7 @@ internal static class ModelDownloadGateFactory
                     "Set --no-embeddings to silence this warning, or pre-populate the cache and retry.",
                     modelInfo.ModelId, store.DirectoryFor(modelInfo.ModelId));
             }
-        });
+        }, cancellationToken);
         return new ModelDownloadGate(task);
     }
 }

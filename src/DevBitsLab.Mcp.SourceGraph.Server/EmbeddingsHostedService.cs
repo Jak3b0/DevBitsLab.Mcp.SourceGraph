@@ -46,7 +46,10 @@ public sealed class EmbeddingsHostedService : BackgroundService
     {
         // Wait for the auto-downloader to finish before probing IsAvailable (the probe is sticky).
         // For bypassed installs the gate is pre-completed, so this is free.
-        await _modelDownloadGate.Ready.ConfigureAwait(false);
+        // Honour stoppingToken so a host shutdown during cold-start doesn't hang the worker
+        // on the gate. WaitAsync throws OperationCanceledException on shutdown; the catch
+        // below absorbs it as the documented exit shape.
+        await _modelDownloadGate.Ready.WaitAsync(stoppingToken).ConfigureAwait(false);
 
         if (!_store.IsAvailable)
         {

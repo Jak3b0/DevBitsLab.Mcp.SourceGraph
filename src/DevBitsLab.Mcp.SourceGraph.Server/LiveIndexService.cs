@@ -419,8 +419,10 @@ public sealed class LiveIndexService : BackgroundService
             // IsAvailable probe is sticky (it caches the answer of its initial cache check), so
             // probing before the download lands would permanently disable embeddings for this
             // session. Bypassed installs (--no-embeddings or --no-model-download with empty
-            // cache) wire an already-completed gate, so this await is free.
-            await _modelDownloadGate.Ready.ConfigureAwait(false);
+            // cache) wire an already-completed gate, so this await is free. WaitAsync(ct)
+            // honours scope-prep cancellation so a shutdown during cold-start doesn't block on
+            // the in-flight download.
+            await _modelDownloadGate.Ready.WaitAsync(ct).ConfigureAwait(false);
             IEmbeddingsRequestSink indexerSink;
             if (embeddingsStore.IsAvailable && _embeddingGenerator.IsAvailable)
             {

@@ -56,8 +56,11 @@ public static class EmbeddingsTools
                 var status = await manager.PullAsync(modelId).ConfigureAwait(false);
                 return BuildStatusResult(status, verifying: false, prefix: "Pull complete.", sw);
             }
-            catch (DevBitsLab.Mcp.SourceGraph.Embeddings.ModelDownloadException ex)
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
+                // Surface ModelDownloadException, IO/permission errors during file create/move,
+                // and any other download-path failure as a structured tool error rather than
+                // bubbling out as an unhandled tool failure. Cancellation still propagates.
                 return BuildErrorResult($"Pull failed: {ex.Message}", sw);
             }
         });
@@ -81,6 +84,16 @@ public static class EmbeddingsTools
             catch (ArgumentException ex)
             {
                 return BuildErrorResult(ex.Message, sw);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // Catch IO / UnauthorizedAccess / etc. that surface when the cache directory
+                // is locked (notably on Windows when the live server still holds an open handle
+                // to the ONNX file). Surface as a structured error with a hint rather than an
+                // unhandled tool failure. Cancellation still propagates.
+                return BuildErrorResult(
+                    $"Remove failed: {ex.Message}. The model may be locked by a running server — stop it and retry.",
+                    sw);
             }
         });
 

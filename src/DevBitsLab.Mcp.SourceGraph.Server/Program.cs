@@ -161,7 +161,10 @@ static async Task<int> RunServeAsync(CommandLine cli)
             sp.GetRequiredService<EmbeddingModelInfo>(),
             embeddingsEnabled,
             noModelDownload,
-            sp.GetRequiredService<ILogger<ModelStore>>()));
+            sp.GetRequiredService<ILogger<ModelStore>>(),
+            // Plumb the host's shutdown signal so an in-flight download is cancelled when the
+            // host stops, instead of holding shutdown until HTTP completes.
+            sp.GetRequiredService<Microsoft.Extensions.Hosting.IHostApplicationLifetime>().ApplicationStopping));
 
     // Shared call site for the embedding-cache configuration verbs. Both the long-running MCP
     // tools (resolved from DI here) and the one-shot CLI router (which builds its own instance)

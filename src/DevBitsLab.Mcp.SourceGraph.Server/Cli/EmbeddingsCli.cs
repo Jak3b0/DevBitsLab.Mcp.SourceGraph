@@ -63,8 +63,11 @@ internal static class EmbeddingsCli
                 PrintStatus(status, verifying: false);
                 return 0;
             }
-            catch (ModelDownloadException ex)
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
+                // Surface ModelDownloadException, IO/permission errors during file create/move,
+                // and any other download-path failure as a clean exit-1 with a stderr message
+                // rather than an unhandled stack trace.
                 await Console.Error.WriteLineAsync($"error: {ex.Message}").ConfigureAwait(false);
                 return 1;
             }
@@ -84,18 +87,30 @@ internal static class EmbeddingsCli
         var mgr = BuildManager(cli, out var loggerFactory);
         using (loggerFactory)
         {
-            var result = await mgr.RemoveAsync(cli.Model, cli.All).ConfigureAwait(false);
-            if (result.RemovedDirs.Count == 0)
+            try
             {
-                Console.WriteLine($"nothing to remove (cache empty for {result.ModelId ?? "all models"})");
+                var result = await mgr.RemoveAsync(cli.Model, cli.All).ConfigureAwait(false);
+                if (result.RemovedDirs.Count == 0)
+                {
+                    Console.WriteLine($"nothing to remove (cache empty for {result.ModelId ?? "all models"})");
+                    return 0;
+                }
+                Console.WriteLine($"removed {result.RemovedDirs.Count} director{(result.RemovedDirs.Count == 1 ? "y" : "ies")}, freed {FormatBytes(result.FreedBytes)}:");
+                foreach (var dir in result.RemovedDirs)
+                {
+                    Console.WriteLine($"  - {dir}");
+                }
                 return 0;
             }
-            Console.WriteLine($"removed {result.RemovedDirs.Count} director{(result.RemovedDirs.Count == 1 ? "y" : "ies")}, freed {FormatBytes(result.FreedBytes)}:");
-            foreach (var dir in result.RemovedDirs)
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                Console.WriteLine($"  - {dir}");
+                // Catch IO / UnauthorizedAccess / etc. that surface when the cache directory
+                // is locked (notably on Windows when the live server still holds an open handle
+                // to the ONNX file). Print a user-actionable error rather than a stack trace.
+                await Console.Error.WriteLineAsync(
+                    $"error: remove failed: {ex.Message}. The model may be locked by a running server — stop it and retry.").ConfigureAwait(false);
+                return 1;
             }
-            return 0;
         }
     }
 

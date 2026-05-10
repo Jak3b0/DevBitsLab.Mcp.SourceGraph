@@ -66,7 +66,7 @@ calls with a single structured tool call:
 - **Optional code-aware semantic search.** ONNX embeddings (default model:
   `jinaai/jina-embeddings-v2-base-code`) stored in `sqlite-vec` for
   natural-language queries like *"find the rate-limiting code"*. The model
-  (~280 MB) is auto-fetched from Hugging Face on first start into
+  (~640 MB) is auto-fetched from Hugging Face on first start into
   `~/.cache/devbitslab.sourcegraph/models/`; subsequent starts use the cache.
   Disable with `--no-embeddings` to skip the pipeline entirely, or
   `--no-model-download` to stay offline once the cache is pre-populated.
@@ -769,7 +769,7 @@ database per scope. The current limits are:
 | Default `SearchSymbols` / `find_references` / `list_members` result limit | 25 / 50 / 100 rows | Pass `limit` on the MCP tool call. A soft serialized-size cap (~50K chars) trims further if a larger `limit` would exceed Claude Code's per-call ceiling; trim is signalled via `omitted_size=N` in the audience-restricted `_meta:` block. |
 | `impact_of_change` max depth | 4 hops | Pass `maxDepth` on the tool call. |
 | `semantic_search` top-k default | 10 | Pass `k` on the tool call. |
-| Embedding model download | ~480 MB | Disable the pipeline with `--no-embeddings`, or stay offline against a pre-populated cache with `--no-model-download`. |
+| Embedding model download | ~640 MB | Disable the pipeline with `--no-embeddings`, or stay offline against a pre-populated cache with `--no-model-download`. |
 | Per-symbol `git blame` shellout | enabled | Disable with `--no-history`. |
 | MCP `initialize` instructions payload | enabled | Disable with `--no-instructions` or `SOURCEGRAPH_NO_INSTRUCTIONS=1`. |
 | Green-leaf brand mark on tool responses, `ServerInstructions`, and per-tool `Title`/`Description` in `tools/list` | enabled | Disable with `--no-leaf` or `SOURCEGRAPH_NO_LEAF=1`. |

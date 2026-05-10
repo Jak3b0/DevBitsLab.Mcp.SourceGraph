@@ -135,11 +135,11 @@ public sealed class JinaTokenizerLoadTests : IClassFixture<JinaTokenizerLoadTest
 
         public TokenizerFixture()
         {
-            // 1. Live cache populated by a real `serve` run.
-            var liveCache = System.IO.Path.Join(
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                ".cache", "devbitslab.sourcegraph", "models",
-                "jinaai_jina-embeddings-v2-base-code", "tokenizer.json");
+            // 1. Live cache populated by a real `serve` run. Use ModelStore's own resolver so
+            // the test honours XDG_CACHE_HOME / LOCALAPPDATA / ~/.cache fallback chain — the
+            // hardcoded `~/.cache/...` path was a portability bug on Windows and on machines
+            // with XDG_CACHE_HOME set.
+            var liveCache = new ModelStore().FilePath(DefaultEmbeddingModel.ModelId, "tokenizer.json");
             if (File.Exists(liveCache))
             {
                 Path = liveCache;

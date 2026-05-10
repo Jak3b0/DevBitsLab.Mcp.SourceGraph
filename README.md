@@ -24,6 +24,7 @@ calls with a single structured tool call:
 - [Why not just use Roslyn directly?](#why-not-just-use-roslyn-directly)
 - [Requirements](#requirements)
 - [Installation](#installation)
+- [Quickstart (60 seconds)](#quickstart-60-seconds)
 - [Wiring it into an MCP client](#wiring-it-into-an-mcp-client)
 - [MCP tools](#mcp-tools)
 - [Structured output and resource links](#structured-output-and-resource-links)
@@ -124,7 +125,36 @@ Make sure `~/.dotnet/tools` is on your `PATH`. The installed command is
 `sourcegraph-mcp`. You can also pin a version per repository — see
 [Pin a version per repo](#pin-a-version-per-repo) below.
 
+## Quickstart (60 seconds)
+
+From a fresh clone of any .NET solution:
+
+```bash
+dotnet tool install -g DevBitsLab.Mcp.SourceGraph.Tool
+sourcegraph-mcp init        # interactive: detects clients, writes .mcp.json / .vscode/mcp.json / etc.
+sourcegraph-mcp demo        # canned probe: ping → graph_stats → search_symbols → find_definition
+```
+
+`init` writes only **project-scoped** files by default (`.mcp.json`,
+`.vscode/mcp.json`, `.cursor/mcp.json`, `.continue/mcp/sourcegraph.yaml`).
+User-scope writes (or Claude Desktop) require explicit per-client flags.
+`demo` reads the indexed scope and prints the same leaf-stamped markdown
+your agent will see — instant verification.
+
+Other useful first-run commands:
+
+```bash
+sourcegraph-mcp init --yes --client copilot,claude-code --print-only   # CI-friendly preview
+sourcegraph-mcp doctor                                                  # environment diagnostic
+sourcegraph-mcp init --prewarm                                          # also pre-build the index
+```
+
 ## Wiring it into an MCP client
+
+`sourcegraph-mcp init` writes the right config for each client below
+automatically. The snippets here document what each writer produces — useful
+if you'd rather paste manually, or if you want to understand the schema delta
+between clients.
 
 ### Claude Code (project-scoped, committed to the repo)
 
@@ -148,6 +178,86 @@ server falls back to the `WORKSPACE_FOLDER`, `CLAUDE_PROJECT_DIR`, or
 expanded against the process environment, so paths like
 `${HOME}/repos/my.slnx` work too.
 
+### GitHub Copilot (`.vscode/mcp.json`)
+
+Copilot's VS Code MCP integration uses a **distinct schema** from Claude Code's
+— top-level key is `servers` (not `mcpServers`), and each server entry carries
+an explicit `type: "stdio"` field:
+
+```json
+{
+  "servers": {
+    "sourcegraph": {
+      "type": "stdio",
+      "command": "sourcegraph-mcp",
+      "args": ["serve", "--solution", "${workspaceFolder}/MySolution.slnx"]
+    }
+  }
+}
+```
+
+Place this at `.vscode/mcp.json` at the repo root. Pasting the Claude Code
+snippet here would not work — Copilot silently ignores files that don't match
+its schema.
+
+### Cursor
+
+Cursor uses Claude Code's `mcpServers` shape. Place at `.cursor/mcp.json`
+(project-scope) or `~/.cursor/mcp.json` (user-scope):
+
+```json
+{
+  "mcpServers": {
+    "sourcegraph": {
+      "command": "sourcegraph-mcp",
+      "args": ["serve", "--solution", "${workspaceFolder}/MySolution.slnx"]
+    }
+  }
+}
+```
+
+### Continue
+
+Continue uses YAML, one server per file. Place at
+`.continue/mcp/sourcegraph.yaml`:
+
+```yaml
+name: sourcegraph
+command: sourcegraph-mcp
+args:
+  - serve
+  - --solution
+  - ${workspaceFolder}/MySolution.slnx
+```
+
+### Claude Desktop
+
+Claude Desktop has no project-scoped config — all MCP servers live in the
+platform-specific user config:
+
+| OS | Path |
+|---|---|
+| macOS | `~/Library/Application Support/Claude/claude_desktop_config.json` |
+| Windows | `%APPDATA%\Claude\claude_desktop_config.json` |
+| Linux | `~/.config/Claude/claude_desktop_config.json` |
+
+The shape matches Claude Code:
+
+```json
+{
+  "mcpServers": {
+    "sourcegraph": {
+      "command": "sourcegraph-mcp",
+      "args": ["serve", "--solution", "/abs/path/to/MySolution.slnx"]
+    }
+  }
+}
+```
+
+Note: `${workspaceFolder}` doesn't apply at the user-scope; use absolute paths
+or set `MCP_WORKSPACE_FOLDER` in your shell init. `init --claude-desktop`
+generates the correct file for you.
+
 ### Pin a version per repo
 
 ```bash
@@ -156,14 +266,9 @@ dotnet tool install DevBitsLab.Mcp.SourceGraph.Tool
 git add .config/dotnet-tools.json
 ```
 
-Collaborators run `dotnet tool restore` once. Your `.mcp.json` then invokes
-`dotnet sourcegraph-mcp serve …` — no global install required.
-
-### Cursor / Claude Desktop / Continue
-
-Use the same `command` + `args` shape inside each client's configuration file
-(for example `~/.cursor/mcp.json`, `claude_desktop_config.json`, or
-Continue's MCP block).
+Collaborators run `dotnet tool restore` once. Pass `--install-mode local-tool`
+to `init` to have the writers emit `command: "dotnet"` + `args: ["sourcegraph-mcp", ...]`
+instead of the global-install shape.
 
 ### Multi-scope monorepo
 
@@ -234,6 +339,19 @@ to the client at handshake time.
 | `usage_stats` | Per-tool call count, error count, latency, average response size, last-called time for the current process |
 | `ping` | Health check — returns `pong @ <UTC ISO-8601>` |
 
+### Ad-hoc queries (escape hatch)
+
+When no curated tool fits the question — aggregations, joins, "how many public types use X", "which classes implement IDisposable but lack `Dispose`", "which types have > 50 methods", "which `[Obsolete]` types have outstanding CS-warnings" — the server exposes a stable view layer over the SQLite tables and a tool to run read-only SQL against it.
+
+| Tool | Purpose |
+|---|---|
+| `describe_schema` | Returns the queryable view layer (`v_symbols`, `v_files`, `v_edges`, `v_references`, `v_scopes`, `v_annotations`, `v_diagnostics`, `v_history`) with each column's type and description, plus the live `symbol_kinds` and `edge_kinds` vocabularies present in the resolved scope set. Call this first when composing `query_graph` SQL. |
+| `query_graph` | Runs a single read-only `SELECT` or `WITH` statement against the views. Named parameter binding via `@name` placeholders. Read-only at the SQLite connection level, single-statement enforced at prepare, 5-second statement timeout (configurable), 5000-row cap (configurable). Returns tabular `{columns, rows}` structured content plus a markdown table. Logged into `.sourcegraph/usage.jsonl` with the SQL text — the call log is the evidence base for which queries deserve to be promoted into curated tools. |
+
+The view layer is versioned (`view_schema_version`, currently `2`); the underlying tables remain implementation details and may evolve without bumping it. The version bumps on **any** view-set change — addition, removal, column rename, or column-type change — so cache-aware clients always re-introspect after a server upgrade.
+
+The eight views cover: code structure (`v_symbols`/`v_files`/`v_edges`/`v_references`), scope metadata (`v_scopes`), attribute / decorator metadata (`v_annotations`), Roslyn diagnostics (`v_diagnostics`), and per-symbol git history (`v_history`). Cross-view JOINs use the composite `(scope, id)` tuple — see `describe_schema`'s response for the per-column documentation.
+
 ### Example tool calls
 
 ```jsonc
@@ -298,6 +416,34 @@ to the client at handshake time.
 // Every element with `Grid.Row` set (XAML attached-property annotation).
 { "tool": "find_by_annotation",
   "args": { "name": "Grid.Row", "flavor": "xaml-attached-property" } }
+
+// Ad-hoc SQL: how many public types use Sample.Domain.Calculator?
+// Aggregates v_edges through v_symbols.container_id and filters by accessibility=Public.
+// No curated tool answers this shape; query_graph composes it from the view layer.
+{ "tool": "query_graph",
+  "args": {
+    "sql": "SELECT COUNT(DISTINCT t.id) AS public_user_count FROM v_edges e JOIN v_symbols m ON m.id = e.src AND m.scope = e.scope JOIN v_symbols t ON t.id = m.container_id AND t.scope = m.scope WHERE e.dst = (SELECT id FROM v_symbols WHERE fqn = @fqn LIMIT 1) AND e.kind = 'uses-type' AND t.is_public = 1 AND t.is_type = 1",
+    "parameters": { "@fqn": "Sample.Domain.Calculator" }
+  } }
+
+// Schema discovery — list views, columns, and live kind vocabularies.
+{ "tool": "describe_schema", "args": {} }
+
+// Composability across the extended views: every public type decorated with
+// [Obsolete] that ALSO has at least one outstanding CS-warning. Joins
+// v_annotations + v_diagnostics + v_symbols. No curated tool answers the
+// intersection; query_graph composes it from the view layer in one round-trip.
+{ "tool": "query_graph",
+  "args": {
+    "sql": "SELECT DISTINCT s.fqn, COUNT(d.id) AS warnings FROM v_annotations a JOIN v_symbols s ON s.id = a.symbol_id AND s.scope = a.scope JOIN v_diagnostics d ON d.symbol_id = s.id AND d.scope = s.scope WHERE a.name = 'Obsolete' AND s.is_public = 1 AND s.is_type = 1 AND d.severity_name = 'warning' GROUP BY s.fqn ORDER BY warnings DESC"
+  } }
+
+// Per-symbol git history composability: methods authored > 6 months ago that
+// have grown beyond 100 lines (refactor candidates). Joins v_history + v_symbols.
+{ "tool": "query_graph",
+  "args": {
+    "sql": "SELECT s.fqn, h.last_author, h.line_count, datetime(h.last_authored_at / 1000, 'unixepoch') AS last_touched FROM v_history h JOIN v_symbols s ON s.id = h.symbol_id AND s.scope = h.scope WHERE s.kind = 'method' AND h.line_count > 100 AND h.last_authored_at < (strftime('%s', 'now', '-6 months') * 1000) ORDER BY h.line_count DESC"
+  } }
 ```
 
 ## Structured output and resource links
@@ -413,8 +559,8 @@ A `.sourcegraph.json` at the repo root opts a project into multi-scope mode:
 ```
 
 - Each scope owns its own SQLite database at `.sourcegraph/scopes/<id>.db`.
-- A `_meta.db` registry tracks per-scope status (`ok | degraded | indexing`)
-  and last-indexed timestamp.
+- A `_meta.db` registry tracks per-scope status
+  (`ok | partial | degraded | indexing`) and last-indexed timestamp.
 - `isolated: true` excludes a scope from `scope = "*"` fan-out — useful for
   vendored or generated code that shouldn't pollute references on production
   symbols.
@@ -438,6 +584,40 @@ A `.sourcegraph.json` at the repo root opts a project into multi-scope mode:
 Every tool accepts an optional `scope` parameter — pass an id, a
 comma-separated list, or `"*"` to fan out.
 
+### Partial indexing (one bad project doesn't take down the scope)
+
+Real-world solutions often contain at least one quirky project (legacy MSBuild
+quirks, missing source generator NuGet, in-progress migration). Rather than
+marking the whole scope `degraded` when a single project's compilation fails,
+the indexer isolates per-project and per-file failures and surfaces them on
+`list_scopes`:
+
+- A project whose `Compilation` cannot be obtained (probe failure) is recorded
+  in `failed_projects` with a short reason string. Its documents are excluded
+  from every subsequent indexing pass; the rest of the solution indexes
+  normally.
+- A file whose Pass 1 symbol walk throws (rare — a transient Roslyn state, a
+  generator-affected source going wonky) is recorded in `failed_files`. The
+  file's prior store state is preserved untouched until the next successful
+  walk.
+
+Status semantics:
+
+| Status     | Meaning                                                                                           |
+|------------|---------------------------------------------------------------------------------------------------|
+| `ok`       | Every project and file indexed cleanly. `failed_projects` / `failed_files` are empty.             |
+| `partial`  | At least one project produced symbols and at least one project or file failed. Tools serve best-effort results from healthy projects; consult `list_scopes` for the failure detail. |
+| `degraded` | Workspace failed to open, OR every project failed. Tools return `"scope is degraded: <error>"`.   |
+| `indexing` | Cold index in progress.                                                                           |
+
+Tool fan-out (`scope = "*"`) targets every non-isolated scope regardless
+of status. Healthy and `partial` scopes return query results; `degraded`
+scopes contribute a per-scope error block (`scope is degraded: <message>`)
+to the merged response so operators see why a scope returned no data
+without the call failing as a whole. Querying a `partial` scope by id
+returns the indexed symbols (best-effort); use `list_scopes` to see
+what's missing.
+
 ## Command-line interface
 
 ```text
@@ -450,7 +630,10 @@ sourcegraph-mcp <subcommand> [options]
 | `index <solution>` | Build/refresh the database for a single solution, then exit. Useful in CI. |
 | `stats` | Print counts of files / symbols / references / edges in the database. |
 | `clear` | Delete all rows from the database (schema preserved). |
-| `init-scopes` | Discover `.slnx`/`.sln` files at `--root` (default: CWD) and write a starter `.sourcegraph.json`. |
+| `init [--yes] [--client <id>] [--no-<client>] [--user-<client>] [--claude-desktop] [--print-only] [--force] [--prewarm] [--install-mode <mode>]` | Interactive (default) or flag-driven onboarding flow. Detects environment, picks MCP clients, writes per-client config files (project-scoped by default), and optionally pre-warms the index. First-class clients: `claude-code`, `copilot`, `cursor`, `continue`, `claude-desktop`. Use `--print-only` for a CI-friendly preview that writes nothing. |
+| `doctor [--json]` | Read-only environment diagnostic. Reports SDK / git / solution / config / per-client status. Exit `0` = all-pass; `2` = at least one warning; `1` = hard failure. `--json` emits a machine-readable `{checks, exit_code}` document. |
+| `demo [--scope <id>] [--no-color]` | Run four canned operations (`ping`, `graph_stats`, `search_symbols`, `find_definition`) against the active scope and print leaf-stamped markdown — the same shape an MCP client would see. Provides the "ah, it works" confidence moment without an agent loop. Exits `2` if the scope has zero symbols indexed. |
+| `init-scopes` | Discover `.slnx`/`.sln` files at `--root` (default: CWD) and write a starter `.sourcegraph.json`. Continues to work standalone; `init` invokes the same scaffolding internally when multi-solution is detected. |
 | `scopes list [--root <path>]` | List the scopes declared in `.sourcegraph.json`. |
 | `scopes info <name> [--root <path>] [--json]` | Detailed view of one scope: identity, project set, optional `language` field, optional `enrichment` block. With `--json`, emits a stable JSON shape. |
 | `scopes add <name> --solution <path> [--root <path>] [--isolated]` | Add a scope. The file is created on first use. |
@@ -529,10 +712,16 @@ The server emits three signals you can hook into:
    `mcp.tool.scope`. Both signals are zero-cost when no listener is attached;
    pick them up with the OpenTelemetry SDK or `dotnet-counters monitor --name
    sourcegraph-mcp DevBitsLab.Mcp.SourceGraph`.
-4. **MCP `notifications/progress`** — three tools opt in to live progress
-   reporting on their slow paths: `semantic_search` (three checkpoints around
-   ONNX-model load + vector search + formatting), `impact_of_change`, and
-   `module_summary` (one starting checkpoint each). Clients opt in by sending
+4. **MCP `notifications/progress`** — four tools opt in to live progress
+   reporting: `semantic_search` (three checkpoints around ONNX-model load +
+   vector search + formatting), `impact_of_change`, `module_summary` (one
+   starting checkpoint each), and `find_definition` (cold-start phase
+   progress only — see below). **Cold-start visibility**: when one of the
+   progress-aware tools is invoked against a scope whose initial indexing
+   isn't finished, the server forwards per-scope `IIndexingProgressSource`
+   events as `notifications/progress` for the duration of the wait — three
+   coarse phases (`opening workspace` → `indexing` → `ready`) so the chat
+   panel sees motion instead of a silent spinner. Clients opt in by sending
    a `progressToken` field on the originating `tools/call` request:
 
    ```json
@@ -569,10 +758,10 @@ database per scope. The current limits are:
 | MCP `initialize` instructions payload | enabled | Disable with `--no-instructions` or `SOURCEGRAPH_NO_INSTRUCTIONS=1`. |
 | Green-leaf brand mark on tool responses, `ServerInstructions`, and per-tool `Title`/`Description` in `tools/list` | enabled | Disable with `--no-leaf` or `SOURCEGRAPH_NO_LEAF=1`. |
 | SQLite database size per scope | unbounded | Use `clear` to wipe; databases live under `<root>/.sourcegraph/scopes/<id>.db`. |
+| `query_graph` statement timeout | 5 s | `--query-timeout-seconds <int>` or `SOURCEGRAPH_QUERY_TIMEOUT_SECONDS=<int>`. |
+| `query_graph` row cap | 5000 rows | `--query-row-limit <int>` or `SOURCEGRAPH_QUERY_ROW_LIMIT=<int>`. The tool surfaces `truncated: true` when the cap is hit. |
 
-There is no built-in query timeout. If you need one, layer a `CancellationToken`
-on the MCP client side — the server honours cancellation through every async
-graph operation.
+The curated tools have no built-in timeout — they honour the MCP client's `CancellationToken` through every async graph operation. The `query_graph` tool DOES enforce a per-call statement timeout (above) so an accidental Cartesian join doesn't pin the server.
 
 ## Platform support
 

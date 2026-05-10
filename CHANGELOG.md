@@ -10,6 +10,50 @@ below note which package the change applies to.
 
 ## [Unreleased]
 
+### Added
+- **Cold-start progress visibility.** When a progress-aware tool
+  (`find_definition`, `semantic_search`, `impact_of_change`, `module_summary`)
+  is invoked with a `progressToken` against a scope whose initial indexing
+  isn't finished, the server forwards per-scope phase progress (`opening
+  workspace` → `indexing` → `ready`) as `notifications/progress` for the
+  duration of the wait. The previously silent 10–60 s pause on cold-start
+  now narrates itself in the chat panel. The mechanism is a per-scope
+  `IIndexingProgressSource` exposed by `LiveIndexService` and a forwarding
+  subscription inside `ScopedExecution.WaitUntilReadyAsync`. (`improve-first-run-progress`)
+- **Onboarding CLI: `init`, `doctor`, `demo`.** Three new subcommands handle
+  first-run setup end-to-end. `sourcegraph-mcp init` is interactive by default
+  (or `--yes`-driven for CI); detects environment, picks MCP clients, and
+  writes per-client config files with merge-by-name semantics — first-class
+  support for Claude Code, **GitHub Copilot** (distinct `servers` / `type:
+  "stdio"` schema in `.vscode/mcp.json`), Cursor, Continue, and Claude
+  Desktop. Project-scoped writes are the default; user-scope writes require
+  explicit `--user-<client>` opt-in (or `--claude-desktop` for Claude Desktop,
+  which has no project equivalent). Existing client config files are merged
+  into, never overwritten — only the `sourcegraph` server entry is touched,
+  and `--force` is required to replace a differing existing entry. `doctor`
+  runs a read-only environment diagnostic with `pass | warn | fail` exit
+  codes (0 / 2 / 1) and a `--json` machine-readable mode. `demo` runs four
+  canned operations (`ping`, `graph_stats`, `search_symbols`,
+  `find_definition`) against the active scope and prints leaf-stamped
+  markdown — the same shape an agent sees, providing the "ah, it works"
+  confidence moment without an agent loop. Comment-aware degraded mode keeps
+  hand-edited JSONC configs from being silently round-tripped through the
+  parser. (`add-onboarding-cli`)
+- **`partial` scope status with per-project + per-file failure isolation.** A
+  single bad project in a multi-project solution no longer marks the whole
+  scope `degraded`. The Roslyn indexer pre-flight-probes each project's
+  `Compilation`, skipping ones that throw or return null. Pass 1B's per-document
+  symbol walk is wrapped in try/catch with a `walkedFileIds` gate so
+  reconcile / Pass 2 / Pass 3 preserve a failing file's prior store state
+  rather than corrupting it with an incomplete walk. `IndexResult` gains
+  `FailedProjects` / `FailedFiles`; `LiveIndexService` settles the scope to
+  `partial` (at least one project produced symbols and something failed),
+  `degraded` (every project failed or workspace open threw), or `ok`.
+  `list_scopes` exposes `failed_projects` / `failed_files` arrays in both
+  prose and structured output; `_meta.db` persists them as JSON columns so
+  the failure detail survives server restarts. `scope = "*"` fan-out
+  includes `partial` scopes alongside `ok`. (`add-per-project-failure-isolation`)
+
 ### Changed
 - **Soft size budget on list-shaped tool results.** Built-in tools that emit
   per-row prose + `ResourceLinkBlock` + structured-content trios now trim

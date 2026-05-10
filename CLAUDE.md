@@ -5,6 +5,19 @@ profile-aware parser, and TypeScript / JavaScript / TSX / JSX via tree-sitter
 into SQLite + FTS5 and exposes graph queries to MCP clients (Claude Code,
 Cursor) over stdio.
 
+## Onboarding CLI: `init`, `doctor`, `demo`
+
+Three subcommands handle first-run setup. `sourcegraph-mcp init` is interactive
+by default; flag-driven (`--yes`) for CI. It detects environment, picks MCP
+clients (project-scope by default, user-scope opt-in via `--user-<client>`),
+and writes per-client config files with merge-by-name semantics — first-class
+support for Claude Code, **GitHub Copilot** (distinct `servers`/`type` schema in
+`.vscode/mcp.json`), Cursor, Continue, and Claude Desktop. `doctor` runs a
+read-only environment diagnostic with `pass | warn | fail` exit-code semantics.
+`demo` runs four canned operations (`ping`, `graph_stats`, `search_symbols`,
+`find_definition`) against the active scope and prints leaf-stamped markdown —
+the same shape an agent sees, available without an agent loop.
+
 ## Tool-usage guidance ships with the server
 
 When this MCP server connects, it publishes "prefer source-graph tools over
@@ -32,13 +45,33 @@ directly without re-parsing markdown — see README's "Structured output and
 resource links" for the shape and a worked example.
 
 A persistent JSONL log of every tool call lives at
-`<solution>/.sourcegraph/usage.jsonl` for offline analysis.
+`<solution>/.sourcegraph/usage.jsonl` for offline analysis. `query_graph` calls log
+the SQL text; the log is the evidence base for which ad-hoc queries deserve to be
+promoted into curated tools.
 
-`semantic_search`, `impact_of_change`, and `module_summary` emit MCP
-`notifications/progress` when the originating `tools/call` request includes
-a `progressToken` — useful for live status indicators on the slow paths
-(cold-start ONNX model load, deep recursive CTE walks). Clients that don't
-opt in see today's silent-then-result behaviour.
+For ad-hoc questions that don't fit a curated tool — aggregations, joins, "how many
+public types use X", "which classes implement IDisposable but lack `Dispose`",
+"which `[Obsolete]` types have outstanding CS-warnings", "which methods authored
+> 6 months ago grew beyond 100 lines" — the server exposes a stable view layer
+(`v_symbols`, `v_files`, `v_edges`, `v_references`, `v_scopes`, `v_annotations`,
+`v_diagnostics`, `v_history`) plus two tools: `describe_schema` (returns the views
+with column types and descriptions, plus the live `symbol_kinds`/`edge_kinds`
+vocabularies) and `query_graph` (read-only single SQL statement, named `@param`
+bindings, scope-aware, 5 s timeout / 5000-row cap configurable via
+`--query-timeout-seconds` / `--query-row-limit` or the matching `SOURCEGRAPH_QUERY_*`
+env vars). Cross-view JOINs use the composite `(scope, id)` tuple. The view layer
+is versioned (`view_schema_version`, currently `2`); it bumps on any view-set
+change so cache-aware clients re-introspect after a server upgrade.
+
+`semantic_search`, `impact_of_change`, `module_summary`, and `find_definition`
+emit MCP `notifications/progress` when the originating `tools/call` request
+includes a `progressToken` — useful for live status indicators on the slow
+paths (cold-start ONNX model load, deep recursive CTE walks). When any of
+these tools is called against a scope whose initial indexing is still in
+flight, the server forwards per-scope cold-start phase progress (`opening
+workspace` → `indexing` → `ready`) for the duration of the wait, so first-
+call latency narrates itself instead of presenting as a silent spinner.
+Clients that don't opt in see today's silent-then-result behaviour.
 
 ## Scopes (multi-solution monorepos)
 
@@ -56,9 +89,13 @@ A `.sourcegraph.json` at the repo root opts a project into multi-scope mode:
 ```
 
 Each scope owns its own SQLite DB at `.sourcegraph/scopes/<id>.db`; a separate
-`_meta.db` registry tracks status (`ok | degraded | indexing`) and last-indexed
-time. An `isolated` scope is excluded from `scope = "*"` fan-out — useful for
-vendored / generated code that shouldn't pollute `find_references` on production.
+`_meta.db` registry tracks status (`ok | partial | degraded | indexing`) and
+last-indexed time. `partial` means one or more projects/files failed to index
+but at least one project produced symbols; `list_scopes` carries
+`failed_projects` / `failed_files` arrays so operators see which projects'
+symbols are missing without scraping logs. An `isolated` scope is excluded from
+`scope = "*"` fan-out — useful for vendored / generated code that shouldn't
+pollute `find_references` on production.
 
 Every existing tool gains an optional `scope` parameter (string id, comma-separated
 list, or `"*"`). Call `list_scopes` to discover the configured scopes. Without a

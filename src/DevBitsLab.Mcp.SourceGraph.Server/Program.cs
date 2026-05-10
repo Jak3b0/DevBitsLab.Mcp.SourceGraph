@@ -41,6 +41,9 @@ return cli.Subcommand switch
     "index" => await RunIndexAsync(cli).ConfigureAwait(false),
     "stats" => await RunStatsAsync(cli).ConfigureAwait(false),
     "clear" => await RunClearAsync(cli).ConfigureAwait(false),
+    "init" => await InitCli.RunAsync(cli).ConfigureAwait(false),
+    "doctor" => await DoctorCli.RunAsync(cli).ConfigureAwait(false),
+    "demo" => await DemoCli.RunAsync(cli).ConfigureAwait(false),
     "init-scopes" => await ScopesCli.RunInitAsync(cli).ConfigureAwait(false),
     "scopes" => await ScopesCli.RunSubcommandAsync(cli).ConfigureAwait(false),
     "plugins" => await PluginsCli.RunSubcommandAsync(cli).ConfigureAwait(false),
@@ -159,6 +162,13 @@ static async Task<int> RunServeAsync(CommandLine cli)
 
     var historyDisabled = await ResolveHistoryDisabledForScopesAsync(cli, scopeConfig).ConfigureAwait(false);
     builder.Services.AddSingleton(new HistoryOptions(historyDisabled));
+
+    // Tunables for the query_graph tool: CLI flag → env var → built-in default. Singleton so the
+    // tool method can resolve it via DI without re-parsing every call.
+    builder.Services.AddSingleton(GraphQueryOptions.Resolve(cli.QueryTimeoutSeconds, cli.QueryRowLimit));
+    // Repo root surfaced for tools (query_graph / describe_schema) that need it to locate
+    // per-scope DB files via ScopeLayout.
+    builder.Services.AddSingleton(new RepoRootInfo(repoRoot));
 
     builder.Services.AddSingleton(new LiveIndexConfig(scopeConfig.Scopes));
     builder.Services.AddHostedService<HistoryHostedService>(sp => new HistoryHostedService(

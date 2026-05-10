@@ -1,7 +1,7 @@
 ## 1. Storage interface: `HasOutgoingReferencesAsync`
 
 - [x] 1.1 Add `Task<bool> HasOutgoingReferencesAsync(long fileId, CancellationToken ct = default)` to `src/DevBitsLab.Mcp.SourceGraph.Storage/IGraphStore.cs` with a default body of `Task.FromResult(true)`. XML doc: explains the integrity-check use case so future store implementations know the contract.
-- [x] 1.2 Override the method in `src/DevBitsLab.Mcp.SourceGraph.Storage/SqliteGraphStore.cs` with `SELECT EXISTS (SELECT 1 FROM symbol_references WHERE file_id = ? LIMIT 1)`. The query hits the existing index on `file_id` (verify in `Schema.cs` or via `EXPLAIN QUERY PLAN` — there should already be one).
+- [x] 1.2 Override the method in `src/DevBitsLab.Mcp.SourceGraph.Storage/SqliteGraphStore.cs` with `SELECT EXISTS (SELECT 1 FROM refs WHERE file_id = ? LIMIT 1)`. The query hits the existing index on `file_id` (verify in `Schema.cs` or via `EXPLAIN QUERY PLAN` — there should already be one).
 - [x] 1.3 Build clean (`dotnet build`). No callers yet — this is a no-op pass.
 
 ## 2. Indexer: integrity check on the unchanged-file skip path
@@ -22,11 +22,11 @@
 - [x] 4.1 Add `tests/DevBitsLab.Mcp.SourceGraph.Tests/StrandedReferenceEdgesRecoveryTests.cs`. Test pattern:
   - Cold-index `tests/fixtures/Sample.sln` once via `RoslynIndexer.IndexSolutionOnceAsync` (same harness as `TabularRenderingTests` / `ProgressReportingTests`).
   - Pick one indexed file (e.g. `Calculator.cs`).
-  - Construct the zombie state by directly deleting the file's `symbol_references` rows via the store (or a new test-only helper if needed).
+  - Construct the zombie state by directly deleting the file's `refs` rows via the store (or a new test-only helper if needed).
   - Verify the file is in the zombie state: `find_references` against a symbol that lives in `Calculator.cs` should miss those call sites.
   - Run `IndexCoreAsync` (or `ReloadAndIndexAllAsync`) again with the on-disk file unchanged.
   - Assert that the references reappear.
-- [x] 4.2 Negative-path test: a file with declared symbols and existing references should NOT trigger the re-walk path. Verify by counting pass-2-walk events through a logging capture, or by asserting the count of `symbol_references` rows didn't change after a no-op re-index.
+- [x] 4.2 Negative-path test: a file with declared symbols and existing references should NOT trigger the re-walk path. Verify by counting pass-2-walk events through a logging capture, or by asserting the count of `refs` rows didn't change after a no-op re-index.
 - [x] 4.3 Pass-2 catch test: arrange a per-file walk failure (mock store that throws on `BulkInsertReferencesAsync` for one file), confirm the loop continues for subsequent files, and the warn-level log line is emitted with the failed file's path.
 
 ## 5. Verification + spec sync

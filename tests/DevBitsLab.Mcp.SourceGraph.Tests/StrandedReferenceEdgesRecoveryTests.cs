@@ -169,6 +169,75 @@ public sealed class StrandedReferenceEdgesRecoveryTests : IAsyncLifetime
         }
     }
 
+    [Fact]
+    public async Task PassTwoCatch_partialCommitRefsButNotEdges_isReClearedToZombie()
+    {
+        // Wrap to throw on BulkInsertEdgesAsync. Pass 2 commits refs FIRST then edges
+        // SECOND, each in its own SQLite transaction. So the throw lands AFTER refs are
+        // already committed — without the catch handler's clear-outgoing call, refs
+        // would persist in the store and the next index's HasOutgoingReferencesAsync
+        // probe would return true → SHA-skip → edges stranded forever.
+
+        // Step 1: from the healthy IAsyncLifetime cold-index, pick a file we know has
+        // both refs AND edges in pass 2. That's the file whose throw path we care about
+        // (files with no edges trigger no throw at all, so they're irrelevant here).
+        var victimPath = await FindFileWithRefsAndEdgesAsync(_dbPath);
+        victimPath.Should().NotBeNullOrEmpty(
+            "Sample.sln should have at least one file with both refs and edges (e.g. " +
+            "Sample.App/Program.cs which calls Calculator.Add and so emits a Calls edge)");
+
+        // Step 2: cold-index a FRESH DB with the throwing wrapper. Confirm no edges
+        // landed (proving the wrapper fired) and the victim file's refs were cleared
+        // (proving the catch handler's ClearFileOutgoingAsync ran).
+        var localTempDir = Path.Join(Path.GetTempPath(), "stranded-refs-pt3-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(localTempDir);
+        var localDbPath = Path.Join(localTempDir, "graph.db");
+
+        var capturingLogger = new CapturingLogger();
+
+        try
+        {
+            await using (var realStore = new SqliteGraphStore(localDbPath))
+            {
+                var proxy = DispatchProxy.Create<IGraphStore, ThrowOnEdgesProxy>();
+                var typed = (ThrowOnEdgesProxy)proxy;
+                typed.Inner = realStore;
+
+                await RoslynIndexer.IndexSolutionOnceAsync(_slnPath, proxy, capturingLogger);
+
+                typed.ThrewAtLeastOnce.Should().BeTrue(
+                    "the wrapper should have intercepted at least one BulkInsertEdgesAsync call");
+            }
+
+            long victimFileId;
+            await using (var realStore = new SqliteGraphStore(localDbPath))
+            {
+                victimFileId = await GetFileIdAsync(realStore, victimPath!);
+            }
+            victimFileId.Should().BeGreaterThan(0);
+
+            var victimRefs = await CountRefsForFileAsync(localDbPath, victimFileId);
+            var totalEdges = await CountTableAsync(localDbPath, "edges");
+
+            totalEdges.Should().Be(0,
+                "every BulkInsertEdgesAsync call with a non-empty batch was wrapped to throw");
+            victimRefs.Should().Be(0,
+                "the catch handler must clear the victim file's refs after a partial pass-2 " +
+                "commit (refs done, edges threw); otherwise the next index's integrity check " +
+                "would SHA-skip the file with refs intact and leave its edges stranded forever");
+
+            capturingLogger.Entries.Should().Contain(
+                e => e.Level == LogLevel.Warning && e.Message.Contains("Pass 2 walk failed for"),
+                "the warn-level log line should fire for at least one failed file");
+        }
+        finally
+        {
+            try { if (Directory.Exists(localTempDir)) Directory.Delete(localTempDir, recursive: true); }
+            catch (IOException) { /* best-effort */ }
+            catch (UnauthorizedAccessException) { /* best-effort */ }
+        }
+    }
+
     private static async Task<long> GetFileIdAsync(IGraphStore store, string filePath)
     {
         var files = await store.GetAllFilesAsync();
@@ -186,6 +255,41 @@ public sealed class StrandedReferenceEdgesRecoveryTests : IAsyncLifetime
         cmd.Parameters.AddWithValue("$id", fileId);
         var v = await cmd.ExecuteScalarAsync();
         return v is long l ? l : Convert.ToInt64(v);
+    }
+
+    private static async Task<long> CountTableAsync(string dbPath, string table)
+    {
+        await using var c = OpenReadOnly(dbPath);
+        await c.OpenAsync();
+        await using var cmd = c.CreateCommand();
+        cmd.CommandText = $"SELECT COUNT(*) FROM {table};";
+        var v = await cmd.ExecuteScalarAsync();
+        return v is long l ? l : Convert.ToInt64(v);
+    }
+
+    private static async Task<string?> FindFileWithRefsAndEdgesAsync(string dbPath)
+    {
+        // Returns the path of a file that has at least one ref AND at least one outgoing
+        // edge sourced from one of its declared symbols. Used by the partial-commit test
+        // to pick a victim whose throwing pass-2 actually exercises the catch handler's
+        // ClearFileOutgoingAsync — files with refs but no edges don't trigger the throw.
+        await using var c = OpenReadOnly(dbPath);
+        await c.OpenAsync();
+        await using var cmd = c.CreateCommand();
+        cmd.CommandText = """
+            SELECT f.path
+            FROM files f
+            JOIN refs r ON r.file_id = f.id
+            WHERE EXISTS (
+                SELECT 1 FROM edges e
+                JOIN symbols s ON s.id = e.src
+                WHERE s.file_id = f.id
+            )
+            GROUP BY f.id, f.path
+            ORDER BY COUNT(r.id) DESC
+            LIMIT 1;
+            """;
+        return await cmd.ExecuteScalarAsync() as string;
     }
 
     private static async Task DeleteRefsForFileAsync(string dbPath, long fileId)
@@ -282,6 +386,41 @@ public sealed class StrandedReferenceEdgesRecoveryTests : IAsyncLifetime
             var v = cmd.ExecuteScalar() as string;
             return v is not null
                 && string.Equals(v, TargetPath, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    /// <summary>
+    /// <see cref="DispatchProxy"/>-backed <see cref="IGraphStore"/> that forwards every call to
+    /// an inner store, except <see cref="IGraphStore.BulkInsertEdgesAsync"/>: there it returns
+    /// a faulted Task whenever the batch is non-empty. Used to simulate the "refs committed,
+    /// edges threw" failure mode and verify the catch handler re-clears so the next index
+    /// re-walks instead of SHA-skipping past a refs-intact-but-edges-empty file.
+    /// </summary>
+    public class ThrowOnEdgesProxy : DispatchProxy
+    {
+        public IGraphStore Inner { get; set; } = null!;
+        public bool ThrewAtLeastOnce { get; private set; }
+
+        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
+        {
+            if (targetMethod is null) return null;
+
+            if (targetMethod.Name == nameof(IGraphStore.BulkInsertEdgesAsync))
+            {
+                // Materialize so we can both peek at Count and forward without consuming.
+                var edges = (IEnumerable<Edge>?)args![0];
+                var edgeList = edges?.ToList() ?? new List<Edge>();
+                args[0] = edgeList;
+
+                if (edgeList.Count > 0)
+                {
+                    ThrewAtLeastOnce = true;
+                    return Task.FromException(
+                        new InvalidOperationException("simulated edges-insert failure for test"));
+                }
+            }
+
+            return targetMethod.Invoke(Inner, args);
         }
     }
 

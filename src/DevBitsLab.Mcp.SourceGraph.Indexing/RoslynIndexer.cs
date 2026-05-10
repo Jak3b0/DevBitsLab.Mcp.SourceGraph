@@ -382,7 +382,7 @@ public sealed class RoslynIndexer : IAsyncDisposable, ILanguageIndexer
                     if (!hasOutgoingRefs)
                     {
                         _logger.LogInformation(
-                            "Re-walking references for {Path}: file SHA matches but no outgoing edges in store " +
+                            "Re-walking references for {Path}: file SHA matches but no outgoing references in store " +
                             "(likely zombied by a prior incomplete indexing pass; recovering)",
                             path);
                     }
@@ -809,11 +809,29 @@ public sealed class RoslynIndexer : IAsyncDisposable, ILanguageIndexer
             }
             catch (Exception ex)
             {
-                // One file's walk threw — log it and let the next file's walk proceed. The
-                // failed file's outgoing edges remain cleared from pass 1; the next index
-                // re-attempts the walk via pass 1's HasOutgoingReferencesAsync integrity check.
+                // One file's walk threw — log it and let the next file's walk proceed. Pass 2
+                // calls BulkInsertReferencesAsync first then BulkInsertEdgesAsync; each is
+                // atomic but they aren't sequenced under one outer transaction, so a throw on
+                // edges would leave refs committed. That state is invisible to the next
+                // index's integrity check (refs > 0 → SHA-skip → edges stranded forever), so
+                // re-clear here to drop any partial commit and force a full re-walk next time.
+                try
+                {
+                    await _store.ClearFileOutgoingAsync(fileId, ct).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception clearEx)
+                {
+                    // The clear itself failed. Best-effort: log and move on. The file may
+                    // hold partial state until the next clear+re-walk; an operator who notices
+                    // repeated recoveries can wipe the .sourcegraph DB to recover fully.
+                    _logger.LogWarning(clearEx,
+                        "Pass 2's post-failure clear for {Path} also failed; file may have stale partial refs/edges",
+                        path);
+                }
+
                 _logger.LogWarning(ex,
-                    "Pass 2 walk failed for {Path}; file's outgoing edges remain cleared this round and will be re-attempted on the next index",
+                    "Pass 2 walk failed for {Path}; cleared partial refs/edges, will re-attempt on the next index",
                     path);
             }
         }

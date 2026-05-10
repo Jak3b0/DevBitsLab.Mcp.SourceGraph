@@ -396,7 +396,7 @@ The integrity check SHALL be implemented via a new storage method `IGraphStore.H
 
 #### Scenario: Recovery is logged
 - **WHEN** the integrity check forces pass 2 to walk a file that would have been SHA-skipped
-- **THEN** the indexer emits an info-level log entry of the form `"Re-walking references for {Path}: file SHA matches but no outgoing edges in store …"` so operators can observe recoveries; healthy installs never see this line
+- **THEN** the indexer emits an info-level log entry of the form `"Re-walking references for {Path}: file SHA matches but no outgoing references in store …"` so operators can observe recoveries; healthy installs never see this line
 
 ### Requirement: Pass 2 file-walk failures don't abort the loop
 The indexer SHALL wrap each per-file body of pass 2's reference walk in a try/catch so that an exception thrown while walking one file does not abort pass 2 for the remaining files. Cancellation (`OperationCanceledException`) SHALL still propagate. Other exceptions SHALL be logged at warn level with the file path and exception detail; the failed file's outgoing edges remain cleared this round and will be re-walked on the next index via the integrity check above.

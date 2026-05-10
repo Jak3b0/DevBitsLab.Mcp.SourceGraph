@@ -485,9 +485,9 @@ walk) are detected and re-walked automatically.
 
 When the integrity check forces a recovery, the indexer emits an info-level
 log line per affected file: `"Re-walking references for {Path}: file SHA
-matches but no outgoing edges in store …"`. Healthy installs never see this
-line. Repeated recoveries on the same files would indicate a regression in
-the upstream indexing flow worth investigating.
+matches but no outgoing references in store …"`. Healthy installs never see
+this line. Repeated recoveries on the same files would indicate a regression
+in the upstream indexing flow worth investigating.
 
 ## Observability
 

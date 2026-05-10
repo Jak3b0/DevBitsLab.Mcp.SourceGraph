@@ -90,15 +90,17 @@ public sealed class ModelStore
         {
             throw new ArgumentException("modelId must not be empty.", nameof(modelId));
         }
-        // Split on path separators and check each segment.
-        foreach (var segment in modelId.Split(new[] { '/', '\\' }, StringSplitOptions.None))
+        // Split on path separators and look for the first traversal segment. Using a single
+        // LINQ pass instead of a foreach+if avoids CodeQL's `cs/missed-where-opportunity`
+        // re-flag, and the resulting code reads as "find the bad segment, throw if any" — a
+        // closer match to the actual contract.
+        var traversalSegment = modelId.Split(new[] { '/', '\\' }, StringSplitOptions.None)
+            .FirstOrDefault(segment => segment is "." or "..");
+        if (traversalSegment is not null)
         {
-            if (segment is "." or "..")
-            {
-                throw new ArgumentException(
-                    $"modelId '{modelId}' contains a path-traversal segment ('{segment}'); not allowed.",
-                    nameof(modelId));
-            }
+            throw new ArgumentException(
+                $"modelId '{modelId}' contains a path-traversal segment ('{traversalSegment}'); not allowed.",
+                nameof(modelId));
         }
     }
 

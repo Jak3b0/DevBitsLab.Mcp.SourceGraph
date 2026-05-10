@@ -77,8 +77,11 @@ public sealed class OnboardingCliTests : IDisposable
         await InitCli.RunAsync(cli);
         var output = _stdout.ToString();
         output.Should().Contain(".mcp.json");
-        output.Should().Contain(".vscode/mcp.json");
-        output.Should().Contain(".cursor/mcp.json");
+        // Use Path.Join for the multi-segment paths so the assertion honours the platform's
+        // directory separator (forward slash on macOS/Linux, backslash on Windows). The
+        // previous hardcoded "/" failed the Windows CI run.
+        output.Should().Contain(Path.Join(".vscode", "mcp.json"));
+        output.Should().Contain(Path.Join(".cursor", "mcp.json"));
     }
 
     [Fact]

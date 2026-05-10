@@ -925,10 +925,11 @@ public static class GraphTools
     [ToolTrigger("\"where does this property bind?\", \"find every TwoWay binding\", \"which views use this converter?\"")]
     [Description(
         "Find or audit data bindings between XAML/UI elements and viewmodel properties. Walks `binds-path` " +
-        "edges with payload-aware filters mapped to the SDK PayloadKeys constants (`path`, `mode`, " +
-        "`converter`, `converter-parameter`). At least one filter (target, source, path, mode, converter) " +
-        "should be supplied; without one, the tool returns the first `limit` rows globally and prepends a " +
-        "note hinting the agent to narrow. On a scope whose loaded indexers do not emit `binds-path`, the " +
+        "edges; payload-aware filters map to the SDK PayloadKeys constants `path`, `mode`, and `converter` " +
+        "(plus optional `target`/`source` endpoint narrowing). The `converter-parameter` payload key is " +
+        "rendered in the response sub-line when present but is not itself a filter knob. At least one " +
+        "filter should be supplied; without one, the tool returns the first `limit` rows and prepends a " +
+        "note hinting the agent to narrow. On a scope whose stored `binds-path` edge set is empty, the " +
         "tool returns an empty list plus a one-line `note:` rather than an error.")]
     public static Task<CallToolResult> FindDataBindingsAsync(
         ScopeRouter router,
@@ -936,7 +937,7 @@ public static class GraphTools
         [Description("Source symbol — the XAML element that hosts the binding (name, FQN, or canonical key). Matched against the edge's `src`.")] string? source = null,
         [Description("Substring filter on the binding's `payload.path` (case-sensitive INSTR match). Example: 'User.' matches 'User.Name', 'User.Email'.")] string? path = null,
         [Description("Exact match on `payload.mode`. Typical values: 'one-way', 'two-way', 'one-time', 'one-way-to-source'.")] string? mode = null,
-        [Description("Exact match on `payload.converter`. Pass the converter type name (e.g. 'BoolToVisibility') or its canonical key.")] string? converter = null,
+        [Description("Exact match on `payload.converter`. The XAML indexer writes the converter's source identifier (e.g. 'BoolToVisibility'), not a canonical key — pass the same string the markup uses.")] string? converter = null,
         [Description(ScopeDescription)] string? scope = null,
         [Description("Maximum rows (default 50)")] int limit = 50,
         CancellationToken ct = default) =>
@@ -945,18 +946,21 @@ public static class GraphTools
             {
                 var sw = System.Diagnostics.Stopwatch.StartNew();
 
-                // Soft-empty: if the scope's storage has no binds-path edges and the SDK doesn't
-                // declare binds-path as a built-in, return the documented note plus an empty list.
-                // Mirrors `list_callers --kind not-a-real-kind`'s lenient pattern from
-                // open-language-contract.
+                // Soft-empty: when the scope has no binds-path edges in storage AND binds-path
+                // isn't an SDK-built-in (the indexer might just not have run yet), return the
+                // documented note plus an empty list. The condition is "no binds-path edges
+                // observed" — the cause could be either no XAML/web-stack indexer loaded for this
+                // scope, or one is loaded but indexing hasn't produced any bindings yet. The
+                // wording reflects that ambiguity rather than asserting "no indexer".
                 var storedKinds = await host.Store.GetDistinctEdgeKindsAsync(ct).ConfigureAwait(false);
                 var hasBindsPath = storedKinds.Contains(EdgeKindBindsPath, StringComparer.Ordinal)
                                    || ServerVocabulary.SdkEdgeKinds.Contains(EdgeKindBindsPath);
                 if (!hasBindsPath)
                 {
+                    var msg = $"scope `{host.Scope.Id}` has no `binds-path` edges in storage. Either no indexer that emits `binds-path` (XAML, web stack) is loaded for this scope, or indexing hasn't produced any bindings yet.";
                     return BuildFindDataBindingsResult(
-                        prose: $"note: scope `{host.Scope.Id}` has no indexer that emits `binds-path`; load a XAML or web-stack indexer to populate this graph.",
-                        note: $"scope `{host.Scope.Id}` has no indexer that emits `binds-path`; load a XAML or web-stack indexer to populate this graph.",
+                        prose: $"note: {msg}",
+                        note: msg,
                         bindings: Array.Empty<EdgeWithPayload>(),
                         scopeId: host.Scope.Id,
                         elapsedMs: sw.ElapsedMilliseconds);
@@ -1060,10 +1064,12 @@ public static class GraphTools
     [ToolTrigger("\"find all Click handlers\", \"where is OnSave wired up?\", \"which buttons fire this command?\"")]
     [Description(
         "Find or audit event-to-handler wiring in XAML or component-based UI. Walks `handles-event` " +
-        "edges with payload-aware filters mapped to the SDK PayloadKeys constants (`event`, `handler`, " +
-        "and the forward-looking `command` key for command-bound flavours). On a scope whose loaded " +
-        "indexers do not emit `handles-event`, the tool returns an empty list plus a one-line `note:` " +
-        "rather than an error.")]
+        "edges; payload-aware filters are `event` and the forward-looking `command` key (for command- " +
+        "bound flavours), mapped to the SDK PayloadKeys constants. The `handler` and `element` " +
+        "parameters narrow by edge endpoints (resolved canonical keys), not payload keys. On a scope " +
+        "whose stored `handles-event` edge set is empty, the tool returns an empty list plus a one-line " +
+        "`note:` rather than an error; `command` filtering against a scope whose `handles-event` edges " +
+        "never carry a `command` payload key returns the same soft-empty shape with a tailored note.")]
     public static Task<CallToolResult> FindEventHandlersAsync(
         ScopeRouter router,
         [Description("Handler symbol — the resolved handler method (name, FQN, or canonical key). Matched against the edge's `dst`. Resolved via the same lookup `find_definition` uses.")] string? handler = null,
@@ -1078,16 +1084,19 @@ public static class GraphTools
             {
                 var sw = System.Diagnostics.Stopwatch.StartNew();
 
-                // Soft-empty: same shape as find_data_bindings (see task 2.7) — emit a note plus
-                // an empty list so the agent stops issuing the same query against this scope.
+                // Soft-empty: same shape as find_data_bindings — emit a note plus an empty list
+                // when the scope has no handles-event edges in storage. Cause is ambiguous (no
+                // indexer that emits the kind, OR one is loaded but indexing hasn't run yet);
+                // the wording reflects that.
                 var storedKinds = await host.Store.GetDistinctEdgeKindsAsync(ct).ConfigureAwait(false);
                 var hasHandlesEvent = storedKinds.Contains(EdgeKindHandlesEvent, StringComparer.Ordinal)
                                       || ServerVocabulary.SdkEdgeKinds.Contains(EdgeKindHandlesEvent);
                 if (!hasHandlesEvent)
                 {
+                    var msg = $"scope `{host.Scope.Id}` has no `handles-event` edges in storage. Either no indexer that emits `handles-event` (XAML, web stack) is loaded for this scope, or indexing hasn't produced any handlers yet.";
                     return BuildFindEventHandlersResult(
-                        prose: $"note: scope `{host.Scope.Id}` has no indexer that emits `handles-event`; load a XAML or web-stack indexer to populate this graph.",
-                        note: $"scope `{host.Scope.Id}` has no indexer that emits `handles-event`; load a XAML or web-stack indexer to populate this graph.",
+                        prose: $"note: {msg}",
+                        note: msg,
                         handlers: Array.Empty<EdgeWithPayload>(),
                         scopeId: host.Scope.Id,
                         elapsedMs: sw.ElapsedMilliseconds);
@@ -1106,7 +1115,28 @@ public static class GraphTools
                     limit: limit,
                     ct: ct).ConfigureAwait(false);
 
+                // Secondary soft-empty: when `command` was the filter and we got 0 rows, probe
+                // whether ANY handles-event edge in storage carries a `command` payload key. None
+                // → the indexer for this scope doesn't record commands at all (XAML scopes
+                // without `Command="{Binding ...}"` patterns); emit the documented `note:` so
+                // the agent doesn't keep guessing other command names.
+                string? commandSoftEmptyNote = null;
+                if (handlers.Count == 0 && !string.IsNullOrEmpty(command))
+                {
+                    var anyCommand = await host.Store.AnyEdgeHasPayloadKeyAsync(
+                        EdgeKindHandlesEvent, "command", ct).ConfigureAwait(false);
+                    if (!anyCommand)
+                    {
+                        commandSoftEmptyNote = $"no `handles-event` edges in scope `{host.Scope.Id}` carry a `command` payload key — the loaded indexer for this scope doesn't record command-bound wirings.";
+                    }
+                }
+
                 var sb = new StringBuilder();
+                if (commandSoftEmptyNote is not null)
+                {
+                    sb.AppendLine($"note: {commandSoftEmptyNote}");
+                    sb.AppendLine();
+                }
                 if (handlers.Count == 0)
                 {
                     sb.AppendLine("No event handlers matched.");
@@ -1127,7 +1157,7 @@ public static class GraphTools
 
                 return BuildFindEventHandlersResult(
                     prose: sb.ToString(),
-                    note: null,
+                    note: commandSoftEmptyNote,
                     handlers: handlers,
                     scopeId: host.Scope.Id,
                     elapsedMs: sw.ElapsedMilliseconds);

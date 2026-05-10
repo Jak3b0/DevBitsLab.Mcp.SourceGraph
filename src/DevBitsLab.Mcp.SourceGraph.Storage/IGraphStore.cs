@@ -236,6 +236,15 @@ public interface IGraphStore : IAsyncDisposable
         CancellationToken ct = default);
 
     /// <summary>
+    /// Probe whether <i>any</i> edge of <paramref name="edgeKind"/> has a non-null
+    /// <c>json_extract(payload, '$.&lt;payloadKey&gt;')</c>. Used by tools that need to
+    /// distinguish "the filter didn't match anything" from "the indexer for this scope never
+    /// emits this payload key" (e.g. <c>find_event_handlers --command=…</c> on a XAML scope
+    /// whose indexer didn't record command names). Cheap: stops at the first hit.
+    /// </summary>
+    Task<bool> AnyEdgeHasPayloadKeyAsync(string edgeKind, string payloadKey, CancellationToken ct = default);
+
+    /// <summary>
     /// Distinct edge kind names already present in the store, sorted lowercase. Used by the
     /// vocabulary publisher to enrich the MCP <c>initialize</c> response with what's actually
     /// queryable in this scope.

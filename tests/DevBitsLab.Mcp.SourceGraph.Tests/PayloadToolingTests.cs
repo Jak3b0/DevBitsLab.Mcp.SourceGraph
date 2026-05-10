@@ -38,12 +38,16 @@ public sealed class PayloadToolingTests : IAsyncLifetime
     public async Task DisposeAsync()
     {
         if (_store is not null) await _store.DisposeAsync();
+        // Recursive delete clears `graph.db`, the SQLite WAL/SHM sidecars, and the per-test temp
+        // directory itself so `sourcegraph-payload-tooling-tests-*` folders don't accumulate
+        // under TEMP across many runs (Copilot review #33: PayloadToolingTests.cs:47).
         try
         {
-            if (File.Exists(_dbPath)) File.Delete(_dbPath);
+            var dir = Path.GetDirectoryName(_dbPath);
+            if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
         }
-        catch (IOException) { /* best-effort cleanup; another handle may still hold the file */ }
-        catch (UnauthorizedAccessException) { /* best-effort cleanup; readonly bit or ACL drift */ }
+        catch (IOException) { /* best-effort cleanup; WAL/SHM sidecars sometimes linger */ }
+        catch (UnauthorizedAccessException) { /* best-effort cleanup; ACL drift or readonly bit */ }
     }
 
     private async Task<long> SeedSymbolAsync(string canonicalKey, string name, string kind = SymbolKinds.Method)

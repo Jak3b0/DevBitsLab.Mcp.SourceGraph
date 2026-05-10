@@ -1041,6 +1041,26 @@ public sealed class SqliteGraphStore : IGraphStore
         return rows.AsList();
     }
 
+    public async Task<bool> AnyEdgeHasPayloadKeyAsync(string edgeKind, string payloadKey, CancellationToken ct = default)
+    {
+        // EXISTS short-circuits at the first matching row — cheap on large edge sets. The kind
+        // index narrows to the kind partition; json_extract pulls the field value (NULL when the
+        // payload column is NULL or the key is absent). The kebab payloadKey is interpolated into
+        // the SQL path because Dapper can't parameterise inside a JSON path string; this is safe
+        // here — only well-known kebab constants from this assembly's tools call this method.
+        var sql = $"""
+            SELECT EXISTS (
+                SELECT 1 FROM edges
+                WHERE kind_name = @edgeKind
+                  AND json_extract(payload, '$.{payloadKey}') IS NOT NULL
+                LIMIT 1
+            );
+            """;
+        var hit = await _connection.ExecuteScalarAsync<long>(new CommandDefinition(
+            sql, new { edgeKind }, cancellationToken: ct)).ConfigureAwait(false);
+        return hit != 0;
+    }
+
     public async Task<IReadOnlyList<string>> GetDistinctSymbolKindsAsync(CancellationToken ct = default)
     {
         const string sql = "SELECT DISTINCT kind_name FROM symbols ORDER BY kind_name;";

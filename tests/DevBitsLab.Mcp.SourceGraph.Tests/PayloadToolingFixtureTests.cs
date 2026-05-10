@@ -183,6 +183,32 @@ public sealed class PayloadToolingFixtureTests : IAsyncLifetime, IDisposable
     }
 
     [Fact]
+    public async Task FindEventHandlers_commandFilter_softEmpty_whenScopeHandlesEventsLackCommandPayload()
+    {
+        // The SampleWpf fixture has handles-event edges (Click → OnSave) but none of them carry
+        // a `command` payload key — its XAML indexer doesn't record command-bound wirings on
+        // event-attribute handlers. Calling find_event_handlers --command=… against this scope
+        // must surface the documented `note:` line distinguishing "no command payload anywhere"
+        // from "command name didn't match", so the agent stops trying other command names.
+        var result = await GraphTools.FindEventHandlersAsync(
+            router: _wpfRouter!,
+            handler: null, @event: null,
+            element: null, command: "AnyCommandName",
+            scope: null, limit: 50);
+
+        result.IsError.Should().NotBe(true);
+        result.StructuredContent.Should().NotBeNull();
+        var dto = JsonSerializer.Deserialize<FindEventHandlersResult>(
+            result.StructuredContent!.Value.GetRawText(),
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower });
+        dto.Should().NotBeNull();
+        dto!.Handlers.Should().BeEmpty();
+        dto.Note.Should().NotBeNullOrEmpty();
+        dto.Note!.Should().Contain("command", "the note must name the missing payload key");
+        dto.Note.Should().Contain("handles-event", "the note must name the edge kind it walked");
+    }
+
+    [Fact]
     public async Task FindDataBindings_softEmpty_whenScopeHasNoBindsPathEmitter()
     {
         // The C#-only scope's storage holds no binds-path edges (and the SDK doesn't promote

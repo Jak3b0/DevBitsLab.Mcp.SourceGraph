@@ -33,11 +33,14 @@ public sealed class SourceTreeWalkerTests : IDisposable
     public async Task Walk_yields_only_nonIgnoredFiles_withCorrectSha()
     {
         // Plant 5 files: 3 valid under the root + a `obj/` subdir + a `.git/` subdir.
+        // Note: each path segment is its own Path.Join arg so the platform-native separator
+        // wins. `Path.Join(root, "src/B.cs")` would leave the `/` literal on Windows; the
+        // walker enumerates with `\` and the equivalence check would mismatch the `/` vs `\`.
         var (kept1, kept1Sha) = await Plant(Path.Join(_root, "A.cs"), "class A {}");
-        var (kept2, kept2Sha) = await Plant(Path.Join(_root, "src/B.cs"), "class B {}");
-        var (kept3, kept3Sha) = await Plant(Path.Join(_root, "src/sub/C.cs"), "class C {}");
-        await Plant(Path.Join(_root, "obj/Debug/D.cs"), "class D {}");
-        await Plant(Path.Join(_root, ".git/HEAD"), "ref: refs/heads/main");
+        var (kept2, kept2Sha) = await Plant(Path.Join(_root, "src", "B.cs"), "class B {}");
+        var (kept3, kept3Sha) = await Plant(Path.Join(_root, "src", "sub", "C.cs"), "class C {}");
+        await Plant(Path.Join(_root, "obj", "Debug", "D.cs"), "class D {}");
+        await Plant(Path.Join(_root, ".git", "HEAD"), "ref: refs/heads/main");
 
         var outcome = await SourceTreeWalker.WalkAsync(_root, maxFiles: 100);
 

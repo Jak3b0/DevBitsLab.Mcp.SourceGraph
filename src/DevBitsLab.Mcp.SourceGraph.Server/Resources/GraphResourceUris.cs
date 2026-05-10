@@ -31,7 +31,7 @@ public static class GraphResourceUris
 
     /// <summary>
     /// Static URI for the on-demand help body referenced from <c>ServerInstructions</c>. Served
-    /// by <see cref="GraphResources.GetHelpAsync"/>.
+    /// by <see cref="GraphResources.GetHelp"/>.
     /// </summary>
     public const string Help = "graph://help";
 }

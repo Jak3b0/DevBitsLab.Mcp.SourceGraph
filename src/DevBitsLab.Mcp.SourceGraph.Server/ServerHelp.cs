@@ -6,7 +6,7 @@ namespace DevBitsLab.Mcp.SourceGraph.Server;
 /// preamble in <see cref="ServerInstructions.Template"/>; the verbose tool-selection guide and
 /// the <c>describe_schema</c> / <c>query_graph</c> reference live here so agents that don't
 /// need them never pay the upfront token cost. Served by
-/// <see cref="Resources.GraphResources.GetHelpAsync"/>.
+/// <see cref="Resources.GraphResources.GetHelp"/>.
 /// </summary>
 internal static class ServerHelp
 {
@@ -14,11 +14,13 @@ internal static class ServerHelp
         """
         # Tool selection
 
-        Each built-in tool's description in `tools/list` includes a `Use when:` line
-        documenting the question shape it answers; pick the closest match. Fall back to
-        Grep / Read only when the graph genuinely doesn't cover the question (config
-        files, plain text, comments, PR descriptions, etc.) or when a tool returns
-        nothing relevant.
+        By default each built-in tool's description in `tools/list` carries a `Use when:`
+        line documenting the question shape it answers; pick the closest match. (The
+        operator can suppress these lines with `--no-tool-triggers` /
+        `SOURCEGRAPH_NO_TOOL_TRIGGERS=1` — if you don't see them, fall back to matching
+        on the tool name and description prose.) Fall back to Grep / Read only when the
+        graph genuinely doesn't cover the question (config files, plain text, comments,
+        PR descriptions, etc.) or when a tool returns nothing relevant.
 
         # Ad-hoc queries (describe_schema + query_graph)
 

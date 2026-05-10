@@ -285,16 +285,22 @@ public static class ToolMetrics
     private static void AppendJsonl(string toolName, object? args, int responseLen, TimeSpan elapsed, bool ok, string? scope)
     {
         if (_logPath is null) return;
-        // Pre-serialise args so request_len reflects the wire-shaped JSON the agent actually sent
-        // (rather than e.g. .ToString() of an anonymous arg bag). Defensive try/catch — args may be
-        // a non-serialisable shape from a misbehaving caller; record 0 rather than skipping the row.
+        // Serialise args once via SerializeToElement, then reuse: request_len is measured from
+        // the element's raw JSON and the element itself goes back into `entry` so the outer
+        // JsonSerializer.Serialize(entry) doesn't re-pay the cost. Narrow catch: only the
+        // serialise-path exceptions are absorbed (record requestLen=0 and drop args from the
+        // row). File I/O exceptions are absorbed by the broader catch below — observability is
+        // best-effort and must never break the wrapped tool call.
+        JsonElement? argsElement;
         int requestLen;
         try
         {
-            requestLen = args is null ? 0 : JsonSerializer.Serialize(args).Length;
+            argsElement = args is null ? null : JsonSerializer.SerializeToElement(args);
+            requestLen = argsElement?.GetRawText().Length ?? 0;
         }
-        catch
+        catch (Exception ex) when (ex is NotSupportedException or JsonException or InvalidOperationException)
         {
+            argsElement = null;
             requestLen = 0;
         }
         var entry = new
@@ -306,7 +312,7 @@ public static class ToolMetrics
             request_len = requestLen,
             response_len = responseLen,
             scope,
-            args
+            args = argsElement,
         };
         try
         {

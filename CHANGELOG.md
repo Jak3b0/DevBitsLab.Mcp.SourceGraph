@@ -28,8 +28,9 @@ below note which package the change applies to.
   both built-in tools and plugin tools registered via `ToolRegistry`.
 - **`request_len` field in `.sourcegraph/usage.jsonl`.** Sits next to the
   existing `response_len` so future tool-call cost analysis can compare the
-  agent's input against the server's output. Recorded as the byte-length of
-  the serialised `args` JSON. No client-visible behaviour change.
+  agent's input against the server's output. Recorded as the string length of
+  the serialised `args` JSON (matching how `response_len` is measured — string
+  `.Length`, not UTF-8 byte count). No client-visible behaviour change.
 
 ## [0.8.0] - 2026-05-10
 

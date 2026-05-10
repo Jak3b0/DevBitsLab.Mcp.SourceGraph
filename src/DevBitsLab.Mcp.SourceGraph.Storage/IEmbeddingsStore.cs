@@ -40,6 +40,14 @@ public interface IEmbeddingsStore
 
     /// <summary>Total number of stored embeddings (count of rows in <c>symbol_embeddings</c>).</summary>
     Task<long> CountAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Deletes <c>symbol_embeddings</c> rows whose <c>rowid</c> no longer exists in the
+    /// <c>symbols</c> table. Returns the number of rows removed. Cheap (single DELETE), reversible
+    /// (embeddings regenerate on next semantic_search call). Safe to call when the underlying
+    /// vector extension is unavailable — the implementation MAY return 0 without error.
+    /// </summary>
+    Task<int> PruneOrphanedAsync(CancellationToken ct = default);
 }
 
 /// <summary>One row in a top-k <c>semantic_search</c> result. <see cref="Score"/> is in [-1, 1].</summary>

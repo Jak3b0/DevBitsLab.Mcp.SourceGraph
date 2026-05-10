@@ -281,6 +281,35 @@ public sealed class RoslynIndexer : IAsyncDisposable, ILanguageIndexer
         return regular.Concat(generatedList);
     }
 
+    /// <summary>
+    /// Best-effort post-failure clear of <paramref name="fileId"/>'s outgoing refs/edges.
+    /// Called from <see cref="IndexCoreAsync"/>'s pass-2 catch handler when a file's walk
+    /// threw partway through: a partial commit (refs done, edges throws) would leave the
+    /// integrity check satisfied (refs > 0) on the next index and strand the missing edges,
+    /// so we drop both halves here. A failure of the clear itself is logged but not rethrown
+    /// — letting it propagate would defeat the surrounding catch's "keep walking the rest"
+    /// purpose. The original walk failure is logged separately by the caller.
+    /// </summary>
+    [SuppressMessage("Design", "CA1031:DoNotCatchGeneralExceptionTypes",
+        Justification = "Best-effort cleanup: a thrown exception here would propagate out of the catch handler in IndexCoreAsync and abort the entire pass-2 loop, defeating the surrounding catch's intent. The clear's failure is logged at warn so operators see secondary failures.")]
+    private async Task TryClearFileOutgoingAsync(long fileId, string path, CancellationToken ct)
+    {
+        try
+        {
+            await _store.ClearFileOutgoingAsync(fileId, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception clearEx)
+        {
+            // The clear itself failed. Best-effort: log and move on. The file may hold
+            // partial state until the next clear+re-walk; an operator who notices repeated
+            // recoveries can wipe the .sourcegraph DB to recover fully.
+            _logger.LogWarning(clearEx,
+                "Pass 2's post-failure clear for {Path} also failed; file may have stale partial refs/edges",
+                path);
+        }
+    }
+
     [SuppressMessage("Design", "CA1031:DoNotCatchGeneralExceptionTypes",
         Justification = "IndexCoreAsync's per-file walks must not let one document's failure (a misbehaving source generator, a transient compile gap, an analyzer throwing inside Roslyn) bring the whole indexing pass down. Each catch logs the file path + exception and continues with the next file; OperationCanceledException is rethrown explicitly so user-driven cancellation surfaces.")]
     private async Task<IndexResult> IndexCoreAsync(IReadOnlyList<Document> documents, bool fullReset, CancellationToken ct)
@@ -815,20 +844,7 @@ public sealed class RoslynIndexer : IAsyncDisposable, ILanguageIndexer
                 // edges would leave refs committed. That state is invisible to the next
                 // index's integrity check (refs > 0 → SHA-skip → edges stranded forever), so
                 // re-clear here to drop any partial commit and force a full re-walk next time.
-                try
-                {
-                    await _store.ClearFileOutgoingAsync(fileId, ct).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) { throw; }
-                catch (Exception clearEx)
-                {
-                    // The clear itself failed. Best-effort: log and move on. The file may
-                    // hold partial state until the next clear+re-walk; an operator who notices
-                    // repeated recoveries can wipe the .sourcegraph DB to recover fully.
-                    _logger.LogWarning(clearEx,
-                        "Pass 2's post-failure clear for {Path} also failed; file may have stale partial refs/edges",
-                        path);
-                }
+                await TryClearFileOutgoingAsync(fileId, path, ct).ConfigureAwait(false);
 
                 _logger.LogWarning(ex,
                     "Pass 2 walk failed for {Path}; cleared partial refs/edges, will re-attempt on the next index",

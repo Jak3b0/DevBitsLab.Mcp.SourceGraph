@@ -100,6 +100,9 @@ public sealed class GraphQueryToolTests : IAsyncLifetime, IDisposable
         // Live kind vocabularies populated from SELECT DISTINCT against the view layer.
         dto.SymbolKinds.Should().Contain("class").And.Contain("method");
         dto.EdgeKinds.Should().Contain("uses-type");
+        // Annotation flavors vocabulary — the seed fixture inserts one csharp-attribute
+        // per non-isolated scope (Calculator decorated with [Obsolete]).
+        dto.AnnotationFlavors.Should().Contain("csharp-attribute");
     }
 
     [Fact]
@@ -122,6 +125,7 @@ public sealed class GraphQueryToolTests : IAsyncLifetime, IDisposable
         assistantBlocks.Should().HaveCount(1);
         assistantBlocks[0].Text.Should().Contain("symbol_kinds=");
         assistantBlocks[0].Text.Should().Contain("edge_kinds=");
+        assistantBlocks[0].Text.Should().Contain("annotation_flavors=");
     }
 
     [Fact]

@@ -214,46 +214,59 @@ The view definitions of the original five views (`v_symbols` / `v_files` / `v_ed
 - **THEN** the client SHOULD discard its cached schema and re-call `describe_schema`; `v_annotations`, `v_diagnostics`, and `v_history` appear in the refreshed view list with their columns
 
 ### Requirement: Read-only multi-scope attached connection helper
-The storage layer SHALL expose `MultiScopeReadOnlyConnection.OpenAsync(IScopeRegistry registry, string scopeFilter, int maxAttached, CancellationToken ct)` returning an open `SqliteConnection` configured for read-only access to a resolved set of scope DBs plus the `_meta.db` registry, with the view layer (per the `Stable view layer over the underlying tables` requirement) created as TEMP views ready for query.
+The storage layer SHALL expose `MultiScopeReadOnlyConnection.OpenAsync(IScopeRegistry registry, string repoRoot, string scopeFilter, int maxAttached, CancellationToken ct)` returning an open `SqliteConnection` configured for read-only access to a resolved set of scope DBs plus the `_meta.db` registry, with the view layer (per the `Stable view layer over the underlying tables` requirement) created as TEMP views ready for query. The `repoRoot` parameter resolves the per-scope DB locations via `ScopeLayout.ScopeDbPath(repoRoot, id)` and the registry DB via `ScopeLayout.MetaDbPath(repoRoot)`.
 
 The helper SHALL:
 - Open an in-memory SQLite connection (`Data Source=:memory:`).
-- Raise the runtime ATTACH limit to `maxAttached` (default `64`, hard-bounded by SQLite's compile-time ceiling of `125`) via `sqlite3_limit(SQLITE_LIMIT_ATTACHED, …)`.
+- Raise the runtime ATTACH limit to `maxAttached` (default `64`, hard-bounded by SQLite's compile-time ceiling of `125`) via `sqlite3_limit(SQLITE_LIMIT_ATTACHED, …)`. Note: the bundled `e_sqlite3` ships with `SQLITE_MAX_ATTACHED = 10`, silently clamping any higher limit; the practical ceiling is therefore 9 scope DBs (one ATTACH slot is reserved for `meta`).
 - Resolve `scopeFilter` against `IScopeRegistry`:
   - `"*"` → all scopes whose `isolated` flag is `false`.
   - Comma-separated list → those scopes by id (isolated permitted when explicitly named).
   - Single id → just that scope.
-- ATTACH `_meta.db` AS `meta` (read-only via `?mode=ro` on the URI), once per connection regardless of scope filter.
-- ATTACH each per-scope DB AS `<scope_id>` (read-only via `?mode=ro`).
-- Expand `Views.Sql`'s `{{SCOPE_UNION_BLOCK}}` token into one `SELECT '<scope_id>' AS scope, … FROM <scope_id>.<table> UNION ALL` branch per attached scope, then execute the resulting DDL.
-- If the resolved scope set's count exceeds `maxAttached`, throw `ScopeAttachLimitExceededException` carrying the resolved scope-id list and the configured ceiling, **before** opening any per-scope ATTACH.
+- Throw `ArgumentException(paramName: "scopeFilter")` with a diagnostic message **before** opening any ATTACH when the resolved scope set is empty (e.g. `*` against a registry with no non-isolated scopes, or a comma-list that filters everything out). The message SHALL distinguish "registry has no scopes" from "every scope is isolated" so callers can render an actionable hint.
+- For each ATTACH (meta + per-scope), validate `File.Exists(absolutePath)` first and throw `FileNotFoundException` with the alias and absolute path if the file is missing. SQLite's `ATTACH DATABASE` materialises an empty file at the given path when the file doesn't exist (the connection isn't read-only at this point — `query_only` fires later); the explicit existence check prevents accidentally creating phantom empty scope DBs that would later fail with cryptic "no such table" errors.
+- ATTACH `_meta.db` AS `meta` with a literal absolute path (no URI), once per connection regardless of scope filter.
+- ATTACH each per-scope DB AS `<scope_id>` (double-quoted in the DDL so kebab-case ids parse cleanly) with a literal absolute path.
+- Expand `Views.Sql`'s `{{SCOPE_UNION_BLOCK_<view>}}` tokens into one `SELECT '<scope_id>' AS scope, … FROM "<scope_id>".<table>` branch per attached scope, joined by `UNION ALL`, then execute the resulting DDL.
+- After the TEMP VIEW DDL is applied, set `PRAGMA query_only = 1` on the connection so any subsequent `INSERT` / `UPDATE` / `DELETE` / `DROP` / `CREATE` / `REPLACE` against any attached DB returns `SQLITE_READONLY` (8). `query_only` is per-connection state — it does not require a global `SQLITE_CONFIG_URI` flip and never races with other `SqliteConnection`s in the process. (An earlier revision used `ATTACH 'file:…?mode=ro'` URIs; the URI form needed a process-global `sqlite3_shutdown / config / initialize` dance that raced with parallel `SqliteConnection`s under xUnit's collection runner.)
+- If the resolved scope set's count exceeds `maxAttached` (or the SQLite-imposed ceiling, whichever is lower), throw `ScopeAttachLimitExceededException` carrying the resolved scope-id list and the configured ceiling, **before** opening any per-scope ATTACH.
 
 #### Scenario: Default filter resolves to non-isolated scopes
 - **GIVEN** a scope registry with `frontend` (not isolated), `backend` (not isolated), and `vendor` (isolated)
-- **WHEN** `OpenAsync(registry, "*", maxAttached: 64, ct)` runs
+- **WHEN** `OpenAsync(registry, repoRoot, "*", maxAttached: 64, ct)` runs
 - **THEN** the returned connection has `meta`, `frontend`, and `backend` attached; `vendor` is NOT attached; `v_symbols` enumerates rows from `frontend` and `backend` only
 
 #### Scenario: Explicit naming includes isolated scopes
-- **WHEN** `OpenAsync(registry, "vendor", maxAttached: 64, ct)` runs
+- **WHEN** `OpenAsync(registry, repoRoot, "vendor", maxAttached: 64, ct)` runs
 - **THEN** the returned connection has `meta` and `vendor` attached; `v_symbols` enumerates rows from `vendor` only
 
 #### Scenario: Comma-list filter is honoured exactly
-- **WHEN** `OpenAsync(registry, "frontend,vendor", maxAttached: 64, ct)` runs
+- **WHEN** `OpenAsync(registry, repoRoot, "frontend,vendor", maxAttached: 64, ct)` runs
 - **THEN** the returned connection has `meta`, `frontend`, and `vendor` attached; `backend` is NOT attached even though it's not isolated
 
-#### Scenario: Read-only enforcement at the per-scope ATTACH
+#### Scenario: Read-only enforcement via PRAGMA query_only
 - **GIVEN** an open multi-scope connection
 - **WHEN** the caller executes `INSERT INTO frontend.symbols(name) VALUES ('evil')`
-- **THEN** SQLite returns error code `SQLITE_READONLY`; no row is inserted; the on-disk `frontend.db` is untouched
+- **THEN** SQLite returns error code `SQLITE_READONLY` (8); no row is inserted; the on-disk `frontend.db` is untouched. The same applies to writes against the `meta` ATTACH and to schema mutations (`CREATE`, `DROP`, `ALTER`).
+
+#### Scenario: Empty scope set throws ArgumentException
+- **GIVEN** a registry containing only isolated scopes (or no scopes at all)
+- **WHEN** `OpenAsync(registry, repoRoot, "*", maxAttached: 64, ct)` runs
+- **THEN** the helper throws `ArgumentException` with `ParamName == "scopeFilter"` and a diagnostic message naming the cause; no SQLite connection is leaked; tool bodies (`describe_schema`, `query_graph`) catch this and surface a structured `no_scopes` error to the agent
+
+#### Scenario: Missing scope DB file throws FileNotFoundException
+- **GIVEN** a scope registered in `_meta.db` whose per-scope DB file (`scopes/<id>.db`) has been deleted from disk
+- **WHEN** the resolved scope set includes that id and `OpenAsync` reaches the corresponding ATTACH
+- **THEN** the helper throws `FileNotFoundException` with the alias and absolute path; the SQLite ATTACH is never issued, so no phantom empty file is created on disk; tool bodies catch this and surface a structured `scope_db_missing` error
 
 #### Scenario: ATTACH ceiling enforced
 - **GIVEN** a registry containing 70 non-isolated scopes
-- **WHEN** `OpenAsync(registry, "*", maxAttached: 64, ct)` runs
-- **THEN** the helper throws `ScopeAttachLimitExceededException`; the exception's `ResolvedScopes` property lists all 70 scope ids; `Limit` is `64`; no SQLite connection is leaked
+- **WHEN** `OpenAsync(registry, repoRoot, "*", maxAttached: 64, ct)` runs
+- **THEN** the helper throws `ScopeAttachLimitExceededException`; the exception's `ResolvedScopes` property lists all 70 scope ids; `Limit` is the lower of `maxAttached` and the SQLite-imposed ceiling; no SQLite connection is leaked
 
 #### Scenario: Connection is per-call and disposable
 - **WHEN** `query_graph` opens a multi-scope connection, executes one query, and disposes it
-- **THEN** the in-memory main DB and every ATTACH are released; subsequent calls do not see leftover TEMP views from a prior call; opening two connections concurrently does not interfere with each other (no shared state)
+- **THEN** the in-memory main DB and every ATTACH are released; subsequent calls do not see leftover TEMP views from a prior call; opening two connections concurrently does not interfere with each other (no shared state and no global SQLite engine reconfigure)
 
 ### Requirement: Extended view coverage for annotations, diagnostics, and per-symbol git history
 The storage layer SHALL extend the view layer (per the existing `Stable view layer over the underlying tables` requirement) with three additional views — `v_annotations`, `v_diagnostics`, `v_history` — covering the corresponding underlying tables (`annotations`, `diagnostics`, `symbol_history`). The new views SHALL follow the same per-scope `UNION ALL` pattern, the same `(scope, id)` composite-uniqueness convention, and the same `Views.PerScopeBlockTemplates` registration that the existing five views use.

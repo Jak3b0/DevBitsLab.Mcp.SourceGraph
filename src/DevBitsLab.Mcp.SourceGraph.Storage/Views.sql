@@ -2,13 +2,16 @@
 -- Substituted at connection-setup time by MultiScopeReadOnlyConnection.
 -- The placeholder tokens below (each beginning with double-brace) are replaced with one
 -- per-scope SELECT branch joined by UNION ALL. See
--- openspec/changes/add-graph-query/design.md Decision 2 for the full contract.
+-- openspec/changes/archive/2026-05-10-add-graph-query/design.md Decision 2 for the full
+-- contract (extended in archive/2026-05-10-add-graph-query-extended-views/ to add
+-- v_annotations / v_diagnostics / v_history).
 -- (Tokens are not shown here verbatim to avoid being mistaken for substitution targets;
 -- the {{SCOPE_UNION_BLOCK_<view>}}-style placeholders appear only in the view bodies below.)
 --
 -- Naming notes (renames vs. underlying tables):
---   * v_symbols.start_column / end_column are exposed as start_column / end_column
---     for ergonomics, even though the underlying table uses start_col / end_col.
+--   * v_symbols.start_column renames the underlying symbols.start_col for ergonomics.
+--     end_line / end_column are NOT projected — agents who need the end position can
+--     query the underlying table directly via "<scope>".symbols.end_line / .end_col.
 --   * v_references.column_number renames the underlying refs.col — SQL reserves the
 --     bare identifier COLUMN, so we avoid the double-quoting tax for agent queries.
 --   * v_diagnostics.column_number renames the underlying diagnostics.col for the

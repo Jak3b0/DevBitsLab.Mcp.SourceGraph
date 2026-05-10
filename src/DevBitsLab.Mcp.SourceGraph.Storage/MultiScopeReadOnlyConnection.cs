@@ -7,13 +7,21 @@ using SQLitePCL;
 namespace DevBitsLab.Mcp.SourceGraph.Storage;
 
 /// <summary>
-/// Opens a read-only SQLite connection that fans out across the resolved scope set: one ATTACH
-/// per per-scope DB plus the <c>_meta.db</c> registry, all <c>?mode=ro</c>; the
-/// agent-facing view layer (<see cref="Views.Sql"/>) is materialised as TEMP views ready for
-/// query. Each <see cref="OpenAsync"/> call returns a fresh connection — caller owns disposal.
+/// Opens a read-only SQLite connection that fans out across the resolved scope set: one
+/// plain-path ATTACH per per-scope DB plus the <c>_meta.db</c> registry, then
+/// <c>PRAGMA query_only = 1</c> on the connection after the TEMP VIEW DDL is applied so the
+/// agent's queries can SELECT but cannot mutate any attached DB. The agent-facing view layer
+/// (<see cref="Views.Sql"/>) is materialised as TEMP views ready for query. Each
+/// <see cref="OpenAsync"/> call returns a fresh connection — caller owns disposal.
 ///
-/// See <c>openspec/changes/add-graph-query/design.md</c> Decision 3 (multi-scope ATTACH) and
-/// Decision 4 (safety rails).
+/// See <c>openspec/changes/archive/2026-05-10-add-graph-query/design.md</c> Decision 3
+/// (multi-scope ATTACH) and Decision 4 (safety rails). Note: an earlier revision used
+/// <c>ATTACH 'file:…?mode=ro'</c> URIs to enforce read-only at the engine level; that path
+/// required <c>SQLITE_CONFIG_URI</c> via a global <c>shutdown / config / initialize</c> dance
+/// that raced with parallel <c>SqliteConnection</c>s elsewhere in the process. The current
+/// per-connection <c>PRAGMA query_only = 1</c> is per-session state and never races. SQLite
+/// still returns <c>SQLITE_READONLY</c> (8) on writes under <c>query_only</c>, preserving the
+/// structured-error contract that <c>query_graph</c>'s tests assert on.
 ///
 /// <para><b>ATTACH ceiling.</b> SQLite's <c>SQLITE_LIMIT_ATTACHED</c> caps the number of
 /// attached databases. The ABI exposes <c>sqlite3_limit(SQLITE_LIMIT_ATTACHED, …)</c> so
@@ -95,8 +103,24 @@ public static class MultiScopeReadOnlyConnection
         // 1. Resolve scope filter against the registry.
         var resolved = await ResolveScopesAsync(registry, scopeFilter, ct).ConfigureAwait(false);
 
-        // 2. Validate count against the configured ceiling BEFORE opening any per-scope ATTACH,
-        //    so we never leak a half-built connection on overflow.
+        // 2a. Empty-resolution guard. `*` against a registry with no non-isolated scopes (or a
+        //     comma-list that filters everything out) leaves nothing to ATTACH; that's an
+        //     exceptional state worth surfacing to the caller rather than building a degenerate
+        //     view set that can't answer any query. Fail fast with a useful message; tool bodies
+        //     convert this to a structured error.
+        if (resolved.Count == 0)
+        {
+            var registered = await registry.ListAsync(ct).ConfigureAwait(false);
+            var diagnosis = registered.Count == 0
+                ? "the registry has no scopes registered. Run `sourcegraph-mcp scopes add <name> --solution <path>` (or `init-scopes`) to register one."
+                : $"the registry has {registered.Count} scope(s) but none matched the filter (every scope may be isolated). Either name an isolated scope explicitly (e.g. `scope=\"<id>\"`) or unset the `isolated` flag in `.sourcegraph.json`.";
+            throw new ArgumentException(
+                $"Scope filter '{scopeFilter}' resolved to no scopes — {diagnosis}",
+                nameof(scopeFilter));
+        }
+
+        // 2b. Validate count against the configured ceiling BEFORE opening any per-scope ATTACH,
+        //     so we never leak a half-built connection on overflow.
         if (resolved.Count > maxAttached)
         {
             throw new ScopeAttachLimitExceededException(resolved, maxAttached);
@@ -226,11 +250,25 @@ public static class MultiScopeReadOnlyConnection
     /// later via <c>PRAGMA query_only = 1</c> on the connection — the URI <c>?mode=ro</c>
     /// approach was retired because it required a global SQLite engine reconfigure that raced
     /// with parallel SqliteConnections elsewhere in the process.
+    ///
+    /// <para>SQLite's <c>ATTACH DATABASE</c> creates an empty file at the given path when the
+    /// file doesn't exist (the connection isn't read-only at this point — <c>query_only</c>
+    /// fires later). Validating <c>File.Exists</c> first prevents accidentally materialising
+    /// phantom empty scope DBs that would later fail with cryptic "no such table" errors when
+    /// the view layer references them.</para>
     /// </summary>
     private static async Task AttachAsync(
         SqliteConnection connection, string dbPath, string alias, CancellationToken ct)
     {
         var absolute = Path.GetFullPath(dbPath);
+
+        if (!File.Exists(absolute))
+        {
+            throw new FileNotFoundException(
+                $"Cannot attach scope '{alias}': the SQLite database file does not exist at '{absolute}'. " +
+                "Either re-index the scope, remove its registry entry, or restore the file from a backup.",
+                absolute);
+        }
 
         await using var cmd = connection.CreateCommand();
         // Identifier (alias) cannot be parameterised; double-quote so kebab-case ids with
@@ -301,32 +339,16 @@ public static class MultiScopeReadOnlyConnection
 
     /// <summary>
     /// Format the <paramref name="template"/> once per resolved scope, joining the resulting
-    /// SELECTs with <c>UNION ALL</c>. With zero scopes the result is a never-true SELECT
-    /// shaped exactly like one branch (using a fixed placeholder scope id) so the parent
-    /// <c>CREATE VIEW</c> still defines a queryable view.
+    /// SELECTs with <c>UNION ALL</c>. <see cref="OpenAsync"/> validates that the resolved set
+    /// is non-empty before we get here; the assertion below is purely defensive.
     /// </summary>
     private static string BuildUnionBlock(string viewName, string template, IReadOnlyList<string> resolved)
     {
         if (resolved.Count == 0)
         {
-            // Empty-scope safety: produce a single branch that filters everything out. The
-            // synthetic alias '__none__' is never a valid scope id (the validator rejects
-            // double-underscore prefixes via length / charset rules — well, technically
-            // [a-z0-9-] permits no underscore at all). We use it only as a literal in the
-            // SELECT projection, never as an ATTACH alias, so there is no aliasing collision.
-            // The trailing WHERE 0 makes every row vanish at execution time.
-            // We can't actually build a degenerate template (the FROM "{__none__}".table would
-            // reference an attached DB that doesn't exist), so we use a SELECT that bypasses
-            // the FROM by selecting NULL columns shaped like the view. To keep this simple
-            // and avoid hard-coding column shapes here, we just emit a SELECT 0 WHERE 0 — but
-            // that would not match the projected column count. Easiest is to substitute a
-            // single scope alias known to be attached: meta. But meta does not have the
-            // tables (symbols/files/edges/refs). So the cleanest option: leave the empty
-            // case to the caller (resolved.Count is validated above to be >= 1 in practice
-            // because ResolveScopesAsync requires at least one entry). Throw here to surface
-            // the bug rather than producing invalid SQL.
+            // Should be unreachable: OpenAsync's empty-resolution guard runs first.
             throw new InvalidOperationException(
-                $"Internal error: tried to build view '{viewName}' with zero attached scopes.");
+                $"Internal error: tried to build view '{viewName}' with zero attached scopes — OpenAsync's empty-resolution guard should have thrown ArgumentException upstream.");
         }
 
         var sb = new StringBuilder();

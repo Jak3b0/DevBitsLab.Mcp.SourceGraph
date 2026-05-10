@@ -4,20 +4,20 @@ namespace DevBitsLab.Mcp.SourceGraph.Server.Tools.Output;
 
 /// <summary>
 /// Typed structured output for the <c>describe_schema</c> MCP tool. Returns the agent-facing
-/// view layer (<see cref="Storage.Views.All"/>) plus the live <c>kind</c> vocabularies present
-/// in <c>v_symbols</c> / <c>v_edges</c> for the resolved scope set, so an agent can compose a
-/// <c>query_graph</c> SQL statement against this server in one round-trip.
+/// view layer (<see cref="Storage.Views.All"/>) plus the live vocabularies present in
+/// <c>v_symbols</c> / <c>v_edges</c> / <c>v_annotations</c> for the resolved scope set, so an
+/// agent can compose a <c>query_graph</c> SQL statement against this server in one round-trip.
 ///
 /// The <see cref="ViewSchemaVersion"/> mirrors <see cref="Storage.Views.SchemaVersion"/> and
-/// only bumps on backwards-incompatible view-layer changes (column renamed / removed / typed
-/// differently). Agents can pin against a known version and refuse to run on a newer
-/// incompatible one.
+/// bumps on any view-set change (per the Views.SchemaVersion XML doc) so cache-aware clients
+/// always re-introspect after a server upgrade.
 /// </summary>
 public sealed record DescribeSchemaResult(
     [property: JsonPropertyName("view_schema_version")] int ViewSchemaVersion,
     IReadOnlyList<DescribeSchemaView> Views,
     [property: JsonPropertyName("symbol_kinds")] IReadOnlyList<string> SymbolKinds,
-    [property: JsonPropertyName("edge_kinds")] IReadOnlyList<string> EdgeKinds);
+    [property: JsonPropertyName("edge_kinds")] IReadOnlyList<string> EdgeKinds,
+    [property: JsonPropertyName("annotation_flavors")] IReadOnlyList<string> AnnotationFlavors);
 
 /// <summary>
 /// One view in the response. <see cref="Name"/> is the SQL identifier the agent passes to

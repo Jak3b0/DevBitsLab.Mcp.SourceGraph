@@ -7,7 +7,6 @@ using Dapper;
 using DevBitsLab.Mcp.SourceGraph.Storage;
 using FluentAssertions;
 using Microsoft.Data.Sqlite;
-using SQLitePCL;
 using Xunit;
 
 namespace DevBitsLab.Mcp.SourceGraph.Tests;
@@ -215,6 +214,73 @@ public sealed class MultiScopeReadOnlyConnectionTests : IAsyncLifetime
             .WithMessage("*not registered*");
     }
 
+    [Fact]
+    public async Task Star_filter_against_all_isolated_registry_throws_ArgumentException()
+    {
+        // Build a fresh fixture where every registered scope is isolated, then ask for `*`.
+        // The resolved set is empty, which would silently produce no-ATTACH and a degenerate
+        // view layer — a footgun. The helper must surface the empty-resolution case explicitly.
+        var freshRoot = Path.Join(Path.GetTempPath(), "sourcegraph-empty-scopes-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(ScopeLayout.SourcegraphDir(freshRoot));
+        Directory.CreateDirectory(ScopeLayout.ScopesDirectory(freshRoot));
+        await using var registry = new SqliteScopeRegistry(ScopeLayout.MetaDbPath(freshRoot));
+        await registry.EnsureSchemaAsync();
+        await SeedScopeDbAsync(freshRoot, "vendor-a");
+        await SeedScopeDbAsync(freshRoot, "vendor-b");
+        await registry.UpsertAsync(new ScopeRow("vendor-a", "vendor-a", freshRoot, "{}", Isolated: true, DateTimeOffset.UtcNow, "ok"));
+        await registry.UpsertAsync(new ScopeRow("vendor-b", "vendor-b", freshRoot, "{}", Isolated: true, DateTimeOffset.UtcNow, "ok"));
+
+        try
+        {
+            var act = async () => await MultiScopeReadOnlyConnection.OpenAsync(
+                registry, freshRoot, scopeFilter: "*");
+
+            var ex = await act.Should().ThrowAsync<ArgumentException>();
+            ex.Which.ParamName.Should().Be("scopeFilter");
+            ex.Which.Message.Should().Contain("resolved to no scopes");
+            ex.Which.Message.Should().Contain("isolated", "the diagnosis should hint at the cause");
+        }
+        finally
+        {
+            try { Directory.Delete(freshRoot, recursive: true); }
+            catch (IOException) { /* best-effort */ }
+        }
+    }
+
+    [Fact]
+    public async Task Missing_per_scope_db_file_throws_FileNotFoundException()
+    {
+        // A scope is registered in _meta.db but its on-disk DB file has been deleted (manual rm,
+        // failed re-index, etc.). ATTACH on a missing path would silently materialise an empty
+        // file under default SQLite semantics; the helper validates File.Exists first and throws
+        // a clear error so the agent (via tool-level catch) knows what to fix.
+        var freshRoot = Path.Join(Path.GetTempPath(), "sourcegraph-missing-db-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(ScopeLayout.SourcegraphDir(freshRoot));
+        Directory.CreateDirectory(ScopeLayout.ScopesDirectory(freshRoot));
+        await using var registry = new SqliteScopeRegistry(ScopeLayout.MetaDbPath(freshRoot));
+        await registry.EnsureSchemaAsync();
+        // Register the scope but DO NOT seed its DB file.
+        await registry.UpsertAsync(new ScopeRow("frontend", "frontend", freshRoot, "{}", Isolated: false, DateTimeOffset.UtcNow, "ok"));
+
+        try
+        {
+            var act = async () => await MultiScopeReadOnlyConnection.OpenAsync(
+                registry, freshRoot, scopeFilter: "*");
+
+            var ex = await act.Should().ThrowAsync<FileNotFoundException>();
+            ex.Which.Message.Should().Contain("frontend", "the alias appears in the message");
+            ex.Which.FileName.Should().Be(ScopeLayout.ScopeDbPath(freshRoot, "frontend"));
+            // The phantom file must NOT have been materialised by the failed ATTACH attempt.
+            File.Exists(ScopeLayout.ScopeDbPath(freshRoot, "frontend")).Should().BeFalse(
+                "validating File.Exists before ATTACH prevents SQLite from creating an empty placeholder");
+        }
+        finally
+        {
+            try { Directory.Delete(freshRoot, recursive: true); }
+            catch (IOException) { /* best-effort */ }
+        }
+    }
+
     /// <summary>
     /// Inspect SQLite's own database list (the in-memory main DB plus every ATTACH alias)
     /// via <c>pragma_database_list</c>. Returns the alias names sorted; the well-known
@@ -234,12 +300,7 @@ public sealed class MultiScopeReadOnlyConnectionTests : IAsyncLifetime
     /// </summary>
     private async Task SeedScopeAsync(string scopeId, bool isolated)
     {
-        var dbPath = ScopeLayout.ScopeDbPath(_repoRoot, scopeId);
-        Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
-        await using (var store = new SqliteGraphStore(dbPath))
-        {
-            await store.EnsureSchemaAsync();
-        }
+        await SeedScopeDbAsync(_repoRoot, scopeId);
         await _registry!.UpsertAsync(new ScopeRow(
             Id: scopeId,
             Name: scopeId,
@@ -248,5 +309,17 @@ public sealed class MultiScopeReadOnlyConnectionTests : IAsyncLifetime
             Isolated: isolated,
             LastIndexedAt: DateTimeOffset.UtcNow,
             Status: "ok"));
+    }
+
+    /// <summary>
+    /// Just create the per-scope DB file (with schema). Does NOT touch the registry — used by
+    /// the empty-resolution test that builds its own registry on a fresh repoRoot.
+    /// </summary>
+    private static async Task SeedScopeDbAsync(string repoRoot, string scopeId)
+    {
+        var dbPath = ScopeLayout.ScopeDbPath(repoRoot, scopeId);
+        Directory.CreateDirectory(Path.GetDirectoryName(dbPath)!);
+        await using var store = new SqliteGraphStore(dbPath);
+        await store.EnsureSchemaAsync();
     }
 }

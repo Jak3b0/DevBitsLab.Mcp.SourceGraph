@@ -133,11 +133,9 @@ public sealed class ViewsTests : IAsyncLifetime
         }
 
         // Open the test connection: in-memory main, ATTACH meta + the seeded scope DB.
-        // We attach in READ-WRITE mode here on purpose — this test exercises the Views layer
-        // in isolation; read-only enforcement is covered by MultiScopeReadOnlyConnectionTests.
-        // Sticking to the plain `Data Source=…` form avoids a dependency on global SQLite URI
-        // handling (which `MultiScopeReadOnlyConnection` enables process-wide via a config
-        // dance) and keeps this test independent of test-class parallelism quirks.
+        // Plain read-write ATTACH on purpose — this test exercises the Views layer in
+        // isolation; read-only enforcement is covered by MultiScopeReadOnlyConnectionTests
+        // (which uses the production helper's PRAGMA query_only path).
         _connection = new SqliteConnection("Data Source=:memory:");
         await _connection.OpenAsync();
 

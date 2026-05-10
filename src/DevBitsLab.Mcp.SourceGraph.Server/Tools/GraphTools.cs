@@ -2658,7 +2658,7 @@ public static class GraphTools
 
     [McpServerTool(UseStructuredContent = true, OutputSchemaType = typeof(DescribeSchemaResult))]
     [ToolTrigger("\"what tables/columns can I query?\" or before writing query_graph SQL")]
-    [Description("Returns the stable view layer (v_symbols, v_files, v_edges, v_references, v_scopes) that query_graph runs SQL against, plus the live symbol_kinds and edge_kinds vocabularies present in the resolved scope set. Call this before composing query_graph SQL when you don't yet know the column shapes. Use when: you're about to write query_graph SQL and don't yet know the view names or columns.")]
+    [Description("Returns the stable view layer (v_symbols, v_files, v_edges, v_references, v_scopes, v_annotations, v_diagnostics, v_history) that query_graph runs SQL against, plus the live symbol_kinds, edge_kinds, and annotation_flavors vocabularies present in the resolved scope set. Call this before composing query_graph SQL when you don't yet know the column shapes — the `Use when` line below (auto-appended from the ToolTrigger attribute) is the canonical guidance.")]
     public static Task<CallToolResult> DescribeSchemaAsync(
         IScopeRegistry registry,
         RepoRootInfo repoInfo,
@@ -2674,11 +2674,53 @@ public static class GraphTools
         CancellationToken ct)
     {
         var sw = Stopwatch.StartNew();
-        var connection = await MultiScopeReadOnlyConnection.OpenAsync(registry, repoInfo.Path, scope, maxAttached: 64, ct).ConfigureAwait(false);
+
+        // Mirror QueryGraphImpl's connection-open error handling so describe_schema returns
+        // structured errors instead of bubbling raw exceptions.
+        SqliteConnection connection;
         try
         {
-            var symbolKinds = await ReadDistinctKindsAsync(connection, "v_symbols", ct).ConfigureAwait(false);
-            var edgeKinds = await ReadDistinctKindsAsync(connection, "v_edges", ct).ConfigureAwait(false);
+            connection = await MultiScopeReadOnlyConnection.OpenAsync(registry, repoInfo.Path, scope, maxAttached: 64, ct).ConfigureAwait(false);
+        }
+        catch (ScopeAttachLimitExceededException ex)
+        {
+            return BuildQueryGraphErrorResult(
+                error: "scope_overflow",
+                message: ex.Message,
+                hint: "narrow the scope filter (e.g. `scope='backend,frontend'`)",
+                scope: scope,
+                elapsedMs: sw.ElapsedMilliseconds,
+                extras: new Dictionary<string, object?>
+                {
+                    ["resolved_scopes"] = ex.ResolvedScopes,
+                    ["limit"] = ex.Limit,
+                });
+        }
+        catch (ArgumentException ex) when (ex.ParamName == "scopeFilter")
+        {
+            return BuildQueryGraphErrorResult(
+                error: "no_scopes",
+                message: ex.Message,
+                hint: "register a scope (or name an isolated one explicitly) before calling describe_schema",
+                scope: scope,
+                elapsedMs: sw.ElapsedMilliseconds);
+        }
+        catch (FileNotFoundException ex)
+        {
+            return BuildQueryGraphErrorResult(
+                error: "scope_db_missing",
+                message: ex.Message,
+                hint: "re-index the scope, remove its registry entry, or restore the file",
+                scope: scope,
+                elapsedMs: sw.ElapsedMilliseconds,
+                extras: new Dictionary<string, object?> { ["missing_path"] = ex.FileName ?? "" });
+        }
+
+        try
+        {
+            var symbolKinds = await ReadDistinctValuesAsync(connection, "v_symbols", "kind", ct).ConfigureAwait(false);
+            var edgeKinds = await ReadDistinctValuesAsync(connection, "v_edges", "kind", ct).ConfigureAwait(false);
+            var annotationFlavors = await ReadDistinctValuesAsync(connection, "v_annotations", "flavor", ct).ConfigureAwait(false);
 
             // Map storage's hand-curated descriptors to the wire DTO. The descriptor list IS the
             // contract — agents read this to learn the queryable surface in one round-trip.
@@ -2699,7 +2741,8 @@ public static class GraphTools
                 ViewSchemaVersion: Views.SchemaVersion,
                 Views: views,
                 SymbolKinds: symbolKinds,
-                EdgeKinds: edgeKinds);
+                EdgeKinds: edgeKinds,
+                AnnotationFlavors: annotationFlavors);
 
             sw.Stop();
 
@@ -2717,7 +2760,9 @@ public static class GraphTools
               .Append(symbolKinds.Count)
               .Append(" symbol_kinds, ")
               .Append(edgeKinds.Count)
-              .AppendLine(" edge_kinds)");
+              .Append(" edge_kinds, ")
+              .Append(annotationFlavors.Count)
+              .AppendLine(" annotation_flavors)");
             sb.AppendLine();
             sb.Append("Views: ");
             sb.AppendLine(string.Join(", ", views.Select(v => v.Name)));
@@ -2731,6 +2776,11 @@ public static class GraphTools
                 sb.Append("edge_kinds: ");
                 sb.AppendLine(string.Join(", ", edgeKinds));
             }
+            if (annotationFlavors.Count > 0)
+            {
+                sb.Append("annotation_flavors: ");
+                sb.AppendLine(string.Join(", ", annotationFlavors));
+            }
 
             var content = new List<ContentBlock>(capacity: 2)
             {
@@ -2739,7 +2789,8 @@ public static class GraphTools
                     scopeId: scope,
                     latencyMs: sw.ElapsedMilliseconds,
                     ("symbol_kinds", symbolKinds.Count.ToString()),
-                    ("edge_kinds", edgeKinds.Count.ToString())),
+                    ("edge_kinds", edgeKinds.Count.ToString()),
+                    ("annotation_flavors", annotationFlavors.Count.ToString())),
             };
 
             return new CallToolResult
@@ -2757,31 +2808,32 @@ public static class GraphTools
     }
 
     /// <summary>
-    /// Read distinct kebab-case kind values from <paramref name="viewName"/> (one of
-    /// <c>v_symbols</c> / <c>v_edges</c>). Returned sorted ordinally so the agent sees a stable
-    /// vocabulary list across calls.
+    /// Read distinct values from <paramref name="columnName"/> on <paramref name="viewName"/>.
+    /// Used by <c>describe_schema</c> to populate the live <c>symbol_kinds</c> /
+    /// <c>edge_kinds</c> / <c>annotation_flavors</c> vocabularies. Returned sorted ordinally so
+    /// the agent sees a stable vocabulary list across calls.
     /// </summary>
-    private static async Task<List<string>> ReadDistinctKindsAsync(SqliteConnection connection, string viewName, CancellationToken ct)
+    private static async Task<List<string>> ReadDistinctValuesAsync(SqliteConnection connection, string viewName, string columnName, CancellationToken ct)
     {
-        // viewName is hard-coded by the caller (never user input), so inlining it into the SQL
-        // is safe — no parameter binding needed.
+        // viewName + columnName are hard-coded by the caller (never user input), so inlining them
+        // into the SQL is safe — no parameter binding needed.
         await using var cmd = connection.CreateCommand();
-        cmd.CommandText = $"SELECT DISTINCT kind FROM {viewName} WHERE kind IS NOT NULL ORDER BY kind;";
-        var kinds = new List<string>();
+        cmd.CommandText = $"SELECT DISTINCT {columnName} FROM {viewName} WHERE {columnName} IS NOT NULL ORDER BY {columnName};";
+        var values = new List<string>();
         await using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
         while (await reader.ReadAsync(ct).ConfigureAwait(false))
         {
             if (!reader.IsDBNull(0))
             {
-                kinds.Add(reader.GetString(0));
+                values.Add(reader.GetString(0));
             }
         }
-        return kinds;
+        return values;
     }
 
     [McpServerTool(UseStructuredContent = true, OutputSchemaType = typeof(QueryGraphResult))]
     [ToolTrigger("\"how many public types use this type?\", \"which classes implement IDisposable but lack Dispose?\", \"which types have > 50 methods?\" — anything that needs aggregation/join/grouping over the graph that no curated tool exposes")]
-    [Description("Run a read-only SQL SELECT or WITH statement against the stable view layer (v_symbols, v_edges, v_files, v_references, v_scopes). Call describe_schema first to learn the view shapes. Parameters bind via @name placeholders; scope filter follows the standard convention. Returns tabular {columns, rows} structured content. Use when: the question you want to answer doesn't fit any other tool, or you need an aggregation/join/grouping over the graph that no curated tool exposes.")]
+    [Description("Run a read-only SQL SELECT or WITH statement against the stable view layer (v_symbols, v_edges, v_files, v_references, v_scopes, v_annotations, v_diagnostics, v_history). Call describe_schema first to learn the view shapes. Parameters bind via @name placeholders; scope filter follows the standard convention. Returns tabular {columns, rows} structured content. The `Use when` line below (auto-appended from the ToolTrigger attribute) is the canonical guidance.")]
     public static Task<CallToolResult> QueryGraphAsync(
         IScopeRegistry registry,
         RepoRootInfo repoInfo,
@@ -2806,9 +2858,9 @@ public static class GraphTools
     {
         var sw = Stopwatch.StartNew();
 
-        // Step 1 — open the multi-scope connection. Scope-overflow is the only error we surface
-        // before we even build the SqliteCommand; everything else falls into the SQL execute
-        // try/catch below.
+        // Step 1 — open the multi-scope connection. Three OpenAsync errors surface before we
+        // even build the SqliteCommand; everything else falls into the SQL execute try/catch
+        // below.
         SqliteConnection connection;
         try
         {
@@ -2827,6 +2879,30 @@ public static class GraphTools
                     ["resolved_scopes"] = ex.ResolvedScopes,
                     ["limit"] = ex.Limit,
                 });
+        }
+        catch (ArgumentException ex) when (ex.ParamName == "scopeFilter")
+        {
+            // Empty scope set — `*` against an all-isolated registry, or a comma-list that
+            // resolved to nothing. The MultiScopeReadOnlyConnection message carries the
+            // diagnosis (zero scopes vs all-isolated); pass it through verbatim as the hint.
+            return BuildQueryGraphErrorResult(
+                error: "no_scopes",
+                message: ex.Message,
+                hint: "register a scope (or name an isolated one explicitly) before calling query_graph",
+                scope: scope,
+                elapsedMs: sw.ElapsedMilliseconds);
+        }
+        catch (FileNotFoundException ex)
+        {
+            // A scope is registered but its DB file is missing — re-index, remove the registry
+            // entry, or restore from backup. The exception message names the scope and path.
+            return BuildQueryGraphErrorResult(
+                error: "scope_db_missing",
+                message: ex.Message,
+                hint: "re-index the scope, remove its registry entry, or restore the file",
+                scope: scope,
+                elapsedMs: sw.ElapsedMilliseconds,
+                extras: new Dictionary<string, object?> { ["missing_path"] = ex.FileName ?? "" });
         }
 
         try

@@ -92,15 +92,8 @@ public sealed class TreeSitterLanguageIndexerTests
         {
             // Pull the function name out of the AST: `function_declaration` has a named
             // `identifier` child whose text is the name.
-            string name = "(anon)";
-            foreach (var child in node.NamedChildren)
-            {
-                if (child.Type == "identifier")
-                {
-                    name = child.Text ?? name;
-                    break;
-                }
-            }
+            var nameNode = node.NamedChildren.FirstOrDefault(c => c.Type == "identifier");
+            var name = nameNode?.Text ?? "(anon)";
             var (line, col) = TreeSitterAdapter.ToOneBased(node.StartPosition);
             var (endLine, endCol) = TreeSitterAdapter.ToOneBased(node.EndPosition);
             // The test stub uses `xaml:` as a placeholder scheme — its lexical-path body is

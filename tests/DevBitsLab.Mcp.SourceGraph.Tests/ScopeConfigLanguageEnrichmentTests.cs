@@ -15,7 +15,7 @@ namespace DevBitsLab.Mcp.SourceGraph.Tests;
 /// </summary>
 public sealed class ScopeConfigLanguageEnrichmentTests : IDisposable
 {
-    private readonly string _tempDir = Path.Combine(Path.GetTempPath(), "sg-scope-cfg-tests-" + Guid.NewGuid().ToString("N"));
+    private readonly string _tempDir = Path.Join(Path.GetTempPath(), "sg-scope-cfg-tests-" + Guid.NewGuid().ToString("N"));
 
     public ScopeConfigLanguageEnrichmentTests() => Directory.CreateDirectory(_tempDir);
 
@@ -26,7 +26,7 @@ public sealed class ScopeConfigLanguageEnrichmentTests : IDisposable
 
     private string WriteConfig(string json)
     {
-        File.WriteAllText(Path.Combine(_tempDir, ScopeConfigLoader.FileName), json);
+        File.WriteAllText(Path.Join(_tempDir, ScopeConfigLoader.FileName), json);
         return _tempDir;
     }
 
@@ -111,7 +111,7 @@ public sealed class ScopeConfigLanguageEnrichmentTests : IDisposable
     {
         var config = ScopeConfigLoader.Synthesise(_tempDir, new[] { "backend.slnx" });
         ScopeConfigLoader.Save(_tempDir, config);
-        var json = File.ReadAllText(Path.Combine(_tempDir, ScopeConfigLoader.FileName));
+        var json = File.ReadAllText(Path.Join(_tempDir, ScopeConfigLoader.FileName));
 
         json.Should().NotContain("\"language\"");
         json.Should().NotContain("\"enrichment\"");

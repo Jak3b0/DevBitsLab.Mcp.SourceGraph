@@ -301,26 +301,17 @@ public sealed class TypeScriptLanguageIndexer : TreeSitterLanguageIndexer<TypeSc
 
     private static string? ExtractDeclarationName(TsNode node)
     {
-        foreach (var child in node.NamedChildren)
-        {
-            if (child.Type is "identifier" or "type_identifier" or "property_identifier")
-            {
-                return child.Text;
-            }
-        }
+        var direct = node.NamedChildren
+            .FirstOrDefault(c => c.Type is "identifier" or "type_identifier" or "property_identifier");
+        if (direct is not null) return direct.Text;
+
         // Some declaration shapes (variable_declarator inside lexical_declaration) wrap the
         // identifier one level deeper. Descend once into the first variable_declarator child.
-        foreach (var child in node.NamedChildren)
-        {
-            if (child.Type == "variable_declarator")
-            {
-                foreach (var inner in child.NamedChildren)
-                {
-                    if (inner.Type is "identifier") return inner.Text;
-                }
-            }
-        }
-        return null;
+        return node.NamedChildren
+            .Where(c => c.Type == "variable_declarator")
+            .SelectMany(c => c.NamedChildren)
+            .FirstOrDefault(inner => inner.Type == "identifier")
+            ?.Text;
     }
 
     private static (string Name, global::TreeSitter.Point Position)? ExtractCalleeIdentifier(TsNode node)
@@ -332,41 +323,28 @@ public sealed class TypeScriptLanguageIndexer : TreeSitterLanguageIndexer<TypeSc
         {
             return (node.Text, node.StartPosition);
         }
-        foreach (var child in node.NamedChildren)
-        {
-            if (child.Type == "identifier")
-            {
-                return (child.Text, child.StartPosition);
-            }
-            if (child.Type == "member_expression")
-            {
-                // For `foo.bar.baz()` we want `baz` (the called member) — the *rightmost*
-                // property_identifier in the chain, not the leftmost identifier (`foo`, the
-                // root object). Tree-sitter exposes the property as the named child whose
-                // field name is `property`; failing that, the last property_identifier child
-                // is the next-best heuristic.
-                return ExtractMemberLeaf(child);
-            }
-        }
-        return null;
+        var match = node.NamedChildren
+            .FirstOrDefault(c => c.Type is "identifier" or "member_expression");
+        if (match is null) return null;
+        // For `foo.bar.baz()` we want `baz` (the called member) — the rightmost
+        // property_identifier in the chain, not the leftmost identifier (`foo`, the root
+        // object). ExtractMemberLeaf encapsulates the property-field lookup with a
+        // last-property-identifier fallback.
+        return match.Type == "member_expression"
+            ? ExtractMemberLeaf(match)
+            : (match.Text, match.StartPosition);
     }
 
     private static (string Name, global::TreeSitter.Point Position)? ExtractJsxTag(TsNode jsxElement)
     {
-        foreach (var child in jsxElement.NamedChildren)
-        {
-            if (child.Type is "identifier" or "jsx_identifier" or "nested_identifier")
-            {
-                return (child.Text, child.StartPosition);
-            }
-            if (child.Type == "member_expression")
-            {
-                // `<Foo.Bar />` should target `Bar` (the component), not `Foo` (its container).
-                // Same rightmost-property rule as call expressions.
-                return ExtractMemberLeaf(child);
-            }
-        }
-        return null;
+        // `<Foo.Bar />` should target `Bar` (the component), not `Foo` (its container) — same
+        // rightmost-property rule as call expressions.
+        var match = jsxElement.NamedChildren
+            .FirstOrDefault(c => c.Type is "identifier" or "jsx_identifier" or "nested_identifier" or "member_expression");
+        if (match is null) return null;
+        return match.Type == "member_expression"
+            ? ExtractMemberLeaf(match)
+            : (match.Text, match.StartPosition);
     }
 
     /// <summary>
@@ -385,45 +363,30 @@ public sealed class TypeScriptLanguageIndexer : TreeSitterLanguageIndexer<TypeSc
         }
         // Fallback: take the LAST property_identifier child (the rightmost) so we land on the
         // leaf rather than the root object.
-        global::TreeSitter.Node? leaf = null;
-        foreach (var inner in memberExpression.NamedChildren)
-        {
-            if (inner.Type is "property_identifier")
-            {
-                leaf = inner;
-            }
-        }
+        var leaf = memberExpression.NamedChildren
+            .Where(inner => inner.Type == "property_identifier")
+            .LastOrDefault();
         if (leaf is not null)
         {
             return (leaf.Text, leaf.StartPosition);
         }
         // Last resort: the rightmost identifier of any kind.
-        global::TreeSitter.Node? lastIdent = null;
-        foreach (var inner in memberExpression.NamedChildren)
-        {
-            if (inner.Type is "identifier" or "property_identifier")
-            {
-                lastIdent = inner;
-            }
-        }
+        var lastIdent = memberExpression.NamedChildren
+            .Where(inner => inner.Type is "identifier" or "property_identifier")
+            .LastOrDefault();
         return lastIdent is null ? null : (lastIdent.Text, lastIdent.StartPosition);
     }
 
     private static List<string> ExtractJsxProps(TsNode jsxElement)
     {
         var props = new List<string>();
-        foreach (var child in jsxElement.NamedChildren)
+        foreach (var attribute in jsxElement.NamedChildren.Where(c => c.Type == "jsx_attribute"))
         {
-            if (child.Type == "jsx_attribute")
+            var nameNode = attribute.NamedChildren
+                .FirstOrDefault(a => a.Type is "property_identifier" or "jsx_identifier" or "identifier");
+            if (nameNode is not null)
             {
-                foreach (var attrChild in child.NamedChildren)
-                {
-                    if (attrChild.Type is "property_identifier" or "jsx_identifier" or "identifier")
-                    {
-                        props.Add(attrChild.Text);
-                        break;
-                    }
-                }
+                props.Add(nameNode.Text);
             }
         }
         return props;

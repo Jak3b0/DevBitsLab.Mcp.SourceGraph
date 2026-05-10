@@ -16,7 +16,7 @@ namespace DevBitsLab.Mcp.SourceGraph.Tests;
 /// </summary>
 public sealed class ScopesInfoCliTests : IDisposable
 {
-    private readonly string _tempDir = Path.Combine(Path.GetTempPath(), "sg-scopes-info-tests-" + Guid.NewGuid().ToString("N"));
+    private readonly string _tempDir = Path.Join(Path.GetTempPath(), "sg-scopes-info-tests-" + Guid.NewGuid().ToString("N"));
 
     public ScopesInfoCliTests() => Directory.CreateDirectory(_tempDir);
 
@@ -25,7 +25,7 @@ public sealed class ScopesInfoCliTests : IDisposable
         if (Directory.Exists(_tempDir)) Directory.Delete(_tempDir, recursive: true);
     }
 
-    private void WriteConfig(string json) => File.WriteAllText(Path.Combine(_tempDir, ScopeConfigLoader.FileName), json);
+    private void WriteConfig(string json) => File.WriteAllText(Path.Join(_tempDir, ScopeConfigLoader.FileName), json);
 
     [Fact]
     public async Task Markdown_renders_unset_fields_when_language_and_enrichment_absent()
@@ -103,7 +103,7 @@ public sealed class ScopesInfoCliTests : IDisposable
             { "scopes": [ { "name": "backend", "solutions": ["backend.slnx"] } ] }
             """);
 
-        var (output, exitCode) = await CaptureStdoutWithExitAsync(new[] { "scopes", "info", "doesnotexist", "--root", _tempDir });
+        var (_, exitCode) = await CaptureStdoutWithExitAsync(new[] { "scopes", "info", "doesnotexist", "--root", _tempDir });
 
         exitCode.Should().NotBe(0);
     }

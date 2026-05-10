@@ -185,17 +185,15 @@ internal static class WriterCommandLine
 {
     public static (string Command, string[] Args) Build(WriterContext ctx)
     {
-        var solution = ctx.SolutionPath ?? "${workspaceFolder}/MySolution.slnx";
-
         switch (ctx.InstallMode)
         {
             case InstallMode.Global:
-                return ("sourcegraph-mcp", BuildServeArgs(solution, ctx));
+                return ("sourcegraph-mcp", BuildServeArgs(ctx));
 
             case InstallMode.LocalTool:
                 {
                     var args = new List<string> { "sourcegraph-mcp" };
-                    args.AddRange(BuildServeArgs(solution, ctx));
+                    args.AddRange(BuildServeArgs(ctx));
                     return ("dotnet", args.ToArray());
                 }
 
@@ -208,18 +206,40 @@ internal static class WriterCommandLine
                         "run", "--project", serverProject,
                         "--no-build", "--no-launch-profile", "--verbosity", "quiet", "--",
                     };
-                    args.AddRange(BuildServeArgs(solution, ctx));
+                    args.AddRange(BuildServeArgs(ctx));
                     return ("dotnet", args.ToArray());
                 }
 
             default:
-                return ("sourcegraph-mcp", BuildServeArgs(solution, ctx));
+                return ("sourcegraph-mcp", BuildServeArgs(ctx));
         }
     }
 
-    private static string[] BuildServeArgs(string solution, WriterContext ctx)
+    /// <summary>
+    /// Builds the <c>serve …</c> tail of the args array. Two scope shapes:
+    /// <list type="bullet">
+    /// <item>Single-solution (<see cref="WriterContext.SolutionPath"/> non-null) → <c>--solution &lt;path&gt;</c>.
+    /// Used both for resolved single-solution detect AND for the "no solutions found" placeholder
+    /// (<c>${workspaceFolder}/MySolution.slnx</c>) the user fills in later.</item>
+    /// <item>Multi-scope root mode (<see cref="WriterContext.SolutionPath"/> null) → <c>--root ${workspaceFolder}</c>.
+    /// Lets the server discover <c>.sourcegraph.json</c> instead of registering an implicit single
+    /// scope. Falling back to <c>--solution &lt;placeholder&gt;</c> here would silently override the
+    /// user's multi-scope config.</item>
+    /// </list>
+    /// </summary>
+    private static string[] BuildServeArgs(WriterContext ctx)
     {
-        var args = new List<string> { "serve", "--solution", solution };
+        var args = new List<string> { "serve" };
+        if (string.IsNullOrEmpty(ctx.SolutionPath))
+        {
+            args.Add("--root");
+            args.Add("${workspaceFolder}");
+        }
+        else
+        {
+            args.Add("--solution");
+            args.Add(ctx.SolutionPath);
+        }
         if (ctx.NoEmbeddings) args.Add("--no-embeddings");
         if (ctx.NoHistory) args.Add("--no-history");
         return args.ToArray();

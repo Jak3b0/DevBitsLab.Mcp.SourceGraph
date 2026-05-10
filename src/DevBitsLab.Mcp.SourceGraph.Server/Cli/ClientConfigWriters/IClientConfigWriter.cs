@@ -88,12 +88,19 @@ internal enum WriterAction
     NoOpAlreadyMatches,
     /// <summary>Target has our entry that differs and <c>--force</c> is not set; the plan leaves
     /// the file alone. <see cref="WriterPlan.ContentBytes"/> still carries the would-be content
-    /// for diagnostics.</summary>
+    /// for diagnostics. Triggers a CI-failure exit code (<c>2</c>) — this is a real conflict the
+    /// caller likely needs to resolve.</summary>
     SkipExistingDiffers,
     /// <summary>Target file contains JS-style line comments outside string literals; round-tripping
     /// would silently strip them. The plan leaves the file alone and the caller emits the snippet
-    /// to stdout for the user to paste manually.</summary>
+    /// to stdout for the user to paste manually. Informational, not a CI-failure.</summary>
     SkipHasComments,
+    /// <summary>The selected client/scope combination has no writer support in v1 (e.g.
+    /// <c>--user-copilot</c>: Copilot's user-scope config lives in VS Code's <c>settings.json</c>
+    /// under <c>chat.mcp.servers</c>, which has no dedicated writer). The closing report names
+    /// the combo and the workaround (typically: re-run without the flag, or use
+    /// <c>--print-only</c> and paste). Informational, not a CI-failure.</summary>
+    SkipUnsupported,
 }
 
 /// <summary>

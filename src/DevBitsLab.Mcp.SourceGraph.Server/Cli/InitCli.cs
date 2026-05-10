@@ -83,7 +83,7 @@ internal static class InitCli
                 };
                 Console.Error.WriteLine($"warn: skipping {clientId.ToSlug()} ({(useUserScope ? "user" : "project")}): {msg}");
                 results.Add(new WriterRunResult(clientId, useUserScope, "(no target path)",
-                    WriterAction.SkipExistingDiffers, msg));
+                    WriterAction.SkipUnsupported, msg));
                 continue;
             }
             byte[]? existing = null;
@@ -407,13 +407,14 @@ internal static class InitCli
                 WriterAction.Insert => "✓ wrote",
                 WriterAction.ReplaceOurs => "✓ replaced",
                 WriterAction.NoOpAlreadyMatches => "= no change",
-                WriterAction.SkipExistingDiffers => "⚠ skipped",
+                WriterAction.SkipExistingDiffers => "⚠ skipped (conflict)",
                 WriterAction.SkipHasComments => "⚠ skipped (comments)",
+                WriterAction.SkipUnsupported => "ⓘ skipped (unsupported)",
                 _ => "? ",
             };
             var scope = r.UserScope ? "user" : "project";
             Console.WriteLine($"  {glyph,-22} {r.ClientId.ToSlug(),-15} ({scope}) → {r.TargetPath}");
-            if (r.Action is WriterAction.SkipExistingDiffers)
+            if (r.Action is WriterAction.SkipExistingDiffers or WriterAction.SkipUnsupported)
             {
                 Console.WriteLine($"      {r.Description}");
             }
@@ -470,10 +471,16 @@ internal static class InitCli
 
         foreach (var (fileName, args) in attempts)
         {
+            // Inherit stdout/stderr instead of redirecting. The original implementation
+            // redirected both pipes but never drained them, which would deadlock the child
+            // once a buffer filled (a real `index` pass on a sizeable solution easily
+            // produces enough output to hit that). Inheriting lets the user see indexer
+            // progress live AND avoids the deadlock entirely; we only need to know the
+            // child's exit code, which comes from WaitForExitAsync.
             var psi = new ProcessStartInfo(fileName)
             {
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
+                RedirectStandardOutput = false,
+                RedirectStandardError = false,
                 UseShellExecute = false,
             };
             foreach (var a in args) psi.ArgumentList.Add(a);

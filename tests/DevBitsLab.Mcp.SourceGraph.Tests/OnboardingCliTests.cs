@@ -176,6 +176,38 @@ public sealed class OnboardingCliTests : IDisposable
     }
 
     [Fact]
+    public async Task Init_userCopilot_exitsZero_withInformationalSkip()
+    {
+        // Copilot has no user-scope writer (settings.json edits aren't supported in v1).
+        // The combo should be a documented skip, NOT a CI-failure exit-2.
+        var cli = ParseInit("--client", "copilot", "--user-copilot");
+        var rc = await InitCli.RunAsync(cli);
+        rc.Should().Be(0);
+        _stderr.ToString().Should().Contain("user-scope Copilot");
+        _stdout.ToString().Should().Contain("skipped (unsupported)");
+    }
+
+    [Fact]
+    public async Task Init_multiScope_emitsRootMode_notSolutionPlaceholder()
+    {
+        // Multi-solution detected (no .sourcegraph.json) → init should scaffold scope config and
+        // the emitted server args should use `--root ${workspaceFolder}`, not the
+        // `--solution ${workspaceFolder}/MySolution.slnx` placeholder. Otherwise the resulting
+        // config silently overrides the user's multi-scope intent.
+        File.WriteAllText(Path.Join(_tempRoot, "frontend.slnx"), "<Solution/>");
+        File.WriteAllText(Path.Join(_tempRoot, "backend.slnx"), "<Solution/>");
+
+        var cli = ParseInit("--print-only", "--client", "claude-code");
+        var rc = await InitCli.RunAsync(cli);
+        rc.Should().Be(0);
+
+        var output = _stdout.ToString();
+        output.Should().Contain("\"--root\"");
+        output.Should().Contain("\"${workspaceFolder}\"");
+        output.Should().NotContain("MySolution.slnx");
+    }
+
+    [Fact]
     public async Task Init_malformedSourcegraphJson_failsFast()
     {
         File.WriteAllText(Path.Join(_tempRoot, ".sourcegraph.json"), "{ broken");

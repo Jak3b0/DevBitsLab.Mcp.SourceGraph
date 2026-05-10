@@ -83,10 +83,12 @@ public sealed class ScopeConfigWatcher : IAsyncDisposable
             {
                 bool exists;
                 DateTime writeUtc;
+                bool statSucceeded;
                 try
                 {
                     exists = File.Exists(path);
                     writeUtc = exists ? File.GetLastWriteTimeUtc(path) : DateTime.MinValue;
+                    statSucceeded = true;
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException or System.Security.SecurityException)
                 {
@@ -100,14 +102,20 @@ public sealed class ScopeConfigWatcher : IAsyncDisposable
                     _logger.LogDebug(ex, "Polling .sourcegraph.json failed; will retry on next tick");
                     exists = lastExists;
                     writeUtc = lastWriteUtc;
+                    statSucceeded = false;
                 }
 
                 var presenceChanged = exists != lastExists;
                 var mtimeChanged = exists && writeUtc != lastWriteUtc;
 
-                if (firstIteration || presenceChanged || mtimeChanged)
+                // Gate the synthetic-init emit on `statSucceeded`: without this, a transient
+                // probe failure at watcher startup would land us in the !exists branch with
+                // firstIteration=true and emit a Reverted (synthesised default), tearing down
+                // every live scope on a single ACL flap. The first *successful* stat is what
+                // drives the synthetic init.
+                if ((firstIteration && statSucceeded) || presenceChanged || mtimeChanged)
                 {
-                    firstIteration = false;
+                    if (statSucceeded) firstIteration = false;
                     // Note: we do NOT commit `lastExists` / `lastWriteUtc` here. Each branch below
                     // commits only on a successful (or "intentionally swallowed") outcome. If a
                     // transient I/O error escapes the load path, we leave the cursor as-is so the
@@ -140,27 +148,26 @@ public sealed class ScopeConfigWatcher : IAsyncDisposable
                             lastExists = true;
                             lastWriteUtc = writeUtc;
                         }
-                        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                        catch (Exception ex) when (ex is IOException
+                            or UnauthorizedAccessException
+                            or ArgumentException
+                            or NotSupportedException
+                            or System.Security.SecurityException
+                            or System.Text.Json.JsonException
+                            or System.InvalidOperationException)
                         {
-                            // Transient / permission error: file locked by an editor mid-save,
-                            // ACL flap, etc. *Don't* commit the cursor — the next tick will see
-                            // the same mtime as still-changed and retry the load.
+                            // Filtered catch enumerating everything `ScopeConfigLoader.Load` can
+                            // plausibly throw beyond `ScopeConfigException`: file API
+                            // (IOException, UnauthorizedAccessException, SecurityException),
+                            // bad path/argument shapes (ArgumentException, NotSupportedException),
+                            // wrapper-or-shape JSON failures the loader doesn't catch
+                            // (JsonException, InvalidOperationException). *Don't* commit the
+                            // cursor — the next tick will see mtime-changed and retry. Logging
+                            // at info because most cases here are transient (file locked
+                            // mid-save, ACL flap). Genuinely unforeseen types (NRE, OOM,
+                            // StackOverflow) are intentionally left to propagate so real bugs
+                            // surface rather than getting silently swallowed.
                             _logger.LogInformation(ex, ".sourcegraph.json read failed; will retry on next poll");
-                        }
-                        catch (Exception ex) // lgtm[cs/catch-of-all-exceptions]
-                        {
-                            // Defence-in-depth last-resort catch. The two filtered catches above
-                            // cover every documented exception type from `ScopeConfigLoader.Load`
-                            // (parse, I/O, permission). This catch exists to keep the watcher
-                            // alive on a *truly unforeseen* exception type (e.g. a future SDK
-                            // change to JsonException semantics, an unhandled wrapper somewhere
-                            // in the dependency chain) — without it, the loop would die and
-                            // silently disable live config reload until process restart, which
-                            // is the failure mode this entire round of fixes was aimed at. The
-                            // cursor is intentionally not committed so the next tick still sees
-                            // mtime-changed and retries the load. Logged at error level so the
-                            // failure is visible in stderr / the JSONL log.
-                            _logger.LogError(ex, ".sourcegraph.json load raised unexpectedly; will retry on next poll");
                         }
                     }
                 }

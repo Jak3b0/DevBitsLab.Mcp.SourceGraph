@@ -220,6 +220,10 @@ public sealed class EmbeddingsManagerTests : IDisposable
     private sealed class RecordingHandler : HttpMessageHandler
     {
         public List<string> Urls { get; } = new();
+        [System.Diagnostics.CodeAnalysis.SuppressMessage(
+            "Reliability",
+            "CA2000:Dispose objects before losing scope",
+            Justification = "HttpMessageHandler.SendAsync transfers ownership of the returned HttpResponseMessage to HttpClient.")]
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             Urls.Add(request.RequestUri!.ToString());

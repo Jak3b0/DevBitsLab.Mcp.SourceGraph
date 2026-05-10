@@ -148,7 +148,9 @@ public sealed class EmbeddingsManager
                     return new DriveInfo(root).AvailableFreeSpace;
                 }
             }
-            catch (Exception) { /* fall through to parent */ }
+            catch (IOException) { /* drive not ready / unavailable — try parent */ }
+            catch (UnauthorizedAccessException) { /* path probe denied — try parent */ }
+            catch (ArgumentException) { /* malformed root — try parent */ }
             var parent = Path.GetDirectoryName(probe);
             if (string.Equals(parent, probe, StringComparison.Ordinal)) break;
             probe = parent;

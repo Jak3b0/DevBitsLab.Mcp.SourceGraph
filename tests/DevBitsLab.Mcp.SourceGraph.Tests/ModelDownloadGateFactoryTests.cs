@@ -230,6 +230,10 @@ public sealed class ModelDownloadGateFactoryTests : IDisposable
         public HttpStatusCode StatusCode { get; set; } = HttpStatusCode.OK;
         public byte[] Payload { get; set; } = new byte[] { 1, 2, 3, 4 };
 
+        [System.Diagnostics.CodeAnalysis.SuppressMessage(
+            "Reliability",
+            "CA2000:Dispose objects before losing scope",
+            Justification = "HttpMessageHandler.SendAsync transfers ownership of the returned HttpResponseMessage to HttpClient.")]
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             Urls.Add(request.RequestUri!.ToString());

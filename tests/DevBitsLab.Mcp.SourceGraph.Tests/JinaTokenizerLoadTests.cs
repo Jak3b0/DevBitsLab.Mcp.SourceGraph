@@ -88,7 +88,7 @@ public sealed class JinaTokenizerLoadTests : IClassFixture<JinaTokenizerLoadTest
     public void TryLoadTokenizer_returnsFalseWithReason_whenFileMalformed()
     {
         // Construct a tokenizer.json with a missing model.type to verify the graceful-fail path.
-        var tmp = Path.Combine(Path.GetTempPath(), $"bad-tokenizer-{Guid.NewGuid():N}.json");
+        var tmp = Path.Join(Path.GetTempPath(), $"bad-tokenizer-{Guid.NewGuid():N}.json");
         File.WriteAllText(tmp, "{ \"model\": {} }");
         try
         {
@@ -106,7 +106,7 @@ public sealed class JinaTokenizerLoadTests : IClassFixture<JinaTokenizerLoadTest
     [Fact]
     public void TryLoadTokenizer_returnsFalse_whenModelTypeUnsupported()
     {
-        var tmp = Path.Combine(Path.GetTempPath(), $"unigram-tokenizer-{Guid.NewGuid():N}.json");
+        var tmp = Path.Join(Path.GetTempPath(), $"unigram-tokenizer-{Guid.NewGuid():N}.json");
         File.WriteAllText(tmp, "{ \"model\": { \"type\": \"Unigram\" }, \"added_tokens\": [] }");
         try
         {
@@ -136,7 +136,7 @@ public sealed class JinaTokenizerLoadTests : IClassFixture<JinaTokenizerLoadTest
         public TokenizerFixture()
         {
             // 1. Live cache populated by a real `serve` run.
-            var liveCache = System.IO.Path.Combine(
+            var liveCache = System.IO.Path.Join(
                 Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
                 ".cache", "devbitslab.sourcegraph", "models",
                 "jinaai_jina-embeddings-v2-base-code", "tokenizer.json");
@@ -149,7 +149,7 @@ public sealed class JinaTokenizerLoadTests : IClassFixture<JinaTokenizerLoadTest
             // 2. Per-project gitignored fixture cache. Populate manually for CI:
             //    curl -L -o tests/fixtures/.cache/jina-v2-base-code-tokenizer.json \
             //      https://huggingface.co/jinaai/jina-embeddings-v2-base-code/resolve/main/tokenizer.json
-            var fixtureCache = System.IO.Path.Combine(LocateRepoRoot(), "tests", "fixtures", ".cache", "jina-v2-base-code-tokenizer.json");
+            var fixtureCache = System.IO.Path.Join(LocateRepoRoot(), "tests", "fixtures", ".cache", "jina-v2-base-code-tokenizer.json");
             if (File.Exists(fixtureCache))
             {
                 Path = fixtureCache;
@@ -171,7 +171,7 @@ public sealed class JinaTokenizerLoadTests : IClassFixture<JinaTokenizerLoadTest
             var dir = AppContext.BaseDirectory;
             for (var i = 0; i < 12; i++)
             {
-                if (File.Exists(System.IO.Path.Combine(dir, "Directory.Build.props"))) return dir;
+                if (File.Exists(System.IO.Path.Join(dir, "Directory.Build.props"))) return dir;
                 var parent = Directory.GetParent(dir)?.FullName;
                 if (parent is null || parent == dir) break;
                 dir = parent;

@@ -127,7 +127,7 @@ public static class EmbeddingsTools
                         null when f.Present => "info-only",
                         null => "-",
                         true => "ok",
-                        false => "**MISMATCH**",
+                        _    => "**MISMATCH**", // bool?.false — discard avoids CodeQL `cs/constant-condition` on the redundant constant arm
                     };
                 prose.AppendLine($"| `{f.LocalName}` | {(f.Present ? "yes" : "no")} | {size} | {sha} | {match} |");
             }

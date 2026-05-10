@@ -196,6 +196,13 @@ public sealed class ModelStoreTests : IDisposable
         public HttpStatusCode StatusCode { get; set; } = HttpStatusCode.OK;
         public byte[] Payload { get; set; } = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 };
 
+        // The `HttpMessageHandler` contract transfers ownership of the returned `HttpResponseMessage`
+        // to `HttpClient`, which disposes it. CodeQL's `cs/local-not-disposed` heuristic doesn't
+        // model that ownership transfer, so the suppression is applied to the construction site.
+        [System.Diagnostics.CodeAnalysis.SuppressMessage(
+            "Reliability",
+            "CA2000:Dispose objects before losing scope",
+            Justification = "HttpMessageHandler.SendAsync transfers ownership of the returned HttpResponseMessage to HttpClient.")]
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             Urls.Add(request.RequestUri!.ToString());

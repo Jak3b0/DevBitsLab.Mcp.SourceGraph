@@ -129,21 +129,14 @@ internal static class EmbeddingsCli
         {
             var size = f.SizeBytes is null ? "-" : FormatBytes(f.SizeBytes.Value);
             var sha = f.ComputedSha ?? "-";
-            string matchCol;
-            if (verifying)
-            {
-                matchCol = f.Match switch
+            var matchCol = !verifying ? "-"
+                : f.Match switch
                 {
                     null when f.Present => "info-only",  // no pinned SHA in manifest
                     null => "-",
                     true => "ok",
-                    false => "MISMATCH",
+                    _    => "MISMATCH", // bool?.false — discard avoids CodeQL `cs/constant-condition` on the redundant constant arm
                 };
-            }
-            else
-            {
-                matchCol = "-";
-            }
             Console.WriteLine($"{f.LocalName,-20} {(f.Present ? "yes" : "no"),-7} {size,-12} {sha,-66} {matchCol}");
         }
         if (verifying && status.Files.Any(f => f.Present && f.PinnedSha is null))

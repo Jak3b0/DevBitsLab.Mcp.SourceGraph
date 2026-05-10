@@ -259,6 +259,10 @@ public sealed class JinaCodeEmbeddingGenerator : ICodeEmbeddingGenerator
     /// <see cref="EnsureInitialised"/>.
     /// </para>
     /// </summary>
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Design",
+        "CA1031:Do not catch general exception types",
+        Justification = "Contract: this method must never throw; every failure shape (malformed JSON, missing properties, IO errors, ML.Tokenizers internals) is surfaced as a structured `error` string and consumed by the caller's graceful-disable path.")]
     internal static bool TryLoadTokenizer(string tokenizerJsonPath, out Tokenizer? tokenizer, out long padId, out string? error)
     {
         tokenizer = null;
@@ -305,10 +309,9 @@ public sealed class JinaCodeEmbeddingGenerator : ICodeEmbeddingGenerator
         var merges = new List<string>(modelEl.TryGetProperty("merges", out var mergesEl) ? mergesEl.GetArrayLength() : 0);
         if (mergesEl.ValueKind == JsonValueKind.Array)
         {
-            foreach (var m in mergesEl.EnumerateArray())
-            {
-                if (m.GetString() is { } s) merges.Add(s);
-            }
+            merges.AddRange(mergesEl.EnumerateArray()
+                .Select(m => m.GetString())
+                .Where(s => s is not null)!);
         }
 
         // Special tokens from added_tokens (filter by `special: true`). Includes the pad token,
@@ -317,10 +320,10 @@ public sealed class JinaCodeEmbeddingGenerator : ICodeEmbeddingGenerator
         var specialTokens = new Dictionary<string, int>(StringComparer.Ordinal);
         if (root.TryGetProperty("added_tokens", out var added) && added.ValueKind == JsonValueKind.Array)
         {
-            foreach (var t in added.EnumerateArray())
+            foreach (var t in added.EnumerateArray()
+                .Where(t => t.TryGetProperty("special", out var sp) && sp.GetBoolean()))
             {
-                if (t.TryGetProperty("special", out var sp) && sp.GetBoolean()
-                    && t.TryGetProperty("content", out var ce) && ce.GetString() is { } content
+                if (t.TryGetProperty("content", out var ce) && ce.GetString() is { } content
                     && t.TryGetProperty("id", out var ie))
                 {
                     specialTokens[content] = ie.GetInt32();
@@ -379,10 +382,10 @@ public sealed class JinaCodeEmbeddingGenerator : ICodeEmbeddingGenerator
         padId = 0;
         if (root.TryGetProperty("added_tokens", out var added) && added.ValueKind == JsonValueKind.Array)
         {
-            foreach (var t in added.EnumerateArray())
+            foreach (var t in added.EnumerateArray()
+                .Where(t => t.TryGetProperty("content", out var ce) && ce.GetString() is "[PAD]" or "<pad>"))
             {
-                if (t.TryGetProperty("content", out var ce) && ce.GetString() is "[PAD]" or "<pad>"
-                    && t.TryGetProperty("id", out var ie))
+                if (t.TryGetProperty("id", out var ie))
                 {
                     padId = ie.GetInt32();
                     break;
@@ -418,7 +421,7 @@ public sealed class JinaCodeEmbeddingGenerator : ICodeEmbeddingGenerator
             entries.Add((kv.Name, kv.Value.GetInt32()));
         }
         entries.Sort((a, b) => a.Id.CompareTo(b.Id));
-        var tmp = Path.Combine(Path.GetTempPath(), $"sourcegraph-mcp-vocab-{Guid.NewGuid():N}.txt");
+        var tmp = Path.Join(Path.GetTempPath(), $"sourcegraph-mcp-vocab-{Guid.NewGuid():N}.txt");
         File.WriteAllLines(tmp, entries.Select(e => e.Token));
         return tmp;
     }

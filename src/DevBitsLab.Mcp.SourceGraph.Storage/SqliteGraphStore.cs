@@ -1045,19 +1045,23 @@ public sealed class SqliteGraphStore : IGraphStore
     {
         // EXISTS short-circuits at the first matching row — cheap on large edge sets. The kind
         // index narrows to the kind partition; json_extract pulls the field value (NULL when the
-        // payload column is NULL or the key is absent). The kebab payloadKey is interpolated into
-        // the SQL path because Dapper can't parameterise inside a JSON path string; this is safe
-        // here — only well-known kebab constants from this assembly's tools call this method.
-        var sql = $"""
+        // payload column is NULL or the key is absent).
+        //
+        // The JSON path is built with `'$."' || @payloadKey || '"'` so the key flows through a
+        // bound parameter (no string interpolation, no SQL injection vector) AND the wrapping
+        // double quotes make hyphenated kebab keys (`converter-parameter`, `data-type`,
+        // `relative-source`) resolve correctly — `$.converter-parameter` would parse as
+        // "$.converter MINUS parameter" without the quotes (SQLite's JSON path grammar).
+        const string sql = """
             SELECT EXISTS (
                 SELECT 1 FROM edges
                 WHERE kind_name = @edgeKind
-                  AND json_extract(payload, '$.{payloadKey}') IS NOT NULL
+                  AND json_extract(payload, '$."' || @payloadKey || '"') IS NOT NULL
                 LIMIT 1
             );
             """;
         var hit = await _connection.ExecuteScalarAsync<long>(new CommandDefinition(
-            sql, new { edgeKind }, cancellationToken: ct)).ConfigureAwait(false);
+            sql, new { edgeKind, payloadKey }, cancellationToken: ct)).ConfigureAwait(false);
         return hit != 0;
     }
 

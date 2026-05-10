@@ -183,6 +183,39 @@ public sealed class PayloadToolingFixtureTests : IAsyncLifetime, IDisposable
     }
 
     [Fact]
+    public async Task FindDataBindings_resolvesXamlPlaceholderFqn_viaNameLookup_notVerbatimPassthrough()
+    {
+        // Regression for the Copilot review feedback on PR #33: `ResolveCanonicalKeyAsync` used
+        // to treat any input containing `:` as a canonical key and pass it through verbatim. XAML
+        // placeholder symbols have FQNs like `binding-target:Views/MainWindow.xaml#Text@12:24`
+        // (colons baked into the FQN body) but their actual `canonical_key` is `xaml:binding-target:…`.
+        // The verbatim passthrough would silently produce zero rows. The new scheme-prefix
+        // heuristic only short-circuits known schemes (`csharp:`, `xaml:`); any other colon-bearing
+        // input falls through to FindSymbolsAsync, which resolves the FQN to its real canonical key.
+        var result = await GraphTools.FindDataBindingsAsync(
+            router: _wpfRouter!,
+            target: "binding-target:Views/MainWindow.xaml#Text@12:24", // unresolved-placeholder FQN-shape
+            source: null, path: null, mode: null, converter: null,
+            scope: null, limit: 50);
+
+        result.IsError.Should().NotBe(true,
+            "an unresolvable target should not surface as an error — the tool should still respond cleanly");
+
+        var dto = JsonSerializer.Deserialize<FindDataBindingsResult>(
+            result.StructuredContent!.Value.GetRawText(),
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower });
+        dto.Should().NotBeNull();
+        // The FQN above doesn't actually exist in the SampleWpf store under that exact spelling
+        // (the synthesised placeholder uses the live source span); FindSymbolsAsync returns zero
+        // hits, so target resolves to null, the query fans wide, and the all-filters-null `note:`
+        // fires. The point of this test isn't the row count — it's that we DIDN'T pass the FQN
+        // through verbatim as if it were a canonical key (which would have silently produced
+        // zero rows + no note).
+        dto!.Note.Should().NotBeNullOrEmpty(
+            "with no resolved filter, the all-filters-null hint should fire");
+    }
+
+    [Fact]
     public async Task FindEventHandlers_commandFilter_softEmpty_whenScopeHandlesEventsLackCommandPayload()
     {
         // The SampleWpf fixture has handles-event edges (Click → OnSave) but none of them carry

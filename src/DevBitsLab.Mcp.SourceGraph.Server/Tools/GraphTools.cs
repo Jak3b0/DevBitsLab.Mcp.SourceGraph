@@ -1044,17 +1044,38 @@ public static class GraphTools
 
     /// <summary>
     /// Resolve a free-form symbol identifier (canonical key, name, or FQN suffix) to a canonical
-    /// key. Bare canonical keys (containing a colon, e.g. <c>csharp:P:Foo.Bar.Baz</c>) are passed
-    /// through verbatim so the storage WHERE clause matches by key. Other inputs go through the
-    /// same name-lookup path <c>find_definition</c> uses; the top hit's canonical key wins.
-    /// Returns <c>null</c> for null/empty input or when the lookup produces no hits.
+    /// key. Inputs starting with a known canonical-key scheme prefix
+    /// (see <see cref="CanonicalKeySchemes"/>) are passed through verbatim so the storage WHERE
+    /// clause matches by key. Other inputs go through the same name-lookup path
+    /// <c>find_definition</c> uses; the top hit's canonical key wins. Returns <c>null</c> for
+    /// null/empty input or when the lookup produces no hits.
     /// </summary>
     private static async Task<string?> ResolveCanonicalKeyAsync(IGraphStore store, string? identifier, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(identifier)) return null;
-        if (identifier.Contains(':')) return identifier;
+        if (LooksLikeCanonicalKey(identifier)) return identifier;
         var hits = await store.FindSymbolsAsync(identifier, filePathHint: null, limit: 1, ct).ConfigureAwait(false);
         return hits.Count == 0 ? null : hits[0].CanonicalKey;
+    }
+
+    /// <summary>
+    /// Known canonical-key scheme prefixes — the tokens that precede the first colon in an
+    /// indexer-emitted canonical key (e.g. <c>csharp:T:Foo.Bar</c>, <c>xaml:element:Views/Foo.xaml#El</c>).
+    /// Used by <see cref="LooksLikeCanonicalKey"/> to discriminate canonical-key inputs from
+    /// FQNs that happen to contain a colon (XAML placeholder FQNs like
+    /// <c>binding-target:Views/Main.xaml#Text@12:24</c> contain colons but are NOT canonical keys —
+    /// the real canonical key is <c>xaml:binding-target:…</c>). Plugin-emitted schemes get added
+    /// here as new languages land; the list is short and the maintenance cost is acceptable.
+    /// </summary>
+    private static readonly string[] CanonicalKeySchemes = { "csharp:", "xaml:" };
+
+    private static bool LooksLikeCanonicalKey(string identifier)
+    {
+        foreach (var scheme in CanonicalKeySchemes)
+        {
+            if (identifier.StartsWith(scheme, StringComparison.Ordinal)) return true;
+        }
+        return false;
     }
 
     private const string EdgeKindBindsPath = "binds-path";
@@ -1064,12 +1085,14 @@ public static class GraphTools
     [ToolTrigger("\"find all Click handlers\", \"where is OnSave wired up?\", \"which buttons fire this command?\"")]
     [Description(
         "Find or audit event-to-handler wiring in XAML or component-based UI. Walks `handles-event` " +
-        "edges; payload-aware filters are `event` and the forward-looking `command` key (for command- " +
-        "bound flavours), mapped to the SDK PayloadKeys constants. The `handler` and `element` " +
-        "parameters narrow by edge endpoints (resolved canonical keys), not payload keys. On a scope " +
-        "whose stored `handles-event` edge set is empty, the tool returns an empty list plus a one-line " +
-        "`note:` rather than an error; `command` filtering against a scope whose `handles-event` edges " +
-        "never carry a `command` payload key returns the same soft-empty shape with a tailored note.")]
+        "edges; payload-aware filters are `event` (mapped to the SDK `PayloadKeys.Event` constant) " +
+        "and the forward-looking `command` key for command-bound flavours — `command` is not yet a " +
+        "PayloadKeys constant; the kebab string is treated as the canonical key until the SDK " +
+        "promotes it. The `handler` and `element` parameters narrow by edge endpoints (resolved " +
+        "canonical keys), not payload keys. On a scope whose stored `handles-event` edge set is " +
+        "empty, the tool returns an empty list plus a one-line `note:` rather than an error; " +
+        "`command` filtering against a scope whose `handles-event` edges never carry a `command` " +
+        "payload key returns the same soft-empty shape with a tailored note.")]
     public static Task<CallToolResult> FindEventHandlersAsync(
         ScopeRouter router,
         [Description("Handler symbol — the resolved handler method (name, FQN, or canonical key). Matched against the edge's `dst`. Resolved via the same lookup `find_definition` uses.")] string? handler = null,

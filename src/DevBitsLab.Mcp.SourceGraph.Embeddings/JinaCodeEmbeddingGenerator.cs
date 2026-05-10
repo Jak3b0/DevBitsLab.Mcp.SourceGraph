@@ -256,13 +256,14 @@ public sealed class JinaCodeEmbeddingGenerator : ICodeEmbeddingGenerator
     ///
     /// <para>
     /// Internal so unit tests can drive it directly; the live path goes through
-    /// <see cref="EnsureInitialised"/>.
+    /// <see cref="EnsureInitialised"/>. The broad <c>catch (Exception)</c> below is intentional
+    /// — this method's contract is "never throw, surface every failure shape (malformed JSON,
+    /// missing properties, IO errors, ML.Tokenizers internals) as a structured `error` string"
+    /// — and is dismissed in the GitHub code-scanning UI rather than via a code-side
+    /// suppression because CodeQL queries (`cs/catch-of-all-exceptions`) don't honour Roslyn
+    /// analyzer's <c>[SuppressMessage(CA1031)]</c> attributes.
     /// </para>
     /// </summary>
-    [System.Diagnostics.CodeAnalysis.SuppressMessage(
-        "Design",
-        "CA1031:Do not catch general exception types",
-        Justification = "Contract: this method must never throw; every failure shape (malformed JSON, missing properties, IO errors, ML.Tokenizers internals) is surfaced as a structured `error` string and consumed by the caller's graceful-disable path.")]
     internal static bool TryLoadTokenizer(string tokenizerJsonPath, out Tokenizer? tokenizer, out long padId, out string? error)
     {
         tokenizer = null;

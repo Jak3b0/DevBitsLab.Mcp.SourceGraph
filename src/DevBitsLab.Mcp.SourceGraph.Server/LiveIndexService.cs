@@ -167,6 +167,8 @@ public sealed class LiveIndexService : BackgroundService
     /// apply loop. The watcher itself stays alive until <see cref="StopAsync"/> disposes it; the
     /// consumer task observes <paramref name="stoppingToken"/> for cooperative shutdown.
     /// </summary>
+    [SuppressMessage("Design", "CA1031:DoNotCatchGeneralExceptionTypes",
+        Justification = "The consumer task wraps OnConfigChangedAsync which can fail in any number of ways (Roslyn workspace, plugin embeddings, transient I/O, etc.). A broad catch with logging keeps the watcher alive across failures so live reload doesn't silently disable itself for the rest of the server's lifetime; OperationCanceledException is handled separately for cooperative shutdown.")]
     private void StartScopeConfigWatcher(CancellationToken stoppingToken)
     {
         _configWatcher = new ScopeConfigWatcher(
@@ -259,6 +261,8 @@ public sealed class LiveIndexService : BackgroundService
     /// router, drop its registry row, then dispose after a grace period so any in-flight tool
     /// query that already resolved against this host can complete.
     /// </summary>
+    [SuppressMessage("Design", "CA1031:DoNotCatchGeneralExceptionTypes",
+        Justification = "Tear-down is best-effort: a failed registry remove or DisposeAsync raises a warning but must not abort the rest of the live-config delta or the server. Both broad catches log with the scope id; cancellation is handled via the deferred-disposal grace window pattern (see Task.Delay).")]
     private async Task TearDownScopeAsync(ScopeHost host, TimeSpan gracePeriod, CancellationToken ct)
     {
         _router.Unregister(host.Scope.Id);
@@ -283,6 +287,8 @@ public sealed class LiveIndexService : BackgroundService
     /// chain used at startup. Cold indexing is fire-and-forget so the watcher consumer doesn't
     /// block on it; subsequent config saves can be processed concurrently.
     /// </summary>
+    [SuppressMessage("Design", "CA1031:DoNotCatchGeneralExceptionTypes",
+        Justification = "The fire-and-forget cold-index Task.Run wraps an unbounded surface (RoslynIndexer, plugin analyzers, embeddings drain). An unobserved exception in that lambda would surface as UnobservedTaskException noise — the broad catch with logging keeps fire-and-forget failures attributable to the scope id while still letting OperationCanceledException pass through silently for cooperative shutdown.")]
     private async Task BringUpScopeLiveAsync(Scope scope, CancellationToken ct)
     {
         var host = await PrepareScopeAsync(scope, ct).ConfigureAwait(false);
@@ -314,6 +320,8 @@ public sealed class LiveIndexService : BackgroundService
     /// <see cref="ScopeRouter.Replace"/> swaps it under a single lock, then dispose the displaced
     /// host after a grace period so in-flight tool calls resolved against it can complete.
     /// </summary>
+    [SuppressMessage("Design", "CA1031:DoNotCatchGeneralExceptionTypes",
+        Justification = "Two fire-and-forget Task.Runs here: the new host's cold index, and the displaced host's deferred disposal. Both must not propagate failures into the watcher consumer (which would then die and silently disable live reload). Each broad catch logs with the scope id so fire-and-forget failures stay attributable.")]
     private async Task ReplaceScopeAsync(ScopeReplacement replacement, TimeSpan gracePeriod, CancellationToken ct)
     {
         // Prepare the new host *without* registering it, so the atomic swap below captures the
@@ -676,6 +684,8 @@ public sealed class LiveIndexService : BackgroundService
         }, stoppingToken);
     }
 
+    [SuppressMessage("Design", "CA1031:DoNotCatchGeneralExceptionTypes",
+        Justification = "StopAsync is the BackgroundService shutdown path: it disposes the scope-config watcher and every per-scope host. Any one disposal failing must not prevent the others from running, otherwise resources leak across the process exit. Both broad catches log a warning naming what failed and continue to the next disposal.")]
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
         // Stop the scope-config watcher first so no late event arrives mid-tear-down.

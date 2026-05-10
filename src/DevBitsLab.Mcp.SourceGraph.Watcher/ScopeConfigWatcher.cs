@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using DevBitsLab.Mcp.SourceGraph.Storage;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -56,6 +57,8 @@ public sealed class ScopeConfigWatcher : IAsyncDisposable
     public IAsyncEnumerable<ScopeConfigChange> ReadAllAsync(CancellationToken ct = default) =>
         _changes.Reader.ReadAllAsync(ct);
 
+    [SuppressMessage("Design", "CA1031:DoNotCatchGeneralExceptionTypes",
+        Justification = "PollAsync is a long-running poll loop that must never permanently die: anything escaping ScopeConfigLoader.Load (transient I/O, ACL flap, parse error, or any unforeseen exception type) silently disables live config reload until process restart. The broad final catch logs at error level so the failure is still visible while keeping the loop alive.")]
     private async Task PollAsync(CancellationToken ct)
     {
         var path = Path.Join(_repoRoot, ScopeConfigLoader.FileName);
@@ -148,6 +151,8 @@ public sealed class ScopeConfigWatcher : IAsyncDisposable
         }
     }
 
+    [SuppressMessage("Design", "CA1031:DoNotCatchGeneralExceptionTypes",
+        Justification = "DisposeAsync awaits the processor task during shutdown; the only practical signals are OperationCanceledException (cooperative shutdown) and the rare unhandled exception bubbling up from PollAsync. Either way the right move on dispose is to swallow and continue tearing down — propagating would mask the disposal contract.")]
     public async ValueTask DisposeAsync()
     {
         _cts.Cancel();

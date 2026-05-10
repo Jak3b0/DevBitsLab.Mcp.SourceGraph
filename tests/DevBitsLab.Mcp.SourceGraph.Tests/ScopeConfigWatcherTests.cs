@@ -91,7 +91,7 @@ public sealed class ScopeConfigWatcherTests
         }
         finally
         {
-            try { Directory.Delete(root, recursive: true); } catch { /* best-effort */ }
+            try { Directory.Delete(root, recursive: true); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { /* best-effort cleanup */ }
         }
     }
 
@@ -113,7 +113,7 @@ public sealed class ScopeConfigWatcherTests
         }
         finally
         {
-            try { Directory.Delete(root, recursive: true); } catch { /* best-effort */ }
+            try { Directory.Delete(root, recursive: true); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { /* best-effort cleanup */ }
         }
     }
 
@@ -145,7 +145,7 @@ public sealed class ScopeConfigWatcherTests
         }
         finally
         {
-            try { Directory.Delete(root, recursive: true); } catch { /* best-effort */ }
+            try { Directory.Delete(root, recursive: true); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { /* best-effort cleanup */ }
         }
     }
 
@@ -164,7 +164,7 @@ public sealed class ScopeConfigWatcherTests
         }
         finally
         {
-            try { Directory.Delete(root, recursive: true); } catch { /* best-effort */ }
+            try { Directory.Delete(root, recursive: true); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { /* best-effort cleanup */ }
         }
     }
 }

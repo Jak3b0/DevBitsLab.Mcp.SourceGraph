@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 
 namespace DevBitsLab.Mcp.SourceGraph.IntegrationTests;
 
@@ -35,19 +36,21 @@ internal sealed class MultiScopeFixtureCopy : IDisposable
 
     private static void CopyTree(string source, string destination)
     {
-        foreach (var dir in Directory.EnumerateDirectories(source, "*", SearchOption.AllDirectories))
+        var dirRels = Directory.EnumerateDirectories(source, "*", SearchOption.AllDirectories)
+            .Select(d => Path.GetRelativePath(source, d))
+            .Where(rel => !ShouldSkip(rel));
+        foreach (var rel in dirRels)
         {
-            var rel = Path.GetRelativePath(source, dir);
-            if (ShouldSkip(rel)) continue;
             Directory.CreateDirectory(Path.Join(destination, rel));
         }
-        foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
+        var fileRels = Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories)
+            .Select(f => Path.GetRelativePath(source, f))
+            .Where(rel => !ShouldSkip(rel));
+        foreach (var rel in fileRels)
         {
-            var rel = Path.GetRelativePath(source, file);
-            if (ShouldSkip(rel)) continue;
             var target = Path.Join(destination, rel);
             Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-            File.Copy(file, target, overwrite: true);
+            File.Copy(Path.Join(source, rel), target, overwrite: true);
         }
     }
 
@@ -64,6 +67,7 @@ internal sealed class MultiScopeFixtureCopy : IDisposable
 
     public void Dispose()
     {
-        try { Directory.Delete(Root, recursive: true); } catch { /* best-effort */ }
+        try { Directory.Delete(Root, recursive: true); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { /* best-effort cleanup */ }
     }
 }

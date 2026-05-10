@@ -82,7 +82,7 @@ cheap structural queries against a stable solution.
 
 | | Roslyn directly (`MSBuildWorkspace` / `SymbolFinder`) | This server |
 |---|---|---|
-| **Cold start** | 10–60 s to load a real solution into a workspace | Milliseconds — indexing happens once, in the background |
+| **Cold start** | 10–60 s to load a real solution into a workspace | Initial host start / after restart: scope open + full indexing can take seconds+ depending on solution size; once the DB exists, steady-state queries are typically milliseconds, with incremental re-indexing on changes |
 | **Where it runs** | In-process API — every client hosts its own workspace | Cross-process MCP server — one host, many clients (Claude Code, Cursor, scripts) |
 | **Search shape** | Exact-identity lookups (`SymbolFinder.FindReferencesAsync`) | Same exact lookups *plus* FTS5 fragment search and ONNX semantic search |
 | **Languages** | C# / VB only | C# + XAML today, with cross-language joins; plugin SDK for more |

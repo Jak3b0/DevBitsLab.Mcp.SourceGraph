@@ -46,6 +46,7 @@ internal static class ScopesCli
         ScopeConfigLoader.Save(root, config);
         Console.WriteLine($"Wrote {Path.Join(root, ScopeConfigLoader.FileName)} with {scopes.Count} scope(s):");
         foreach (var scope in scopes) Console.WriteLine($"  - {scope.Id}  ->  {((ScopeProjectSet.Solutions)scope.ProjectSet).Items[0]}");
+        Console.WriteLine("A running sourcegraph-mcp server will pick up the change automatically.");
         return 0;
     }
 
@@ -53,7 +54,7 @@ internal static class ScopesCli
     {
         if (cli.Positional.Count == 0)
         {
-            await Console.Error.WriteLineAsync("Usage: sourcegraph-mcp scopes <list|add|remove> [args]").ConfigureAwait(false);
+            await Console.Error.WriteLineAsync("Usage: sourcegraph-mcp scopes <list|info|add|remove> [args]").ConfigureAwait(false);
             return 2;
         }
 
@@ -73,6 +74,7 @@ internal static class ScopesCli
         return op switch
         {
             "list" => RunList(config, root),
+            "info" => await RunInfoAsync(cli, config, root).ConfigureAwait(false),
             "add" => await RunAddAsync(cli, config, root).ConfigureAwait(false),
             "remove" => await RunRemoveAsync(cli, config, root).ConfigureAwait(false),
             _ => UnknownOp(op),
@@ -145,6 +147,7 @@ internal static class ScopesCli
         var updated = new ScopeConfig(newScopes, config.DefaultScope);
         ScopeConfigLoader.Save(root, updated);
         Console.WriteLine($"Added scope '{name}' -> {solutionPath}");
+        Console.WriteLine("A running sourcegraph-mcp server will pick up the change automatically.");
         return 0;
     }
 
@@ -166,20 +169,131 @@ internal static class ScopesCli
         var newDefault = config.DefaultScope == name ? null : config.DefaultScope;
         var updated = new ScopeConfig(newScopes, newDefault);
         ScopeConfigLoader.Save(root, updated);
-        // Remove the per-scope DB too — it's authoritative-rebuildable from source so this is safe.
-        var dbPath = ScopeLayout.ScopeDbPath(root, name);
-        if (File.Exists(dbPath))
-        {
-            try { File.Delete(dbPath); } catch (IOException) { /* best-effort */ }
-        }
+        // The per-scope DB on disk is preserved. A live server may still hold an open SQLite
+        // connection to it during the live-remove grace window; deleting from underneath would
+        // corrupt the running query. The DB is a rebuildable cache, so leaving it costs only
+        // disk space (recoverable later via a `scopes prune` command) and re-adding the same
+        // scope id reuses the existing DB without a cold reindex.
         Console.WriteLine($"Removed scope '{name}'");
+        Console.WriteLine("A running sourcegraph-mcp server will pick up the change automatically.");
         return 0;
+    }
+
+    private static async Task<int> RunInfoAsync(CommandLine cli, ScopeConfig config, string root)
+    {
+        if (cli.Positional.Count < 2)
+        {
+            await Console.Error.WriteLineAsync("Usage: sourcegraph-mcp scopes info <name> [--json]").ConfigureAwait(false);
+            return 2;
+        }
+        var name = cli.Positional[1];
+        var scope = config.Scopes.FirstOrDefault(s => s.Id == name);
+        if (scope is null)
+        {
+            await Console.Error.WriteLineAsync($"Scope '{name}' not found.").ConfigureAwait(false);
+            return 1;
+        }
+
+        if (cli.Json)
+        {
+            EmitInfoJson(scope);
+        }
+        else
+        {
+            EmitInfoMarkdown(scope, root);
+        }
+        return 0;
+    }
+
+    private static void EmitInfoMarkdown(Scope scope, string repoRoot)
+    {
+        Console.WriteLine($"## Identity");
+        Console.WriteLine($"- id:   {scope.Id}");
+        Console.WriteLine($"- name: {scope.Name}");
+        Console.WriteLine($"- root: {repoRoot}");
+
+        Console.WriteLine();
+        Console.WriteLine($"## Project set");
+        switch (scope.ProjectSet)
+        {
+            case ScopeProjectSet.Solutions s:
+                Console.WriteLine($"- kind: solutions ({s.Items.Count})");
+                foreach (var item in s.Items) Console.WriteLine($"  - {item}");
+                break;
+            case ScopeProjectSet.Projects p:
+                Console.WriteLine($"- kind: projects ({p.Items.Count})");
+                foreach (var item in p.Items) Console.WriteLine($"  - {item}");
+                break;
+            case ScopeProjectSet.Paths g:
+                Console.WriteLine($"- kind: paths ({g.Globs.Count})");
+                foreach (var glob in g.Globs) Console.WriteLine($"  - {glob}");
+                break;
+        }
+        if (scope.ProjectSet.Exclude.Count > 0)
+        {
+            Console.WriteLine($"- exclude ({scope.ProjectSet.Exclude.Count}):");
+            foreach (var ex in scope.ProjectSet.Exclude) Console.WriteLine($"  - {ex}");
+        }
+        if (scope.Isolated)
+        {
+            Console.WriteLine($"- isolated: true (excluded from `scope=\"*\"` fan-out)");
+        }
+
+        Console.WriteLine();
+        Console.WriteLine($"## Language");
+        Console.WriteLine($"- {scope.Language ?? "(unset)"}");
+
+        Console.WriteLine();
+        Console.WriteLine($"## Enrichment");
+        if (scope.Enrichment is null)
+        {
+            Console.WriteLine("- (unset)");
+        }
+        else if (scope.Enrichment.Lsp is { } lsp)
+        {
+            Console.WriteLine($"- lsp.command: {lsp.Command}");
+            if (lsp.Args.Count > 0)
+            {
+                Console.WriteLine($"- lsp.args:    {string.Join(" ", lsp.Args)}");
+            }
+            Console.WriteLine($"- (no consumer at this version — first runtime use lands with the follow-up `add-typescript-lsp-enrichment` change)");
+        }
+    }
+
+    private static void EmitInfoJson(Scope scope)
+    {
+        var dto = new
+        {
+            id = scope.Id,
+            name = scope.Name,
+            root = scope.Root,
+            project_set = scope.ProjectSet switch
+            {
+                ScopeProjectSet.Solutions s => new { kind = "solutions", items = s.Items, exclude = s.Exclude },
+                ScopeProjectSet.Projects p => new { kind = "projects", items = p.Items, exclude = p.Exclude },
+                ScopeProjectSet.Paths g => new { kind = "paths", items = g.Globs, exclude = g.Exclude },
+                _ => new { kind = "?", items = (IReadOnlyList<string>)Array.Empty<string>(), exclude = (IReadOnlyList<string>)Array.Empty<string>() },
+            },
+            isolated = scope.Isolated,
+            language = scope.Language,
+            enrichment = scope.Enrichment is { Lsp: { } lsp }
+                ? new
+                {
+                    lsp = new { command = lsp.Command, args = lsp.Args },
+                    consumed = false,
+                }
+                : null,
+            last_indexed_at = scope.LastIndexedAt == DateTimeOffset.MinValue
+                ? null
+                : (DateTimeOffset?)scope.LastIndexedAt,
+        };
+        Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(dto, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
     }
 
     private static int UnknownOp(string op)
     {
         Console.Error.WriteLine($"Unknown scopes subcommand: {op}");
-        Console.Error.WriteLine("Expected one of: list, add, remove");
+        Console.Error.WriteLine("Expected one of: list, info, add, remove");
         return 2;
     }
 

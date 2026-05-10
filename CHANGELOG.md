@@ -69,6 +69,64 @@ below note which package the change applies to.
   pass an explicit `limit=`. (`output-budget-cap`)
 
 ### Added
+- **Generic tree-sitter language-indexer host.** New in-tree
+  `DevBitsLab.Mcp.SourceGraph.Indexing.TreeSitter` assembly with an abstract
+  `TreeSitterLanguageIndexer<TGrammarConfig>` base that future per-language
+  plugins (TypeScript, Python, Go, Rust, …) subclass. SDK 2.1.0 → 2.2.0 adds
+  `INodeKindMapper`, `IModuleResolver`, `LanguageIndexerOptions`, and
+  `ITreeSitterGrammarConfig` — the four contracts a tree-sitter-backed plugin
+  sits on. `TreeSitter.DotNet 1.3.0` is brought in transitively, shipping
+  `libtree-sitter` plus 28+ language grammar binaries across every target RID
+  (no first-party native packaging in this repo). Scope-config gains optional
+  `language` (kebab-case identifier) and `enrichment` (forward-declared,
+  carries one nested `lsp: { command, args }` block) fields. New
+  `sourcegraph-mcp scopes info <name> [--json]` CLI subcommand surfaces
+  identity / project set / language / enrichment for a single scope. No
+  schema changes — the host emits no rows of its own; concrete languages do.
+  (`add-tree-sitter-language-indexer-host`)
+- **Built-in TypeScript / JavaScript / TSX / JSX indexer.** New in-tree
+  `DevBitsLab.Mcp.SourceGraph.Indexing.TypeScript` assembly registered for
+  `.ts` / `.tsx` / `.js` / `.jsx`. Per-extension grammar dispatch (TypeScript
+  / TSX / JavaScript). Emits the eight TypeScript symbol kinds documented in
+  the design (function / class / interface / type-alias / enum / method /
+  field / variable / constant / namespace), call-expression and type-identifier
+  references, and JSX `instantiates` edges for PascalCase components carrying
+  a JSON-encoded `props` payload. Edge sources prefer the nearest enclosing
+  named declaration (function / class / const) and fall back to a synthesised
+  file-namespace symbol so `GraphStoreEmitter` can resolve every JSX edge at
+  flush time. Default scope excludes for `node_modules` / `dist` / `.next` /
+  `build` / `coverage` / `.cache` / `.parcel-cache` / `out` keep a fresh
+  install from indexing dependency trees. Lifts the canonical-key schemes
+  `js` / `ts` / `jsx` / `tsx` from reserved-rejected to reserved-accepted in
+  the SDK validator. New `BuiltInIndexers.RegisterAll(...)` helper centralises
+  the in-tree indexer set across the `serve` and `index` CLI paths.
+  Cross-file ref resolution (tsconfig `paths`, re-export chase) and LSP
+  enrichment via `typescript-language-server` are deferred to follow-up
+  changes. (`add-typescript-language-indexer`)
+- **Live `.sourcegraph.json` reload — no restart required.** New
+  `ScopeConfigWatcher` (mtime-polled at 200ms) plus `ScopeDiff` +
+  `ScopeRouter.Replace`/`Unregister` primitives feed
+  `LiveIndexService.OnConfigChangedAsync`, which routes each save through the
+  four delta kinds: **add** (new scope passes through the existing
+  `PrepareScopeAsync` → `RunInitialIndexAsync` → `StartWatcher` chain),
+  **remove** (host disposed, registry row dropped, on-disk per-scope DB
+  preserved as a re-add cache), **modify** (atomic-swap via
+  `ScopeRouter.Replace` with a 5s deferred-disposal grace window so in-flight
+  tool calls against the old host complete cleanly), and **default-scope**
+  flip (router metadata only, no scope is reindexed). Malformed saves are
+  parse-tolerant: the watcher logs at info and emits nothing, leaving the
+  running scope set untouched until the next valid save. File deletion (or
+  rename away from the repo root) reverts to the synthesised default. Plugin
+  changes (`plugins[]`) are explicitly NOT live-reloadable: a save that
+  touches the array logs a warning and otherwise applies any concurrent
+  scope deltas. The `--solution` CLI override disables the watcher (the JSON
+  is bypassed at startup, so the live path follows suit). Watcher uses mtime
+  polling rather than `FileSystemWatcher` for cross-platform reliability —
+  macOS's FSEventStream backend doesn't deliver events for files at the
+  watched directory's root, and 200ms latency is below any human's edit
+  cadence. `SOURCEGRAPH_SCOPE_REPLACE_GRACE_MS` env var lets test harnesses
+  shrink the grace window. (`watch-scope-config`)
+
 - **Two new MCP tools for payload-aware edge walks: `find_data_bindings`
   and `find_event_handlers`.** Specialised tool surface over the
   `binds-path` and `handles-event` edge kinds, with named parameter knobs

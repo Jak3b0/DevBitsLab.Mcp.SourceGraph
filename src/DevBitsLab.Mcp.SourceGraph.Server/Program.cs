@@ -171,7 +171,32 @@ static async Task<int> RunServeAsync(CommandLine cli)
     // per-scope DB files via ScopeLayout.
     builder.Services.AddSingleton(new RepoRootInfo(repoRoot));
 
-    builder.Services.AddSingleton(new LiveIndexConfig(scopeConfig.Scopes));
+    // The scope-config watcher is started by LiveIndexService when WatchConfig is true. We skip
+    // it when --solution is set: --solution is a runtime override that bypasses .sourcegraph.json
+    // entirely (Synthesise above), so an edit to the JSON shouldn't override the user's explicit
+    // CLI argument. Without --solution, the watcher's deletion-revert path uses the same empty
+    // discoveredSolutions Synthesise was called with at startup, which is the symmetry we want.
+    var watchConfig = string.IsNullOrEmpty(cli.SolutionPath);
+    var discoveredSolutions = string.IsNullOrEmpty(cli.SolutionPath)
+        ? Array.Empty<string>()
+        : new[] { Path.GetFullPath(cli.SolutionPath) };
+    // Test harnesses pass SOURCEGRAPH_SCOPE_REPLACE_GRACE_MS=50 to avoid waiting the full
+    // production 5s grace window during a live-modify integration test. Production users never
+    // set it; the default (5000) is the right shape for real workloads.
+    var graceMs = 5000;
+    var graceEnv = Environment.GetEnvironmentVariable("SOURCEGRAPH_SCOPE_REPLACE_GRACE_MS");
+    if (!string.IsNullOrEmpty(graceEnv) && int.TryParse(graceEnv, out var parsedGrace) && parsedGrace > 0)
+    {
+        graceMs = parsedGrace;
+    }
+    builder.Services.AddSingleton(new LiveIndexConfig(
+        Scopes: scopeConfig.Scopes,
+        RepoRoot: repoRoot,
+        DiscoveredSolutions: discoveredSolutions,
+        StartupPlugins: scopeConfig.Plugins,
+        DefaultScope: scopeConfig.DefaultScope,
+        WatchConfig: watchConfig,
+        ScopeReplaceGraceMs: graceMs));
     builder.Services.AddHostedService<HistoryHostedService>(sp => new HistoryHostedService(
         sp.GetRequiredService<HistoryQueue>(),
         sp.GetRequiredService<ScopeRouter>(),
@@ -203,20 +228,15 @@ static async Task<int> RunServeAsync(CommandLine cli)
     // routed through here for actual indexing — `LiveIndexService` keeps the workspace-aware
     // bulk path for back-compat — but registering it here makes the seam visible to `plugins
     // list` and to the analyzer pipeline.
+    // Single source of truth for the in-tree indexer set; collapses what used to be three
+    // ad-hoc registration sites in this file. See BuiltInIndexers.cs for the current list.
     var langRegistry = new LanguageIndexerRegistry();
-    var rejectedExt = langRegistry.Register(new BuiltInRoslynLanguageIndexerStub());
-    if (rejectedExt.Count > 0)
+    foreach (var (name, rejected) in BuiltInIndexers.RegisterAll(langRegistry))
     {
-        await Console.Error.WriteLineAsync($"[sourcegraph-mcp] built-in indexer extension(s) rejected: {string.Join(", ", rejectedExt)}").ConfigureAwait(false);
-    }
-    // Built-in XAML indexer ships with the server (in-tree). Registered here alongside the C#
-    // stub so `LanguageIndexerRegistry` reports the .xaml claim and so the dispatcher routes
-    // .xaml files to the indexer at scope startup. The matching XamlLanguageProjectFactory is
-    // registered in the project-factory registry below.
-    var xamlRejected = langRegistry.Register(new DevBitsLab.Mcp.SourceGraph.Indexing.Xaml.XamlLanguageIndexer());
-    if (xamlRejected.Count > 0)
-    {
-        await Console.Error.WriteLineAsync($"[sourcegraph-mcp] XAML indexer extension(s) rejected: {string.Join(", ", xamlRejected)}").ConfigureAwait(false);
+        if (rejected.Count > 0)
+        {
+            await Console.Error.WriteLineAsync($"[sourcegraph-mcp] {name} extension(s) rejected: {string.Join(", ", rejected)}").ConfigureAwait(false);
+        }
     }
     foreach (var record in pluginHost.Plugins.Where(p => p.Status == PluginStatus.Loaded))
     {
@@ -516,10 +536,10 @@ static async Task<int> RunIndexAsync(CommandLine cli)
             await Console.Error.WriteLineAsync($"[sourcegraph-mcp] plugin host startup failed: {ex.Message}").ConfigureAwait(false);
         }
 
-        // Build the language indexer registry — same shape as the serve path.
+        // Build the language indexer registry — same shape as the serve path. The in-tree
+        // indexer list lives in BuiltInIndexers.RegisterAll so the two paths can't drift.
         var langRegistry = new LanguageIndexerRegistry();
-        langRegistry.Register(new BuiltInRoslynLanguageIndexerStub());
-        langRegistry.Register(new DevBitsLab.Mcp.SourceGraph.Indexing.Xaml.XamlLanguageIndexer());
+        BuiltInIndexers.RegisterAll(langRegistry);
         foreach (var record in pluginHost.Plugins.Where(p => p.Status == PluginStatus.Loaded))
         {
             foreach (var li in record.LanguageIndexers)

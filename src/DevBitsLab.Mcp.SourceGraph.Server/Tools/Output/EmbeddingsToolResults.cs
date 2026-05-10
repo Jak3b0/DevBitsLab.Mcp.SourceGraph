@@ -4,9 +4,10 @@ namespace DevBitsLab.Mcp.SourceGraph.Server.Tools.Output;
 
 /// <summary>
 /// Typed structured output for the <c>embeddings_status</c>, <c>embeddings_pull</c>, and
-/// <c>embeddings_verify</c> MCP tools. Mirrors <see cref="EmbeddingsManager.EmbeddingsStatus"/>
-/// but uses snake_case JSON property names per the SDK convention. The shared shape lets agents
-/// chain calls (e.g. pull → verify) without re-parsing.
+/// <c>embeddings_verify</c> MCP tools. Mirrors <see cref="EmbeddingsStatus"/> (the top-level
+/// record returned by <see cref="EmbeddingsManager"/>) but uses snake_case JSON property names
+/// per the SDK convention. The shared shape lets agents chain calls (e.g. pull → verify)
+/// without re-parsing.
 /// </summary>
 public sealed record EmbeddingsStatusResult(
     [property: JsonPropertyName("model_id")] string ModelId,

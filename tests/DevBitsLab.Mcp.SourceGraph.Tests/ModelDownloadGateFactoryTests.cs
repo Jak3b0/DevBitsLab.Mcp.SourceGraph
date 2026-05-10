@@ -175,6 +175,29 @@ public sealed class ModelDownloadGateFactoryTests : IDisposable
     }
 
     [Fact]
+    public async Task UnexpectedException_isCaughtSoGateNeverFaults()
+    {
+        // The gate's contract is that Ready completes for every non-cancellation outcome — not
+        // just ModelDownloadException. A bug in the chunked-copy / IO layer that throws
+        // InvalidOperationException (or anything else) must still settle the gate, otherwise
+        // the awaiting LiveIndexService / EmbeddingsHostedService would observe a faulted task
+        // and tear down their own background loops. Regression guard for the catch broadening
+        // applied 2026-05-10 in response to PR #45 review feedback.
+        var handler = new ThrowingHandler();
+        using var http = new HttpClient(handler);
+        var ms = new ModelStore(overrideBaseDir: _tempDir, http: http);
+
+        var gate = ModelDownloadGateFactory.Build(
+            ms, DefaultEmbeddingModel.Info,
+            embeddingsEnabled: true, noModelDownload: false,
+            logger: NullLogger.Instance);
+        await gate.Ready;
+
+        gate.Ready.IsCompletedSuccessfully.Should().BeTrue(
+            "gate must swallow every non-cancellation exception, not just ModelDownloadException");
+    }
+
+    [Fact]
     public async Task OverrideModel_usesBestEffortManifest_andDownloads()
     {
         var handler = new RecordingHandler();
@@ -216,6 +239,20 @@ public sealed class ModelDownloadGateFactoryTests : IDisposable
                 resp.Content = new ByteArrayContent(Payload);
             }
             return Task.FromResult(resp);
+        }
+    }
+
+    /// <summary>
+    /// Stubbed handler that throws on every send — simulates an unexpected non-network failure
+    /// path inside <see cref="DevBitsLab.Mcp.SourceGraph.Embeddings.ModelStore.EnsureAsync"/>
+    /// (e.g. a programmer-error <see cref="InvalidOperationException"/>). The gate factory must
+    /// still complete the gate task successfully.
+    /// </summary>
+    private sealed class ThrowingHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            throw new InvalidOperationException("simulated programmer-error inside the download path");
         }
     }
 }

@@ -42,14 +42,10 @@ public sealed class JinaTokenizerLoadTests : IClassFixture<JinaTokenizerLoadTest
         _fixture = fixture;
     }
 
-    [Fact]
+    [SkippableFact]
     public void TryLoadTokenizer_succeedsAgainstRealJinaTokenizerJson()
     {
-        if (_fixture.SkipReason is not null)
-        {
-            // Network unavailable and no live cache; document the skip cleanly.
-            return;
-        }
+        Skip.If(_fixture.SkipReason is not null, _fixture.SkipReason);
 
         var ok = JinaCodeEmbeddingGenerator.TryLoadTokenizer(_fixture.Path, out var tokenizer, out var padId, out var error);
 
@@ -58,10 +54,10 @@ public sealed class JinaTokenizerLoadTests : IClassFixture<JinaTokenizerLoadTest
         padId.Should().Be(1, "Jina v2's <pad> token sits at id 1 in tokenizer.json");
     }
 
-    [Fact]
+    [SkippableFact]
     public void Tokenizer_encodesHelloWorld_toExpectedIds()
     {
-        if (_fixture.SkipReason is not null) return;
+        Skip.If(_fixture.SkipReason is not null, _fixture.SkipReason);
 
         var ok = JinaCodeEmbeddingGenerator.TryLoadTokenizer(_fixture.Path, out var tokenizer, out _, out _);
         ok.Should().BeTrue();

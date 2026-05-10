@@ -150,9 +150,10 @@ static async Task<int> RunServeAsync(CommandLine cli)
     // Auto-download gate. Resolves to a pre-completed gate when embeddings are off, or when
     // --no-model-download is set against an empty cache (the worker will see IsAvailable=false
     // anyway). Otherwise fires ModelStore.EnsureAsync as a background task — fire-and-don't-await
-    // so the indexer's bulk pass runs concurrently with the download. EnsureAsync swallows its
-    // own exception path: ModelDownloadException is logged at warning, no rethrow, so the gate
-    // task never throws to its awaiters. See ModelDownloadGateFactory for the decision matrix.
+    // so the indexer's bulk pass runs concurrently with the download. The gate factory catches
+    // every non-cancellation exception from EnsureAsync (network/IO/SHA mismatch/etc.) and logs
+    // it at warning so the gate task always completes for awaiters in LiveIndexService and
+    // EmbeddingsHostedService. See ModelDownloadGateFactory for the decision matrix.
     var noModelDownload = cli.NoModelDownload;
     builder.Services.AddSingleton<ModelDownloadGate>(sp =>
         ModelDownloadGateFactory.Build(

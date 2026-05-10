@@ -56,8 +56,15 @@ internal static class ModelDownloadGateFactory
             {
                 await store.EnsureAsync(modelInfo.ModelId, manifest, default).ConfigureAwait(false);
             }
-            catch (ModelDownloadException ex)
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
+                // Gate's contract is that Ready transitions to RanToCompletion no matter what
+                // EnsureAsync does (short of cancellation). Awaiters in LiveIndexService and
+                // EmbeddingsHostedService treat the gate as a "settle" signal — a faulted Ready
+                // would propagate through their awaits and stop background services that are
+                // unrelated to embeddings. Catch every non-cancellation exception (network
+                // failures, IO permissions, SHA mismatch via ModelDownloadException, an
+                // unexpected runtime error inside the chunked-copy path, etc.) and log it.
                 logger.LogWarning(ex,
                     "Failed to download embedding model {Model} into {Dir}; embeddings disabled for this session. " +
                     "Set --no-embeddings to silence this warning, or pre-populate the cache and retry.",

@@ -30,8 +30,18 @@ namespace DevBitsLab.Mcp.SourceGraph.Embeddings;
 public sealed class ModelDownloadGate
 {
     /// <summary>Task that completes when the auto-download has finished (success or failure)
-    /// or has been bypassed. Never throws — download exceptions are caught upstream and logged
-    /// before the task transitions to the completed state.</summary>
+    /// or has been bypassed.
+    /// <para>
+    /// Awaiters can rely on this transitioning to <see cref="TaskStatus.RanToCompletion"/> for
+    /// every non-cancellation outcome — the producer (the gate factory) catches all download
+    /// failures (<see cref="ModelDownloadException"/>, IO/permission errors, unexpected runtime
+    /// faults) and logs them at warning before the task settles. The only way this task ends in
+    /// <see cref="TaskStatus.Canceled"/> or <see cref="TaskStatus.Faulted"/> is if cooperative
+    /// cancellation propagates through the producer; the awaiting code paths
+    /// (<c>LiveIndexService.OpenScopeAsync</c>, <c>EmbeddingsHostedService.ExecuteAsync</c>)
+    /// honour the same <c>CancellationToken</c> so a cancelled gate is the expected shape during
+    /// shutdown.
+    /// </para></summary>
     public Task Ready { get; }
 
     public ModelDownloadGate(Task ready)

@@ -30,7 +30,16 @@ public static class EmbeddingsTools
     public static Task<CallToolResult> EmbeddingsStatusAsync(
         EmbeddingsManager manager,
         string? modelId = null) =>
-        ToolMetrics.TrackAsync("embeddings_status", null, () => RunStatusAsync(manager, modelId, verifying: false));
+        ToolMetrics.TrackAsync("embeddings_status", null, async () =>
+        {
+            // Start the stopwatch BEFORE the manager IO so latency_ms reflects whole-tool wall
+            // time (manager + render), matching AudienceMetadata's convention. Doing this inside
+            // BuildStatusResult would clock only the prose render, missing the SHA-256 sweep
+            // that dominates wall time.
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var status = await manager.GetStatusAsync(modelId).ConfigureAwait(false);
+            return BuildStatusResult(status, verifying: false, prefix: null, sw);
+        });
 
     [McpServerTool(UseStructuredContent = true, OutputSchemaType = typeof(EmbeddingsStatusResult))]
     [ToolAnnotation(IdempotentHint = true)]
@@ -41,14 +50,15 @@ public static class EmbeddingsTools
         string? modelId = null) =>
         ToolMetrics.TrackAsync("embeddings_pull", null, async () =>
         {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
             try
             {
                 var status = await manager.PullAsync(modelId).ConfigureAwait(false);
-                return BuildStatusResult(status, verifying: false, prefix: "Pull complete.");
+                return BuildStatusResult(status, verifying: false, prefix: "Pull complete.", sw);
             }
             catch (DevBitsLab.Mcp.SourceGraph.Embeddings.ModelDownloadException ex)
             {
-                return BuildErrorResult($"Pull failed: {ex.Message}");
+                return BuildErrorResult($"Pull failed: {ex.Message}", sw);
             }
         });
 
@@ -62,14 +72,15 @@ public static class EmbeddingsTools
         bool all = false) =>
         ToolMetrics.TrackAsync("embeddings_remove", null, async () =>
         {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
             try
             {
                 var result = await manager.RemoveAsync(modelId, all).ConfigureAwait(false);
-                return BuildRemoveResult(result);
+                return BuildRemoveResult(result, sw);
             }
             catch (ArgumentException ex)
             {
-                return BuildErrorResult(ex.Message);
+                return BuildErrorResult(ex.Message, sw);
             }
         });
 
@@ -80,19 +91,15 @@ public static class EmbeddingsTools
     public static Task<CallToolResult> EmbeddingsVerifyAsync(
         EmbeddingsManager manager,
         string? modelId = null) =>
-        ToolMetrics.TrackAsync("embeddings_verify", null, () => RunStatusAsync(manager, modelId, verifying: true));
+        ToolMetrics.TrackAsync("embeddings_verify", null, async () =>
+        {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var status = await manager.VerifyAsync(modelId).ConfigureAwait(false);
+            return BuildStatusResult(status, verifying: true, prefix: null, sw);
+        });
 
-    private static async Task<CallToolResult> RunStatusAsync(EmbeddingsManager manager, string? modelId, bool verifying)
+    private static CallToolResult BuildStatusResult(EmbeddingsStatus status, bool verifying, string? prefix, System.Diagnostics.Stopwatch sw)
     {
-        var status = verifying
-            ? await manager.VerifyAsync(modelId).ConfigureAwait(false)
-            : await manager.GetStatusAsync(modelId).ConfigureAwait(false);
-        return BuildStatusResult(status, verifying, prefix: null);
-    }
-
-    private static CallToolResult BuildStatusResult(EmbeddingsStatus status, bool verifying, string? prefix)
-    {
-        var sw = System.Diagnostics.Stopwatch.StartNew();
         var prose = new StringBuilder();
         if (!string.IsNullOrEmpty(prefix)) prose.AppendLine(prefix);
         prose.AppendLine($"**model**: `{status.ModelId}` (dim={status.Dimension})");
@@ -164,9 +171,8 @@ public static class EmbeddingsTools
         };
     }
 
-    private static CallToolResult BuildRemoveResult(RemoveResult result)
+    private static CallToolResult BuildRemoveResult(RemoveResult result, System.Diagnostics.Stopwatch sw)
     {
-        var sw = System.Diagnostics.Stopwatch.StartNew();
         var prose = new StringBuilder();
         if (result.RemovedDirs.Count == 0)
         {
@@ -204,12 +210,12 @@ public static class EmbeddingsTools
         };
     }
 
-    private static CallToolResult BuildErrorResult(string message)
+    private static CallToolResult BuildErrorResult(string message, System.Diagnostics.Stopwatch sw)
     {
         var content = new List<ContentBlock>(capacity: 2)
         {
             new TextContentBlock { Text = $"**Error**: {message}" },
-            AudienceMetadata.Build(scopeId: null, latencyMs: 0, ("error", "true")),
+            AudienceMetadata.Build(scopeId: null, latencyMs: sw.ElapsedMilliseconds, ("error", "true")),
         };
         return new CallToolResult
         {

@@ -659,14 +659,9 @@ public sealed class RoslynIndexer : IAsyncDisposable, ILanguageIndexer
                         case IdentifierNameSyntax id when id.Parent is not (NamespaceDeclarationSyntax or BaseTypeDeclarationSyntax or MethodDeclarationSyntax or PropertyDeclarationSyntax or VariableDeclaratorSyntax or ParameterSyntax or TypeParameterSyntax):
                             referenced = model.GetSymbolInfo(id, ct).Symbol;
                             refNode = id;
-                            if (id.Parent is InvocationExpressionSyntax inv && inv.Expression == id)
-                            {
-                                kind = ReferenceKind.Call;
-                            }
-                            else
-                            {
-                                kind = ClassifyReadWrite(id, referenced) ?? ReferenceKind.Reference;
-                            }
+                            kind = id.Parent is InvocationExpressionSyntax inv && inv.Expression == id
+                                ? ReferenceKind.Call
+                                : ClassifyReadWrite(id, referenced) ?? ReferenceKind.Reference;
                             break;
 
                         case GenericNameSyntax gn:
@@ -677,14 +672,9 @@ public sealed class RoslynIndexer : IAsyncDisposable, ILanguageIndexer
                         case MemberAccessExpressionSyntax mae:
                             referenced = model.GetSymbolInfo(mae.Name, ct).Symbol;
                             refNode = mae.Name;
-                            if (mae.Parent is InvocationExpressionSyntax invMa && invMa.Expression == mae)
-                            {
-                                kind = ReferenceKind.Call;
-                            }
-                            else
-                            {
-                                kind = ClassifyReadWrite(mae, referenced) ?? ReferenceKind.Reference;
-                            }
+                            kind = mae.Parent is InvocationExpressionSyntax invMa && invMa.Expression == mae
+                                ? ReferenceKind.Call
+                                : ClassifyReadWrite(mae, referenced) ?? ReferenceKind.Reference;
                             break;
 
                         case ObjectCreationExpressionSyntax oce:

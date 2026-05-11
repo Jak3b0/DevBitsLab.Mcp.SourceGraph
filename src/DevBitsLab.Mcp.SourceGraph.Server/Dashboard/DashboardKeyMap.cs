@@ -117,21 +117,29 @@ internal static class DashboardKeyMap
     {
         if (Tools.LeafFormatter.Suppressed)
         {
+            // CRITICAL: the returned string is wrapped in `new Markup(...)` at the callsite
+            // (see DashboardRenderer.BuildFooter). Spectre.Markup parses `[...]` as style tags
+            // by default, so naked `[Enter]` / `[Up/Dn]` would throw at render time (Spectre
+            // tries to parse them as styles, fails, and surfaces an InvalidOperationException).
+            // The escape convention is to double the brackets — `[[Enter]]` renders as the
+            // literal text `[Enter]`. We construct each hint string with doubled brackets up
+            // front rather than calling Markup.Escape so the result composes cleanly with the
+            // outer wrapping.
             return view switch
             {
                 DashboardView.Home =>
-                    "[Up/Dn] select   [Enter] open   1-5 jump   [?] help   [q] quit",
+                    "[[Up/Dn]] select   [[Enter]] open   1-5 jump   [[?]] help   [[q]] quit",
                 DashboardView.Scopes =>
-                    "[Up/Dn] row   [Enter]/[r] reindex   [R] rebuild   [N] new   [D] delete   [d] demo   [Esc] home   [q] quit",
+                    "[[Up/Dn]] row   [[Enter]]/[[r]] reindex   [[R]] rebuild   [[N]] new   [[D]] delete   [[d]] demo   [[Esc]] home   [[q]] quit",
                 DashboardView.Clients =>
-                    "[Up/Dn] row   [Enter] toggle wire   [w] wire   [u] unwire   [Esc] home   [q] quit",
+                    "[[Up/Dn]] row   [[Enter]] toggle wire   [[w]] wire   [[u]] unwire   [[Esc]] home   [[q]] quit",
                 DashboardView.Embeddings =>
-                    "[Enter]/[p] pull   [v] verify   [Esc] home   [q] quit",
+                    "[[Enter]]/[[p]] pull   [[v]] verify   [[Esc]] home   [[q]] quit",
                 DashboardView.RecentActivity =>
-                    "[Up/Dn] row   [Enter] details (TODO)   [l] open full log   [Esc] home   [q] quit",
+                    "[[Up/Dn]] row   [[Enter]] details (TODO)   [[l]] open full log   [[Esc]] home   [[q]] quit",
                 DashboardView.Environment =>
-                    "[Esc] home   [q] quit",
-                _ => "[Esc] home   [q] quit",
+                    "[[Esc]] home   [[q]] quit",
+                _ => "[[Esc]] home   [[q]] quit",
             };
         }
 

@@ -152,7 +152,7 @@ Claude Desktop SHALL remain user-scope only (no project-scope path exists). The 
 
 #### Scenario: Detected Claude Desktop config defaults the picker on
 - **WHEN** `sourcegraph-mcp init --yes` is invoked on a system where `~/Library/Application Support/Claude/claude_desktop_config.json` already exists (macOS path), with no explicit `--claude-desktop` flag
-- **THEN** the Claude Desktop user-scope file is written or merged into (preserving any non-`sourcegraph` server entries already present); the closing report's `Apply` phase shows a `🌿` row for `claude-desktop` and names the user-scope path
+- **THEN** the Claude Desktop user-scope file is written or merged into (preserving any non-`sourcegraph` server entries already present); the closing report's `Apply` phase shows a `●` row for `claude-desktop` (the per-row state glyph for an OK outcome — the leaf brand-mark rides only on the title bar and MCP tool responses, not on individual rows) and names the user-scope path
 
 #### Scenario: --user-cursor writes to home
 - **WHEN** `sourcegraph-mcp init --yes --client cursor --user-cursor` is invoked

@@ -18,8 +18,13 @@ namespace DevBitsLab.Mcp.SourceGraph.Server.Cli;
 /// </para>
 ///
 /// <para>
-/// <c>--watch</c> is honoured only under a tty (<see cref="Console.IsInputRedirected"/> == false);
-/// piped/CI invocations downgrade silently to a single snapshot.
+/// <c>--watch</c> is honoured only when BOTH stdin and stdout are attached to a tty. The default
+/// probe is <c>() =&gt; Console.IsInputRedirected || Console.IsOutputRedirected</c>: if either side
+/// is a pipe, file, or otherwise redirected, the watch loop's ANSI cursor codes would pollute the
+/// downstream consumer, so we silently downgrade to a single snapshot. This covers both
+/// <c>status --watch | cat</c> (stdout piped) and CI-style invocations (stdin redirected). The
+/// probe is overridable via the internal <see cref="RunAsync(CommandLine, Func{bool})"/> overload
+/// for tests.
 /// </para>
 /// </summary>
 internal static class StatusCli

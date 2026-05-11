@@ -98,14 +98,24 @@ public static class ScopeConfigLoader
             throw new ScopeConfigException($"{FileName} is not valid JSON: {ex.Message}", ex);
         }
 
-        // A null or empty `scopes` array is treated as a recoverable empty config — not a
-        // hard error. This is the natural state the file lands in after `scopes remove`
-        // wipes the last entry (or after a hand-edit). Throwing here used to leave the user
-        // stuck: every subsequent `scopes add` / dashboard `[N]` re-loaded the same broken
-        // file and bailed before the user could add a fresh scope. Returning an empty
-        // `ScopeConfig` lets the caller recover — the first added scope simply becomes the
-        // only one.
-        if (dto.Scopes is null || dto.Scopes.Count == 0)
+        // A missing `scopes` property is structurally different from an explicitly-empty
+        // array and is still rejected — that shape almost always means the file is
+        // half-written (plugin-only config, hand-edit accidentally removed the key, etc.).
+        // Throwing gives the operator a clear signal rather than silently behaving as
+        // zero-scopes.
+        if (dto.Scopes is null)
+        {
+            throw new ScopeConfigException($"{FileName} has no `scopes` array.");
+        }
+
+        // An EXPLICITLY EMPTY `scopes` array (`"scopes": []`) is treated as a recoverable
+        // empty config — not a hard error. This is the natural state the file lands in after
+        // `scopes remove` wipes the last entry (or after a deliberate hand-edit). Throwing
+        // here used to leave the user stuck: every subsequent `scopes add` / dashboard `[N]`
+        // re-loaded the same file and bailed before the user could add a fresh scope.
+        // Returning an empty `ScopeConfig` lets the caller recover — the first added scope
+        // simply becomes the only one.
+        if (dto.Scopes.Count == 0)
         {
             // Project plugins through ParsePlugins so plugin configuration survives the
             // remove-last-scope round-trip (no silent data loss if the user had plugins

@@ -50,4 +50,17 @@ public sealed class ConfirmModalTests
         ConfirmModal.Prompt(console, "rebuild", "frontend");
         console.Output.Should().Contain("frontend");
     }
+
+    [Fact]
+    public void Prompt_userPressesEsc_returnsDefaultFalse()
+    {
+        // Esc is the documented non-destructive dismissal path. In Spectre's TextPrompt-derived
+        // ConfirmationPrompt, Escape clears the pending input buffer without submitting; the
+        // subsequent Enter then commits the unset value, which takes the default (false).
+        var console = new TestConsole();
+        console.Input.PushKey(ConsoleKey.Escape);
+        console.Input.PushKey(ConsoleKey.Enter);
+        var result = ConfirmModal.Prompt(console, "remove", "backend");
+        result.Should().BeFalse();
+    }
 }

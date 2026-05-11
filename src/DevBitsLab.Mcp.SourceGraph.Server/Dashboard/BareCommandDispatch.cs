@@ -16,8 +16,17 @@ internal static class BareCommandDispatch
 {
     /// <summary>
     /// Compute the args array to feed into <see cref="Cli.CommandLine.Parse"/>. When
-    /// <paramref name="args"/> is bare, prepends either <c>dashboard</c> (tty) or
-    /// <c>status</c> (redirected stdin / non-interactive).
+    /// <paramref name="args"/> is bare, prepends either <c>dashboard</c> (every stdio stream
+    /// attached to a tty AND <c>UserInteractive</c>) or <c>status</c> (any stream redirected,
+    /// or running non-interactively).
+    ///
+    /// <para>
+    /// The probe checks stdio disposition (not just stdin): the dashboard needs stdin for key
+    /// input AND stdout + stderr to position the ANSI cursor. The production probe
+    /// <see cref="IsStdioRedirectedOrNonInteractive"/> bundles all four checks; the parameter
+    /// here is named <paramref name="isStdioRedirectedOrNonInteractive"/> to mirror the
+    /// production probe and keep tests honest about what they're stubbing.
+    /// </para>
     ///
     /// <para>
     /// Bare-detection rules: <c>args.Length == 0</c> OR the first non-flag positional is empty.
@@ -25,11 +34,11 @@ internal static class BareCommandDispatch
     /// path stays reachable without typing a subcommand. Other flags pass through unchanged.
     /// </para>
     /// </summary>
-    public static string[] Rewrite(string[] args, Func<bool> isStdinRedirectedOrNonInteractive)
+    public static string[] Rewrite(string[] args, Func<bool> isStdioRedirectedOrNonInteractive)
     {
         if (HasHelpFlag(args)) return args;
         if (!IsBare(args)) return args;
-        var target = isStdinRedirectedOrNonInteractive() ? "status" : "dashboard";
+        var target = isStdioRedirectedOrNonInteractive() ? "status" : "dashboard";
         // Prepend the verb; any flags already present propagate to the new subcommand.
         var rewritten = new string[args.Length + 1];
         rewritten[0] = target;

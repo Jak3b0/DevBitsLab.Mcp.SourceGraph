@@ -6,7 +6,7 @@
   <ItemGroup>
     <!-- MCP -->
     <PackageVersion Include="ModelContextProtocol" Version="1.2.0" />
-    <PackageVersion Include="ModelContextProtocol.Core" Version="1.2.0" />
+    <PackageVersion Include="ModelContextProtocol.Core" Version="1.3.0" />
 
     <!-- Hosting & logging -->
     <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.7" />

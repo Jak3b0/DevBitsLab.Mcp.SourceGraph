@@ -91,3 +91,57 @@ additionally:
 
 Strong-naming and Authenticode signing of published packages is on the roadmap
 but not yet shipped — see [GOVERNANCE.md](GOVERNANCE.md) for status.
+
+## Data retention and sensitive information
+
+The server stores operational data in `<root>/.sourcegraph/`:
+
+- **Usage logs** (`usage.jsonl`, `heals.jsonl`) — tool call history with
+  parameters, timestamps, and durations. These logs may contain sensitive query
+  data (e.g., SQL statements with embedded identifiers from your codebase).
+- **Embeddings cache** (`scopes/<id>.db` embeddings table) — semantic vectors
+  derived from your source code.
+- **Blame cache** (`scopes/<id>.db` history table) — author names and commit
+  timestamps from `git blame`.
+- **Symbol index** (`scopes/<id>.db`) — symbol names, types, file paths from
+  your codebase.
+
+**Recommended practices:**
+
+1. **Add `.sourcegraph/` to your `.gitignore`** — these artifacts are local
+   workspace caches and should not be committed to version control. The `init`
+   command reminds you to do this.
+2. **Retention policy** — usage logs rotate automatically when they exceed 10 MB
+   (oldest entries removed). Embeddings and indexes remain until `clear` or
+   `repair` commands are invoked. If you need stricter retention (e.g., GDPR
+   compliance for author names in blame cache), delete the `.sourcegraph/`
+   directory periodically or use `--no-history` to skip blame indexing entirely.
+3. **Redaction** — if you share logs or databases for debugging, sanitize them
+   first. Usage logs are JSONL and can be filtered with `jq`. Consider scrubbing
+   `details.sql` fields if they contain proprietary identifiers.
+
+## Plugin trust model
+
+**Plugins execute with full host privileges** — they run in-process using a
+shared `AssemblyLoadContext` and have unrestricted access to the host's
+capabilities (file I/O, network, process spawning). Only load plugins from
+trusted sources.
+
+**NuGet plugin restore:**
+
+- The server runs `dotnet restore` to fetch plugins declared in
+  `.sourcegraph.json`. NuGet package signature verification is **not enforced**
+  by the server at this time — rely on your organization's NuGet feed
+  restrictions and package signing policies.
+- If a plugin's NuGet source is compromised, or if you specify an untrusted
+  package ID, malicious code can execute during indexing or tool invocation.
+
+**Recommendations:**
+
+- Audit every plugin assembly before adding it to `plugins[]`.
+- Use a private NuGet feed with signature enforcement for enterprise
+  deployments.
+- Pin plugin versions explicitly (e.g., `"version": "1.2.3"` in
+  `.sourcegraph.json`) to avoid unexpected updates.
+- Future versions may add opt-in cryptographic signature verification via a
+  `--verify-plugins` flag (tracked in roadmap).

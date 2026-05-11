@@ -101,11 +101,18 @@ internal static class DashboardActions
             DashboardAction.None => DashboardActionResult.Noop,
             DashboardAction.Quit => DashboardActionResult.QuitSignal,
 
-            // Read-only actions resolved by the main loop's selection state — no work to do here.
+            // Read-only actions resolved by the main loop's selection / view state — no work
+            // to do here. View transitions (GoHome / OpenScopes / …) are handled inline by the
+            // LoopState before this dispatcher is reached, but we list them so a stray call
+            // can't fall through to the default _.
             DashboardAction.MoveUp or DashboardAction.MoveDown or
             DashboardAction.NextSection or DashboardAction.PreviousSection or
             DashboardAction.OpenDetail or DashboardAction.CloseDetail or
-            DashboardAction.ToggleHelp => DashboardActionResult.Noop,
+            DashboardAction.ToggleHelp or
+            DashboardAction.GoHome or DashboardAction.OpenScopes or
+            DashboardAction.OpenClients or DashboardAction.OpenEmbeddings or
+            DashboardAction.OpenRecentActivity or DashboardAction.OpenEnvironment
+                => DashboardActionResult.Noop,
 
             // PrimaryAction (Enter) is mapped section-by-section by the caller (DashboardCli's
             // dispatch helper rewrites it to one of ReindexScope / WireClient / UnwireClient /

@@ -18,10 +18,10 @@ namespace DevBitsLab.Mcp.SourceGraph.Server.Dashboard;
 internal sealed record DashboardRenderOptions(string Root, string? Home, bool NoColor, string Version);
 
 /// <summary>
-/// Per-section <see cref="IRenderable"/> builders for the dashboard. Built around the
-/// <see cref="DashboardTheme"/> palette + glyph vocabulary — borderless, dot-driven, with a
-/// focused-section saturation gradient (focused = full colour; unfocused = dimmed body and
-/// header).
+/// Per-view <see cref="IRenderable"/> builders for the dashboard. Built around the
+/// <see cref="DashboardTheme"/> palette + glyph vocabulary — borderless, dot-driven. The home
+/// view shows a summary + numeric menu; each detail view shows a full table plus a per-row
+/// <c>Selected:</c> drawer.
 ///
 /// <para>
 /// Each <c>Build*</c> method returns a self-contained <see cref="IRenderable"/> so unit tests
@@ -32,8 +32,13 @@ internal sealed record DashboardRenderOptions(string Root, string? Home, bool No
 /// </summary>
 internal static class DashboardRenderer
 {
-    /// <summary>The dashboard header: brand leaf + bold name + dimmed path · version.</summary>
-    public static IRenderable BuildHeader(DashboardSnapshot snapshot, DashboardRenderOptions options)
+    /// <summary>
+    /// The dashboard header: brand leaf + bold name + dimmed path · version. When
+    /// <paramref name="view"/> is a detail view, a breadcrumb (<c>› Section</c>) is appended
+    /// and a right-aligned <c>[Esc / h] back to home</c> hint is shown.
+    /// </summary>
+    public static IRenderable BuildHeader(DashboardSnapshot snapshot, DashboardRenderOptions options,
+        DashboardView view = DashboardView.Home)
     {
         var leaf = LeafFormatter.Suppressed ? "[x]" : DashboardTheme.BrandLeaf;
         var leafText = Markup.Escape(leaf);
@@ -41,22 +46,45 @@ internal static class DashboardRenderer
         var rendered = Markup.Escape(PathDisplay.Render(options.Root, options.Root, options.Home));
         var brand = DashboardTheme.Brand;
         var muted = DashboardTheme.Muted;
+        var mutedDim = DashboardTheme.MutedDim;
 
-        var headerLine = $"{leafText} [bold {brand}]SourceGraph[/]   [{muted}]{rendered} · v{version}[/]";
-        var separator = $"[{DashboardTheme.MutedDim}]{Markup.Escape(new string('─', 72))}[/]";
+        string leftCell;
+        string rightCell;
+        if (view == DashboardView.Home)
+        {
+            leftCell = $"{leafText} [bold {brand}]SourceGraph[/]";
+            rightCell = $"[{muted}]{rendered} · v{version}[/]";
+        }
+        else
+        {
+            var sectionName = Markup.Escape(view.DisplayName());
+            leftCell = $"{leafText} [bold {brand}]SourceGraph[/]  [{mutedDim}]›[/]  [bold {brand}]{sectionName}[/]";
+            // The back-to-home hint goes in the right cell on detail views; the path·version
+            // line is on home only (consistent with the mock).
+            rightCell = $"[{muted}]{Markup.Escape("[Esc / h] back to home")}[/]";
+        }
 
-        var rows = new Rows(new Markup(headerLine), new Markup(separator));
+        // Two-cell grid for left/right alignment on the header line.
+        var headerGrid = new Grid()
+            .AddColumn(new GridColumn().NoWrap())
+            .AddColumn(new GridColumn().NoWrap().RightAligned());
+        headerGrid.AddRow(new Markup(leftCell), new Markup(rightCell));
+
+        var separator = $"[{mutedDim}]{Markup.Escape(new string('─', 72))}[/]";
+
+        var rows = new Rows(headerGrid, new Markup(separator));
         return new Padder(rows).PadLeft(1).PadRight(1).PadTop(0).PadBottom(0);
     }
 
-    /// <summary>The two-row footer: key hint + toast row. Toast colour follows severity.</summary>
-    public static IRenderable BuildFooter(DashboardCli.ToastState toast = default)
+    /// <summary>The two-row footer: per-view key hint + toast row. Toast colour follows severity.</summary>
+    public static IRenderable BuildFooter(DashboardCli.ToastState toast = default,
+        DashboardView view = DashboardView.Home)
     {
         var separator = $"[{DashboardTheme.MutedDim}]{Markup.Escape(new string('─', 72))}[/]";
 
-        // Two-row footer hint. FooterHint embeds Spectre markup (or ASCII brackets under
-        // --no-leaf); pass through verbatim.
-        var hintMarkup = new Markup(DashboardKeyMap.FooterHint);
+        // The footer hint is now view-aware — each view advertises only the keys that do
+        // something in its scope.
+        var hintMarkup = new Markup(DashboardKeyMap.For(view));
 
         IRenderable toastRow = string.IsNullOrEmpty(toast.Text)
             ? new Markup(" ") // keeps the row height stable
@@ -69,14 +97,14 @@ internal static class DashboardRenderer
     /// <summary>
     /// Convenience overload that lets old callers pass a bare message; severity defaults to
     /// <see cref="ToastSeverity.Info"/>. Used by tests and any caller that doesn't have a
-    /// <see cref="DashboardCli.ToastState"/> handy.
+    /// <see cref="DashboardCli.ToastState"/> handy. View defaults to <see cref="DashboardView.Home"/>.
     /// </summary>
     public static IRenderable BuildFooter(string statusMessage)
     {
         var toast = string.IsNullOrEmpty(statusMessage)
             ? default
             : new DashboardCli.ToastState(statusMessage, DateTimeOffset.UtcNow, ToastSeverity.Info);
-        return BuildFooter(toast);
+        return BuildFooter(toast, DashboardView.Home);
     }
 
     /// <summary>Render the toast text with colour/fade based on age + severity.</summary>
@@ -109,223 +137,489 @@ internal static class DashboardRenderer
         return $"  [{colour}]{Markup.Escape(prefix)}  {Markup.Escape(toast.Text)}[/]";
     }
 
-    /// <summary>The Environment section: SDK / git / repo root / solutions / .sourcegraph.json. Never focusable.</summary>
-    public static IRenderable BuildEnvironmentSection(DashboardSnapshot snapshot, DashboardRenderOptions options,
-        bool focused = false)
+    // ────────────────────────────────────────────────────────────────────────────────
+    // Home view
+    // ────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// The home / welcome view: at-a-glance summary block (one row per area) + numeric menu.
+    /// </summary>
+    /// <param name="snapshot">Current dashboard snapshot.</param>
+    /// <param name="options">Render options (path display etc.).</param>
+    /// <param name="menuIndex">Index of the currently highlighted menu item (0..4).</param>
+    public static IRenderable BuildHome(DashboardSnapshot snapshot, DashboardRenderOptions options, int menuIndex)
     {
-        var env = snapshot.Environment;
-        // Environment's right-aligned slot is a read-only annotation, not a key hint. Style it as
-        // muted text so it reads as a label rather than an action key.
-        var rows = new List<IRenderable>
-        {
-            BuildSectionHeader("Environment", contextKeys: $"[{DashboardTheme.Muted}]read-only[/]", focused: focused),
-        };
+        var rows = new List<IRenderable>();
+        rows.Add(new Markup("")); // breathing room under the title-bar separator
 
-        // .NET SDK
-        rows.Add(BuildEnvRow(
-            kind: env.DotnetSdkVersion is null ? StatusKind.Unsupported : StatusKind.Ok,
-            key: ".NET SDK",
-            value: env.DotnetSdkVersion ?? "(not detected)",
-            focused: focused));
-        // git
-        rows.Add(BuildEnvRow(
-            kind: env.GitOnPath ? StatusKind.Ok : StatusKind.Warn,
-            key: "git",
-            value: env.GitOnPath ? "on PATH" : "not on PATH",
-            focused: focused));
-        // repo root
-        rows.Add(BuildEnvRow(
-            kind: StatusKind.Ok,
-            key: "repo root",
-            value: PathDisplay.Render(env.RepoRootPath, options.Root, options.Home),
-            focused: focused));
-        // solution
-        var solutions = env.SolutionFiles.Count == 0
-            ? "(none)"
-            : string.Join(", ", env.SolutionFiles.Select(p => PathDisplay.Render(p, options.Root, options.Home)));
-        var solutionDetail = env.SolutionFiles.Count switch
-        {
-            0 => "",
-            1 => "1 detected",
-            _ => $"{env.SolutionFiles.Count} detected",
-        };
-        rows.Add(BuildEnvRow(
-            kind: env.SolutionFiles.Count == 0 ? StatusKind.Warn : StatusKind.Ok,
-            key: "solution",
-            value: solutions,
-            trailing: solutionDetail,
-            focused: focused));
-        // .sourcegraph.json
-        var (cfgKind, cfgValue) = env.SourceGraphConfigStatus switch
-        {
-            "valid" => (StatusKind.Ok, "valid"),
-            "missing" => (StatusKind.Ok, "auto (single-scope)"),
-            "malformed" => (StatusKind.Fail, $"MALFORMED — {env.SourceGraphConfigError}"),
-            _ => (StatusKind.Warn, env.SourceGraphConfigStatus),
-        };
-        rows.Add(BuildEnvRow(cfgKind, ".sourcegraph.json", cfgValue, focused: focused));
+        // Summary block — five rows, one per area.
+        var summary = BuildHomeSummary(snapshot, options);
+        rows.Add(summary);
 
-        rows.Add(new Markup("")); // trailing blank row separates from the next section
+        AppendDivider(rows);
+
+        // Menu — five entries (one per detail view).
+        rows.Add(BuildHomeMenu(menuIndex));
+
         return new Padder(new Rows(rows)).PadLeft(2).PadRight(1);
     }
 
-    /// <summary>The Scopes section: one row per registered scope.</summary>
-    public static IRenderable BuildScopesSection(DashboardSnapshot snapshot, DashboardRenderOptions options,
-        bool focused = false, int selectedRow = 0)
+    /// <summary>
+    /// Build the at-a-glance summary block. Five rows, one per snapshot area, each rendering a
+    /// status dot + label + compact summary text.
+    /// </summary>
+    private static IRenderable BuildHomeSummary(DashboardSnapshot snapshot, DashboardRenderOptions options)
     {
-        var contextKeys = BuildContextKeys(("⏎", "reindex"), ("⇧R", "rebuild"));
-        var header = BuildSectionHeader("Scopes", contextKeys: contextKeys, focused: focused,
-            subtitle: SelectedScopeName(snapshot, focused, selectedRow));
-        if (snapshot.Scopes.Count == 0)
-        {
-            var empty = new Markup($"  {DashboardTheme.Dot(StatusKind.Off)} [{DashboardTheme.Muted}](no scopes registered — run `sourcegraph-mcp serve` once to materialise)[/]");
-            return ComposeSection(header, new Rows(empty));
-        }
+        var (envKind, envText) = ComputeEnvironmentSummary(snapshot, options);
+        var (scopesKind, scopesText) = ComputeScopesSummary(snapshot);
+        var (clientsKind, clientsText) = ComputeClientsSummary(snapshot);
+        var (embKind, embText) = ComputeEmbeddingsSummary(snapshot);
+        var (recentKind, recentText) = ComputeRecentSummary(snapshot);
 
-        var rows = new List<IRenderable>();
+        var grid = new Grid()
+            .AddColumn(new GridColumn().NoWrap().Width(3))  // dot
+            .AddColumn(new GridColumn().NoWrap().Width(24)) // label (bold)
+            .AddColumn(new GridColumn().NoWrap());          // summary text (muted)
+
+        AddSummaryRow(grid, envKind, "Environment", envText);
+        AddSummaryRow(grid, scopesKind, "Scopes", scopesText);
+        AddSummaryRow(grid, clientsKind, "Clients", clientsText);
+        AddSummaryRow(grid, embKind, "Embeddings", embText);
+        AddSummaryRow(grid, recentKind, "Recent activity", recentText);
+        return grid;
+    }
+
+    private static void AddSummaryRow(Grid grid, StatusKind kind, string label, string text)
+    {
+        grid.AddRow(
+            new Markup(DashboardTheme.Dot(kind)),
+            new Markup($"[bold]{Markup.Escape(label)}[/]"),
+            new Markup($"[{DashboardTheme.Muted}]{Markup.Escape(text)}[/]"));
+    }
+
+    /// <summary>Build the numeric menu — 1..5 mapping to each detail view.</summary>
+    private static IRenderable BuildHomeMenu(int menuIndex)
+    {
+        var entries = HomeMenuEntries;
         var grid = new Grid()
             .AddColumn(new GridColumn().NoWrap().Width(2))  // selection bar
-            .AddColumn(new GridColumn().NoWrap().Width(14)) // name
-            .AddColumn(new GridColumn().NoWrap().Width(3))  // dot
-            .AddColumn(new GridColumn().NoWrap().Width(11)) // status text
-            .AddColumn(new GridColumn().NoWrap().Width(15).RightAligned()) // symbol count
-            .AddColumn(new GridColumn().NoWrap().Width(13).RightAligned()) // ref count
-            .AddColumn(new GridColumn().NoWrap()); // age / detail
+            .AddColumn(new GridColumn().NoWrap().Width(4))  // number
+            .AddColumn(new GridColumn().NoWrap().Width(20)) // section name
+            .AddColumn(new GridColumn().NoWrap());          // description
+
+        for (var i = 0; i < entries.Length; i++)
+        {
+            var e = entries[i];
+            var selected = i == menuIndex;
+            var nameMarkup = selected
+                ? $"[bold {DashboardTheme.Brand}]{Markup.Escape(e.Name)}[/]"
+                : $"[{DashboardTheme.Muted}]{Markup.Escape(e.Name)}[/]";
+            var numberMarkup = selected
+                ? $"[bold {DashboardTheme.Brand}]{Markup.Escape(e.Number)}[/]"
+                : $"[{DashboardTheme.Muted}]{Markup.Escape(e.Number)}[/]";
+            var descMarkup = $"[{DashboardTheme.Muted}]{Markup.Escape(e.Description)}[/]";
+            grid.AddRow(
+                SelectionMarker(selected),
+                new Markup(numberMarkup),
+                new Markup(nameMarkup),
+                new Markup(descMarkup));
+        }
+        return grid;
+    }
+
+    /// <summary>Static menu entries — number, view, name, description.</summary>
+    internal static readonly (string Number, DashboardView View, string Name, string Description)[] HomeMenuEntries =
+    {
+        ("1", DashboardView.Scopes,         "Scopes",          "Reindex, rebuild, inspect per scope"),
+        ("2", DashboardView.Clients,        "Clients",         "Wire / unwire MCP clients"),
+        ("3", DashboardView.Embeddings,     "Embeddings",      "Pull, verify the embedding cache"),
+        ("4", DashboardView.RecentActivity, "Recent activity", "Live log of tool calls and heals"),
+        ("5", DashboardView.Environment,    "Environment",     "Build / git / repo detail (read-only)"),
+    };
+
+    // ────────────────────────────────────────────────────────────────────────────────
+    // Summary computations (home view)
+    // ────────────────────────────────────────────────────────────────────────────────
+
+    private static (StatusKind, string) ComputeEnvironmentSummary(DashboardSnapshot snapshot, DashboardRenderOptions options)
+    {
+        var env = snapshot.Environment;
+        var parts = new List<string>();
+        if (!string.IsNullOrEmpty(env.DotnetSdkVersion)) parts.Add(env.DotnetSdkVersion);
+        if (env.GitOnPath) parts.Add("git");
+        if (env.SolutionFiles.Count > 0)
+        {
+            parts.Add(Path.GetFileName(env.SolutionFiles[0]));
+        }
+        var text = parts.Count == 0 ? "(no environment detected)" : string.Join(" · ", parts);
+
+        StatusKind kind;
+        if (env.DotnetSdkVersion is null || env.SourceGraphConfigStatus == "malformed")
+            kind = StatusKind.Fail;
+        else if (!env.GitOnPath || env.SolutionFiles.Count == 0)
+            kind = StatusKind.Warn;
+        else
+            kind = StatusKind.Ok;
+        return (kind, text);
+    }
+
+    private static (StatusKind, string) ComputeScopesSummary(DashboardSnapshot snapshot)
+    {
+        var scopes = snapshot.Scopes;
+        var total = scopes.Count;
+        if (total == 0) return (StatusKind.Off, "(none)");
+
+        // Single-pass histogram over the scope statuses. Cheaper than four LINQ Counts and
+        // keeps the dispatch close to the labels.
+        int ok = 0, partial = 0, indexing = 0, degraded = 0;
+        foreach (var s in scopes)
+        {
+            switch (s.Status)
+            {
+                case "ok": ok++; break;
+                case "partial": partial++; break;
+                case "indexing": indexing++; break;
+                case "degraded": degraded++; break;
+            }
+        }
+
+        var bits = new List<string> { $"{total} total" };
+        if (ok > 0) bits.Add($"{ok} ok");
+        if (partial > 0) bits.Add($"{partial} partial");
+        if (indexing > 0) bits.Add($"{indexing} indexing");
+        if (degraded > 0) bits.Add($"{degraded} degraded");
+
+        StatusKind kind;
+        if (degraded > 0) kind = StatusKind.Fail;
+        else if (partial > 0 || indexing > 0) kind = StatusKind.Warn;
+        else kind = StatusKind.Ok;
+        return (kind, string.Join("  ·  ", bits));
+    }
+
+    private static (StatusKind, string) ComputeClientsSummary(DashboardSnapshot snapshot)
+    {
+        var total = snapshot.Clients.Count;
+        var wired = snapshot.Clients.Count(c => c.ContainsSourcegraphEntry);
+        if (total == 0) return (StatusKind.Off, "0 / 0 wired");
+        var kind = wired > 0 ? StatusKind.Ok : StatusKind.Off;
+        return (kind, $"{wired} / {total} wired");
+    }
+
+    private static (StatusKind, string) ComputeEmbeddingsSummary(DashboardSnapshot snapshot)
+    {
+        var emb = snapshot.Embeddings;
+        if (!emb.CachePresent)
+        {
+            return (StatusKind.Warn, $"{emb.ModelId}  ·  (absent)");
+        }
+        return (StatusKind.Ok, $"{emb.ModelId}  ·  {FormatBytes(emb.TotalBytes)}");
+    }
+
+    private static (StatusKind, string) ComputeRecentSummary(DashboardSnapshot snapshot)
+    {
+        var activity = snapshot.RecentActivity;
+        if (activity.Count == 0) return (StatusKind.Off, "(no activity yet)");
+        // Most recent entry leads the label.
+        var latest = activity.OrderByDescending(a => a.Ts).First();
+        var rel = FormatRelativeTime(DateTimeOffset.UtcNow - latest.Ts);
+        var kind = latest.Ok ? StatusKind.Ok : StatusKind.Fail;
+        var name = latest.Detail ?? latest.Kind;
+        return (kind, $"{activity.Count} events  ·  last: {name} · {rel}");
+    }
+
+    // ────────────────────────────────────────────────────────────────────────────────
+    // Detail views
+    // ────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>The Environment detail view: read-only key/value table; no row selection.</summary>
+    public static IRenderable BuildEnvironmentDetail(DashboardSnapshot snapshot, DashboardRenderOptions options)
+    {
+        var env = snapshot.Environment;
+        var rows = new List<IRenderable> { new Markup("") };
+
+        var grid = new Grid()
+            .AddColumn(new GridColumn().NoWrap().Width(3)) // dot
+            .AddColumn(new GridColumn().NoWrap().Width(22)) // key
+            .AddColumn(new GridColumn().NoWrap()); // value
+
+        // .NET SDK
+        AddEnvDetailRow(grid,
+            env.DotnetSdkVersion is null ? StatusKind.Fail : StatusKind.Ok,
+            ".NET SDK",
+            env.DotnetSdkVersion ?? "(not detected)");
+        AddEnvDetailRow(grid,
+            env.GitOnPath ? StatusKind.Ok : StatusKind.Warn,
+            "git on PATH",
+            env.GitOnPath ? "yes" : "no");
+        AddEnvDetailRow(grid,
+            StatusKind.Ok,
+            "repo root",
+            PathDisplay.Render(env.RepoRootPath, options.Root, options.Home));
+        var solutions = env.SolutionFiles.Count == 0
+            ? "(none detected)"
+            : $"{string.Join(", ", env.SolutionFiles.Select(p => PathDisplay.Render(p, options.Root, options.Home)))} ({env.SolutionFiles.Count} detected)";
+        AddEnvDetailRow(grid,
+            env.SolutionFiles.Count == 0 ? StatusKind.Warn : StatusKind.Ok,
+            "solutions",
+            solutions);
+        var (cfgKind, cfgValue) = env.SourceGraphConfigStatus switch
+        {
+            "valid" => (StatusKind.Ok, "valid"),
+            "missing" => (StatusKind.Ok, "missing (single-scope synth path)"),
+            "malformed" => (StatusKind.Fail, $"MALFORMED — {env.SourceGraphConfigError}"),
+            _ => (StatusKind.Warn, env.SourceGraphConfigStatus),
+        };
+        AddEnvDetailRow(grid, cfgKind, ".sourcegraph.json", cfgValue);
+
+        rows.Add(grid);
+        return new Padder(new Rows(rows)).PadLeft(2).PadRight(1);
+    }
+
+    private static void AddEnvDetailRow(Grid grid, StatusKind kind, string key, string value)
+    {
+        grid.AddRow(
+            new Markup(DashboardTheme.Dot(kind)),
+            new Markup($"[bold]{Markup.Escape(key)}[/]"),
+            new Markup(Markup.Escape(value)));
+    }
+
+    /// <summary>The Scopes detail view: full per-scope table + Selected drawer + failed-projects bullets.</summary>
+    public static IRenderable BuildScopesDetail(DashboardSnapshot snapshot, DashboardRenderOptions options,
+        int selectedRow = 0)
+    {
+        var rows = new List<IRenderable> { new Markup("") };
+        if (snapshot.Scopes.Count == 0)
+        {
+            rows.Add(new Markup($"  {DashboardTheme.Dot(StatusKind.Off)} [{DashboardTheme.Muted}](no scopes registered — run `sourcegraph-mcp serve` once to materialise)[/]"));
+            return new Padder(new Rows(rows)).PadLeft(2).PadRight(1);
+        }
+
+        // Header + data share the same column layout; build it once.
+        Grid NewScopesGrid() => new Grid()
+            .AddColumn(new GridColumn().NoWrap().Width(2))
+            .AddColumn(new GridColumn().NoWrap().Width(14))
+            .AddColumn(new GridColumn().NoWrap().Width(14))
+            .AddColumn(new GridColumn().NoWrap().Width(13).RightAligned())
+            .AddColumn(new GridColumn().NoWrap().Width(12).RightAligned())
+            .AddColumn(new GridColumn().NoWrap().Width(16))
+            .AddColumn(new GridColumn().NoWrap());
+
+        var hcol = $"[{DashboardTheme.MutedDim}]";
+        var headerGrid = NewScopesGrid();
+        headerGrid.AddRow(
+            new Markup(""),
+            new Markup($"{hcol}Name[/]"),
+            new Markup($"{hcol}Status[/]"),
+            new Markup($"{hcol}Symbols[/]"),
+            new Markup($"{hcol}Refs[/]"),
+            new Markup($"{hcol}Last indexed[/]"),
+            new Markup($"{hcol}Failed[/]"));
+        rows.Add(headerGrid);
+
+        var grid = NewScopesGrid();
 
         for (var i = 0; i < snapshot.Scopes.Count; i++)
         {
             var s = snapshot.Scopes[i];
-            var kind = s.Status switch
-            {
-                "ok" => StatusKind.Ok,
-                "partial" => StatusKind.Warn,
-                "degraded" => StatusKind.Fail,
-                "indexing" => StatusKind.Warn,
-                _ => StatusKind.Off,
-            };
+            var kind = MapScopeStatus(s.Status);
             var ageLabel = s.LastIndexedAt.HasValue
                 ? FormatRelativeTime(DateTimeOffset.UtcNow - s.LastIndexedAt.Value)
                 : "(never)";
-            var failedSuffix = s.FailedProjects.Count > 0 ? $" · {s.FailedProjects.Count} failed" : "";
-            var isolatedSuffix = s.Isolated ? " · isolated" : "";
-            var detail = $"{ageLabel}{failedSuffix}{isolatedSuffix}";
+            var failed = s.FailedProjects.Count > 0
+                ? $"{s.FailedProjects.Count} project{(s.FailedProjects.Count == 1 ? "" : "s")}"
+                : "—";
+            var statusCell = $"{DashboardTheme.Dot(kind)} {Markup.Escape(s.Status)}";
+            var selected = i == selectedRow;
 
-            var isSelected = focused && i == selectedRow;
             grid.AddRow(
-                SelectionMarker(isSelected),
-                ColourCell(Markup.Escape(s.Name), focused, bold: isSelected),
-                new Markup(DashboardTheme.Dot(kind)),
-                ColourCell(Markup.Escape(s.Status), focused),
-                ColourCell(Markup.Escape($"{s.SymbolCount:N0} symbols"), focused),
-                ColourCell(Markup.Escape($"{s.ReferenceCount:N0} refs"), focused),
-                ColourCell(Markup.Escape(detail), focused, secondary: true));
+                SelectionMarker(selected),
+                new Markup(selected
+                    ? $"[bold {DashboardTheme.Brand}]{Markup.Escape(s.Name)}[/]"
+                    : Markup.Escape(s.Name)),
+                new Markup(statusCell),
+                new Markup(Markup.Escape($"{s.SymbolCount:N0}")),
+                new Markup(Markup.Escape($"{s.ReferenceCount:N0}")),
+                new Markup($"[{DashboardTheme.Muted}]{Markup.Escape(ageLabel)}[/]"),
+                new Markup($"[{DashboardTheme.Muted}]{Markup.Escape(failed)}[/]"));
         }
         rows.Add(grid);
-        rows.Add(new Markup(""));
-        return ComposeSection(header, new Rows(rows));
+
+        // Inline separator + Selected drawer.
+        if (selectedRow >= 0 && selectedRow < snapshot.Scopes.Count)
+        {
+            AppendDivider(rows);
+            rows.Add(BuildScopeDrawer(snapshot.Scopes[selectedRow]));
+        }
+        return new Padder(new Rows(rows)).PadLeft(2).PadRight(1);
     }
 
-    private static string? SelectedScopeName(DashboardSnapshot snap, bool focused, int selectedRow)
+    private static StatusKind MapScopeStatus(string status) => status switch
     {
-        if (!focused || snap.Scopes.Count == 0) return null;
-        if (selectedRow < 0 || selectedRow >= snap.Scopes.Count) return null;
-        return snap.Scopes[selectedRow].Name;
+        "ok" => StatusKind.Ok,
+        "partial" => StatusKind.Warn,
+        "degraded" => StatusKind.Fail,
+        "indexing" => StatusKind.Warn,
+        _ => StatusKind.Off,
+    };
+
+    private static IRenderable BuildScopeDrawer(ScopeRow scope)
+    {
+        var ageLabel = scope.LastIndexedAt.HasValue
+            ? FormatRelativeTime(DateTimeOffset.UtcNow - scope.LastIndexedAt.Value)
+            : "(never)";
+        var statusText = scope.Status switch
+        {
+            "partial" when scope.FailedProjects.Count > 0 =>
+                $"partial — {scope.FailedProjects.Count} project{(scope.FailedProjects.Count == 1 ? "" : "s")} failed",
+            _ => scope.Status,
+        };
+        var fields = new List<(string Key, string Value)>
+        {
+            ("status", statusText),
+            ("symbols", scope.SymbolCount.ToString("N0")),
+            ("refs", scope.ReferenceCount.ToString("N0")),
+            ("last", ageLabel),
+            ("database", $".sourcegraph/scopes/{scope.Name}.db"),
+        };
+        if (scope.Isolated)
+        {
+            fields.Add(("isolated", "yes"));
+        }
+        var hasFailedProjects = scope.FailedProjects.Count > 0;
+        return BuildSelectedDrawer(
+            title: $"Selected: {scope.Name}",
+            fields: fields,
+            bullets: hasFailedProjects ? scope.FailedProjects : null,
+            bulletsHeader: hasFailedProjects ? "Failed projects:" : null);
     }
 
-    /// <summary>The Clients section: one row per detected MCP client config.</summary>
-    public static IRenderable BuildClientsSection(DashboardSnapshot snapshot, DashboardRenderOptions options,
-        bool focused = false, int selectedRow = 0)
+    /// <summary>The Clients detail view: full per-client table + Selected drawer.</summary>
+    public static IRenderable BuildClientsDetail(DashboardSnapshot snapshot, DashboardRenderOptions options,
+        int selectedRow = 0)
     {
-        var contextKeys = BuildContextKeys(("⏎", "toggle"), ("u", "unwire"));
-        var header = BuildSectionHeader("Clients", contextKeys: contextKeys, focused: focused);
+        var rows = new List<IRenderable> { new Markup("") };
         if (snapshot.Clients.Count == 0)
         {
-            var empty = new Markup($"  {DashboardTheme.Dot(StatusKind.Off)} [{DashboardTheme.Muted}](no client configs detected)[/]");
-            return ComposeSection(header, new Rows(empty));
+            rows.Add(new Markup($"  {DashboardTheme.Dot(StatusKind.Off)} [{DashboardTheme.Muted}](no client configs detected)[/]"));
+            return new Padder(new Rows(rows)).PadLeft(2).PadRight(1);
         }
-        var grid = new Grid()
-            .AddColumn(new GridColumn().NoWrap().Width(2))  // selection bar
-            .AddColumn(new GridColumn().NoWrap().Width(16)) // slug
-            .AddColumn(new GridColumn().NoWrap().Width(10)) // scope
-            .AddColumn(new GridColumn().NoWrap().Width(3))  // dot
-            .AddColumn(new GridColumn().NoWrap());          // path / detail
+
         var ordered = snapshot.Clients.OrderBy(c => c.Scope == "project" ? 0 : 1).ToArray();
+
+        var grid = new Grid()
+            .AddColumn(new GridColumn().NoWrap().Width(2))
+            .AddColumn(new GridColumn().NoWrap().Width(18))
+            .AddColumn(new GridColumn().NoWrap().Width(10))
+            .AddColumn(new GridColumn().NoWrap().Width(3))
+            .AddColumn(new GridColumn().NoWrap().Width(14))
+            .AddColumn(new GridColumn().NoWrap());
+
         for (var i = 0; i < ordered.Length; i++)
         {
             var c = ordered[i];
-            var kind = c switch
+            var (kind, stateLabel) = c switch
             {
-                { ContainsSourcegraphEntry: true } => StatusKind.Ok,
-                { Exists: true } => StatusKind.Off,
-                _ => StatusKind.Unsupported,
+                { ContainsSourcegraphEntry: true } => (StatusKind.Ok, "wired"),
+                { Exists: true } => (StatusKind.Off, "not wired"),
+                _ => (StatusKind.Unsupported, "not present"),
             };
-            var detail = c.ContainsSourcegraphEntry
-                ? PathDisplay.Render(c.Path, options.Root, options.Home)
-                : (c.Exists ? "not wired" : "not present");
-            var isSelected = focused && i == selectedRow;
+            var path = PathDisplay.Render(c.Path, options.Root, options.Home);
+            var selected = i == selectedRow;
             grid.AddRow(
-                SelectionMarker(isSelected),
-                ColourCell(Markup.Escape(c.Slug), focused, bold: isSelected),
-                ColourCell(Markup.Escape(c.Scope), focused, secondary: true),
+                SelectionMarker(selected),
+                new Markup(selected
+                    ? $"[bold {DashboardTheme.Brand}]{Markup.Escape(c.Slug)}[/]"
+                    : Markup.Escape(c.Slug)),
+                new Markup($"[{DashboardTheme.Muted}]{Markup.Escape(c.Scope)}[/]"),
                 new Markup(DashboardTheme.Dot(kind)),
-                ColourCell(Markup.Escape(detail), focused, secondary: !c.ContainsSourcegraphEntry));
+                new Markup(Markup.Escape(stateLabel)),
+                new Markup($"[{DashboardTheme.Muted}]{Markup.Escape(path)}[/]"));
         }
-        var rows = new List<IRenderable> { grid, new Markup("") };
-        return ComposeSection(header, new Rows(rows));
+        rows.Add(grid);
+
+        if (selectedRow >= 0 && selectedRow < ordered.Length)
+        {
+            AppendDivider(rows);
+            rows.Add(BuildClientDrawer(ordered[selectedRow], options));
+        }
+        return new Padder(new Rows(rows)).PadLeft(2).PadRight(1);
     }
 
-    /// <summary>The Embeddings section: one row with model id + cache size + verified flag.</summary>
-    public static IRenderable BuildEmbeddingsSection(DashboardSnapshot snapshot, DashboardRenderOptions options,
-        bool focused = false)
+    private static IRenderable BuildClientDrawer(ClientRow client, DashboardRenderOptions options)
+    {
+        string state = client switch
+        {
+            { ContainsSourcegraphEntry: true } => "wired — entry present in config",
+            { Exists: true } => "file exists but no sourcegraph entry — pressing ⏎ will wire it",
+            _ => "file does not exist — pressing ⏎ will create it",
+        };
+        var target = PathDisplay.Render(client.Path, options.Root, options.Home);
+        var fields = new List<(string Key, string Value)>
+        {
+            ("scope", client.Scope),
+            ("target", target),
+            ("state", state),
+        };
+        return BuildSelectedDrawer($"Selected: {client.Slug}", fields);
+    }
+
+    /// <summary>The Embeddings detail view: model identity + four headline values + hint.</summary>
+    public static IRenderable BuildEmbeddingsDetail(DashboardSnapshot snapshot, DashboardRenderOptions options)
     {
         var emb = snapshot.Embeddings;
-        var contextKeys = BuildContextKeys(("⏎", "pull"), ("v", "verify"));
-        var header = BuildSectionHeader("Embeddings", contextKeys: contextKeys, focused: focused);
-        var kind = emb.CachePresent ? StatusKind.Ok : StatusKind.Warn;
-        var verifiedLabel = emb.Verified ? "verified" : "unverified";
-        var sizeLabel = emb.CachePresent ? FormatBytes(emb.TotalBytes) : "(absent)";
+        var rows = new List<IRenderable> { new Markup("") };
 
         var grid = new Grid()
-            .AddColumn(new GridColumn().NoWrap().Width(2))  // bar / blank
-            .AddColumn(new GridColumn().NoWrap().Width(3))  // dot
-            .AddColumn(new GridColumn().NoWrap().Width(40)) // model
-            .AddColumn(new GridColumn().NoWrap().Width(10).RightAligned()) // size
-            .AddColumn(new GridColumn().NoWrap()); // verified flag
-        grid.AddRow(
-            // The single Embeddings row gets a selection-mirroring slot for consistency but
-            // there's only one row; we mark it bar-on if the section is focused so the eye lands
-            // on it the same way as the Scopes / Clients sections.
-            SelectionMarker(focused),
-            new Markup(DashboardTheme.Dot(kind)),
-            ColourCell(Markup.Escape(emb.ModelId), focused, bold: focused),
-            ColourCell(Markup.Escape(sizeLabel), focused),
-            ColourCell(Markup.Escape(verifiedLabel), focused, secondary: true));
-        var rows = new List<IRenderable> { grid, new Markup("") };
-        return ComposeSection(header, new Rows(rows));
+            .AddColumn(new GridColumn().NoWrap().Width(2)) // blank cursor column
+            .AddColumn(new GridColumn().NoWrap().Width(14)) // key
+            .AddColumn(new GridColumn().NoWrap());          // value
+
+        var pairs = new (string Key, string Value)[]
+        {
+            ("Model", emb.ModelId),
+            ("Cache", PathDisplay.Render(emb.CacheDir, options.Root, options.Home)),
+            ("Size", emb.CachePresent ? FormatBytes(emb.TotalBytes) : "(absent)"),
+            ("Verified", emb.Verified ? "yes" : "no"),
+        };
+        foreach (var (key, value) in pairs)
+        {
+            grid.AddRow(
+                new Markup(" "),
+                new Markup($"[bold]{Markup.Escape(key)}[/]"),
+                new Markup(Markup.Escape(value)));
+        }
+        rows.Add(grid);
+
+        rows.Add(new Markup(""));
+        rows.Add(new Markup($"[{DashboardTheme.Muted}]  Tip: run `sourcegraph-mcp embeddings status` for the per-file view.[/]"));
+
+        return new Padder(new Rows(rows)).PadLeft(2).PadRight(1);
     }
 
-    /// <summary>The Recent activity section: one row per tool call / heal entry.</summary>
-    public static IRenderable BuildRecentActivitySection(DashboardSnapshot snapshot, DashboardRenderOptions options,
-        bool focused = false, int selectedRow = 0, int maxRows = 12)
+    /// <summary>The Recent activity detail view: scrollable log + Selected drawer.</summary>
+    public static IRenderable BuildRecentActivityDetail(DashboardSnapshot snapshot, DashboardRenderOptions options,
+        int selectedRow = 0, int maxRows = 24)
     {
-        var contextKeys = BuildContextKeys(("l", "full log"));
-        var header = BuildSectionHeader("Recent activity", contextKeys: contextKeys, focused: focused);
+        var rows = new List<IRenderable> { new Markup("") };
         if (snapshot.RecentActivity.Count == 0)
         {
-            var empty = new Markup($"  {DashboardTheme.Dot(StatusKind.Off)} [{DashboardTheme.Muted}](no recorded activity)[/]");
-            return ComposeSection(header, new Rows(empty));
+            rows.Add(new Markup($"  {DashboardTheme.Dot(StatusKind.Off)} [{DashboardTheme.Muted}](no recorded activity)[/]"));
+            return new Padder(new Rows(rows)).PadLeft(2).PadRight(1);
         }
-        var grid = new Grid()
-            .AddColumn(new GridColumn().NoWrap().Width(2))  // bar
-            .AddColumn(new GridColumn().NoWrap().Width(10)) // time
-            .AddColumn(new GridColumn().NoWrap().Width(22)) // detail / kind
-            .AddColumn(new GridColumn().NoWrap().Width(14)) // scope
-            .AddColumn(new GridColumn().NoWrap().Width(3))  // dot
-            .AddColumn(new GridColumn().NoWrap()); // ms / annotation
+
         var rowsList = snapshot.RecentActivity
             .OrderByDescending(a => a.Ts)
             .Take(maxRows)
             .ToArray();
+
+        var grid = new Grid()
+            .AddColumn(new GridColumn().NoWrap().Width(2))
+            .AddColumn(new GridColumn().NoWrap().Width(10))
+            .AddColumn(new GridColumn().NoWrap().Width(24))
+            .AddColumn(new GridColumn().NoWrap().Width(14))
+            .AddColumn(new GridColumn().NoWrap().Width(3))
+            .AddColumn(new GridColumn().NoWrap());
+
         for (var i = 0; i < rowsList.Length; i++)
         {
             var a = rowsList[i];
@@ -334,114 +628,97 @@ internal static class DashboardRenderer
             var name = a.Detail ?? a.Kind;
             var scope = a.Scope ?? "-";
             var msLabel = a.Ok ? FormatMillis(a.Ms) : $"failed: {FormatMillis(a.Ms)}";
-            var isSelected = focused && i == selectedRow;
+            var selected = i == selectedRow;
             grid.AddRow(
-                SelectionMarker(isSelected),
-                ColourCell(Markup.Escape(time), focused, secondary: true),
-                ColourCell(Markup.Escape(name), focused, bold: isSelected),
-                ColourCell(Markup.Escape(scope), focused, secondary: true),
+                SelectionMarker(selected),
+                new Markup($"[{DashboardTheme.Muted}]{Markup.Escape(time)}[/]"),
+                new Markup(selected
+                    ? $"[bold {DashboardTheme.Brand}]{Markup.Escape(name)}[/]"
+                    : Markup.Escape(name)),
+                new Markup($"[{DashboardTheme.Muted}]{Markup.Escape(scope)}[/]"),
                 new Markup(DashboardTheme.Dot(kind)),
-                ColourCell(Markup.Escape(msLabel), focused, secondary: true));
+                new Markup($"[{DashboardTheme.Muted}]{Markup.Escape(msLabel)}[/]"));
         }
-        var rows = new List<IRenderable> { grid, new Markup("") };
-        return ComposeSection(header, new Rows(rows));
-    }
+        rows.Add(grid);
 
-    // ────────────────────────────────────────────────────────────────────────────────
-    // Layout / styling helpers
-    // ────────────────────────────────────────────────────────────────────────────────
-
-    /// <summary>
-    /// Compose a section header (one line) with a body (a stack of rows). Body is indented two
-    /// spaces relative to the header so the section reads as a single visual block in the
-    /// borderless layout.
-    /// </summary>
-    private static IRenderable ComposeSection(IRenderable header, IRenderable body)
-    {
-        var indentedBody = new Padder(body).PadLeft(2).PadRight(1);
-        return new Rows(header, indentedBody);
-    }
-
-    /// <summary>
-    /// Single section-header line: <c>◆ <b>Title</b> ─ subtitle … keys</c>. Renders dimmed when
-    /// the section isn't focused so the eye is drawn to whichever section the user is steering.
-    /// </summary>
-    private static IRenderable BuildSectionHeader(string title, string contextKeys = "", bool focused = false,
-        string? subtitle = null)
-    {
-        var leaderColour = focused ? DashboardTheme.Brand : DashboardTheme.BrandDim;
-        var titleColour = focused ? DashboardTheme.Brand : DashboardTheme.Muted;
-        var subtitleSuffix = string.IsNullOrEmpty(subtitle)
-            ? ""
-            : $" [{DashboardTheme.Muted}]─ {Markup.Escape(subtitle)}[/]";
-        var leftCell = $"[{leaderColour}]{DashboardTheme.SectionLeader}[/] [bold {titleColour}]{Markup.Escape(title)}[/]{subtitleSuffix}";
-        var rightCell = string.IsNullOrEmpty(contextKeys)
-            ? ""
-            : (focused
-                ? contextKeys // contextKeys carries its own brand+muted markup
-                : $"[{DashboardTheme.MutedDim}]{Markup.Escape(StripMarkup(contextKeys))}[/]");
-
-        // Two-cell grid: left expands, right hugs.
-        var grid = new Grid()
-            .AddColumn(new GridColumn().NoWrap())
-            .AddColumn(new GridColumn().NoWrap().RightAligned());
-        grid.AddRow(new Markup(leftCell), new Markup(rightCell));
-        return grid;
-    }
-
-    /// <summary>
-    /// Strip Spectre markup from a string. Used only for the unfocused-section context-keys hint:
-    /// since we dim the whole thing in <see cref="DashboardTheme.MutedDim"/> we can't leave the
-    /// per-token <c>[brand]…[/]</c> wrapping in place (Spectre would render the brand inside the
-    /// dim wrapper). Simple regex-free walker matching <c>[…]</c>/<c>[/]</c> tokens.
-    /// </summary>
-    private static string StripMarkup(string s)
-    {
-        if (string.IsNullOrEmpty(s)) return s;
-        var sb = new System.Text.StringBuilder(s.Length);
-        var i = 0;
-        while (i < s.Length)
+        if (selectedRow >= 0 && selectedRow < rowsList.Length)
         {
-            if (s[i] == '[')
+            var sel = rowsList[selectedRow];
+            AppendDivider(rows);
+            var time = sel.Ts.ToLocalTime().ToString("HH:mm:ss");
+            var name = sel.Detail ?? sel.Kind;
+            var statusText = sel.Ok ? "ok" : "failed";
+            var fields = new List<(string Key, string Value)>
             {
-                var close = s.IndexOf(']', i);
-                if (close < 0) break; // malformed; bail
-                i = close + 1;
-                continue;
-            }
-            sb.Append(s[i]);
-            i++;
+                ("scope", sel.Scope ?? "-"),
+                ("status", statusText),
+                ("duration", FormatMillis(sel.Ms)),
+                ("detail", sel.Detail ?? "(none)"),
+            };
+            rows.Add(BuildSelectedDrawer($"Selected: {name} @ {time}", fields));
         }
-        return sb.ToString();
+        return new Padder(new Rows(rows)).PadLeft(2).PadRight(1);
     }
+
+    // ────────────────────────────────────────────────────────────────────────────────
+    // Selected: drawer helper
+    // ────────────────────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Build the "context keys" right-aligned hint for a section header — comma separated
-    /// <c>(glyph, label)</c> pairs. Glyphs go in brand colour, labels in muted grey.
+    /// Build the <c>Selected:</c> drawer that lives under each detail view's table. Renders the
+    /// title in bold, the key/value fields aligned, and an optional bullet list (used by the
+    /// Scopes view for failed-projects).
     /// </summary>
-    private static string BuildContextKeys(params (string Glyph, string Label)[] pairs)
+    private static IRenderable BuildSelectedDrawer(string title, IEnumerable<(string Key, string Value)> fields,
+        IEnumerable<string>? bullets = null, string? bulletsHeader = null)
     {
-        if (pairs.Length == 0) return "";
-        var b = DashboardTheme.Brand;
-        var m = DashboardTheme.Muted;
-        return string.Join("   ", pairs.Select(p =>
+        var rows = new List<IRenderable>
         {
-            var glyph = LeafFormatter.Suppressed
-                ? AsciiKeyHint(p.Glyph)
-                : p.Glyph;
-            return $"[{b}]{Markup.Escape(glyph)}[/] [{m}]{Markup.Escape(p.Label)}[/]";
-        }));
+            new Markup($"[bold {DashboardTheme.Brand}]{Markup.Escape(title)}[/]"),
+        };
+        var grid = new Grid()
+            .AddColumn(new GridColumn().NoWrap().Width(2))  // indent
+            .AddColumn(new GridColumn().NoWrap().Width(12)) // key
+            .AddColumn(new GridColumn().NoWrap());          // value
+        foreach (var (k, v) in fields)
+        {
+            grid.AddRow(
+                new Markup(" "),
+                new Markup($"[{DashboardTheme.MutedDim}]{Markup.Escape(k)}[/]"),
+                new Markup(Markup.Escape(v)));
+        }
+        rows.Add(grid);
+
+        if (bullets is not null)
+        {
+            rows.Add(new Markup(""));
+            if (!string.IsNullOrEmpty(bulletsHeader))
+            {
+                rows.Add(new Markup($"[{DashboardTheme.MutedDim}]{Markup.Escape(bulletsHeader)}[/]"));
+            }
+            foreach (var b in bullets)
+            {
+                rows.Add(new Markup($"  [{DashboardTheme.Muted}]•[/] {Markup.Escape(b)}"));
+            }
+        }
+        return new Rows(rows);
     }
 
-    /// <summary>Translate the unicode key glyph used in markup to an ASCII fallback for --no-leaf.</summary>
-    private static string AsciiKeyHint(string glyph) => glyph switch
+    // ────────────────────────────────────────────────────────────────────────────────
+    // Shared helpers
+    // ────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Append a blank line + horizontal separator + blank line to <paramref name="rows"/>. Every
+    /// detail view uses this exact pattern to visually divide the data table from the
+    /// <c>Selected:</c> drawer, so factor it out to keep the layout consistent.
+    /// </summary>
+    private static void AppendDivider(List<IRenderable> rows)
     {
-        "⏎" => "[Enter]",
-        "⇥" => "[Tab]",
-        "↑↓" => "[Up/Dn]",
-        "⇧R" => "[Shift+R]",
-        _ => glyph,
-    };
+        rows.Add(new Markup(""));
+        rows.Add(new Markup($"[{DashboardTheme.MutedDim}]{Markup.Escape(new string('─', 72))}[/]"));
+        rows.Add(new Markup(""));
+    }
 
     /// <summary>
     /// Render the left-cursor column. A selected row shows a brand-coloured vertical bar; other
@@ -452,54 +729,6 @@ internal static class DashboardRenderer
         if (!selected) return new Markup(DashboardTheme.Unselected);
         if (LeafFormatter.Suppressed) return new Markup(">");
         return new Markup($"[{DashboardTheme.Brand}]{DashboardTheme.SelectedBar}[/]");
-    }
-
-    /// <summary>
-    /// Wrap pre-escaped text in the right colour for a row cell:
-    /// <list type="bullet">
-    /// <item>focused, primary: default terminal colour (no wrapper)</item>
-    /// <item>focused, bold: brand-bold</item>
-    /// <item>focused, secondary: muted grey</item>
-    /// <item>unfocused: all cells render in muted grey so the eye is drawn to the focused section</item>
-    /// </list>
-    /// </summary>
-    private static Markup ColourCell(string escapedText, bool focused, bool bold = false, bool secondary = false)
-    {
-        if (!focused)
-        {
-            return new Markup($"[{DashboardTheme.Muted}]{escapedText}[/]");
-        }
-        if (bold)
-        {
-            return new Markup($"[bold {DashboardTheme.Brand}]{escapedText}[/]");
-        }
-        if (secondary)
-        {
-            return new Markup($"[{DashboardTheme.Muted}]{escapedText}[/]");
-        }
-        return new Markup(escapedText);
-    }
-
-    /// <summary>Build one Environment-style key/value row.</summary>
-    private static IRenderable BuildEnvRow(StatusKind kind, string key, string value, string trailing = "", bool focused = false)
-    {
-        // Environment is always unfocused — body and key labels render in muted grey.
-        var grid = new Grid()
-            .AddColumn(new GridColumn().NoWrap().Width(2)) // blank cursor column
-            .AddColumn(new GridColumn().NoWrap().Width(3)) // dot
-            .AddColumn(new GridColumn().NoWrap().Width(20)) // key
-            .AddColumn(new GridColumn().NoWrap().Width(38)) // value
-            .AddColumn(new GridColumn().NoWrap()); // trailing detail
-        var keyMarkup = $"[{DashboardTheme.Muted}]{Markup.Escape(key)}[/]";
-        var valueMarkup = focused ? Markup.Escape(value) : $"[{DashboardTheme.Muted}]{Markup.Escape(value)}[/]";
-        var trailingMarkup = string.IsNullOrEmpty(trailing) ? "" : $"[{DashboardTheme.MutedDim}]{Markup.Escape(trailing)}[/]";
-        grid.AddRow(
-            new Markup(DashboardTheme.Unselected),
-            new Markup(DashboardTheme.Dot(kind)),
-            new Markup(keyMarkup),
-            new Markup(valueMarkup),
-            new Markup(trailingMarkup));
-        return grid;
     }
 
     /// <summary>Operator-friendly relative time like <c>2m ago</c> / <c>3h ago</c>; matches StatusRenderer.</summary>

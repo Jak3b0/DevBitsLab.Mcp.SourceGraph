@@ -311,6 +311,63 @@ public sealed class DashboardActionsTests : IDisposable
     }
 
     [Fact]
+    public void ResolveForView_Scopes_dispatchesReindex()
+    {
+        // The view-aware entry point that LoopState uses; same dispatch outcome as the legacy
+        // section-based one, but takes a DashboardView directly.
+        DashboardPrimaryAction.ResolveForView(DashboardView.Scopes, 0, MakeSnapshot())
+            .Should().Be(DashboardAction.ReindexScope);
+    }
+
+    [Fact]
+    public void ResolveForView_Clients_wired_dispatchesUnwire()
+    {
+        var snap = MakeSnapshot() with
+        {
+            Clients = new[]
+            {
+                new ClientRow("claude-code", "project", _configPath, Exists: true, ContainsSourcegraphEntry: true),
+            },
+        };
+        DashboardPrimaryAction.ResolveForView(DashboardView.Clients, 0, snap)
+            .Should().Be(DashboardAction.UnwireClient);
+    }
+
+    [Fact]
+    public void ResolveForView_Embeddings_dispatchesPull()
+    {
+        DashboardPrimaryAction.ResolveForView(DashboardView.Embeddings, 0, MakeSnapshot())
+            .Should().Be(DashboardAction.EmbeddingsPull);
+    }
+
+    [Fact]
+    public void ResolveForView_Environment_dispatchesNone()
+    {
+        // Environment is read-only; no primary action.
+        DashboardPrimaryAction.ResolveForView(DashboardView.Environment, 0, MakeSnapshot())
+            .Should().Be(DashboardAction.None);
+    }
+
+    [Fact]
+    public async Task RunAsync_viewTransitionActions_returnNoop()
+    {
+        // The new view-transition actions (GoHome / OpenScopes / …) are handled by the LoopState
+        // before they ever reach the dispatcher. The dispatcher returns Noop for them so a stray
+        // call doesn't surface as "no primary action" toast.
+        var ctx = MakeContext(MakeSnapshot());
+        foreach (var a in new[]
+        {
+            DashboardAction.GoHome, DashboardAction.OpenScopes, DashboardAction.OpenClients,
+            DashboardAction.OpenEmbeddings, DashboardAction.OpenRecentActivity, DashboardAction.OpenEnvironment,
+        })
+        {
+            var r = await DashboardActions.RunAsync(a, ctx);
+            r.Ok.Should().BeTrue($"{a} should be Noop-success");
+            r.Message.Should().BeEmpty($"{a} should not produce a status toast");
+        }
+    }
+
+    [Fact]
     public void DashboardActionResult_severity_factoryDefaults()
     {
         // Spec: Success → Success, Failure → Fail, Noop → Info, Info → Info.

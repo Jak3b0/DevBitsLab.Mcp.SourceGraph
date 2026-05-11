@@ -27,6 +27,22 @@ internal enum DashboardAction
     ForceRefresh,
 
     /// <summary>
+    /// Return to the home/welcome view. Bound to Esc + 'h'. Resets selection so re-entering a
+    /// detail view starts from row 0 of that view.
+    /// </summary>
+    GoHome,
+    /// <summary>Open the Scopes detail view (also bound to '1' from home).</summary>
+    OpenScopes,
+    /// <summary>Open the Clients detail view (also bound to '2' from home).</summary>
+    OpenClients,
+    /// <summary>Open the Embeddings detail view (also bound to '3' from home).</summary>
+    OpenEmbeddings,
+    /// <summary>Open the Recent activity detail view (also bound to '4' from home).</summary>
+    OpenRecentActivity,
+    /// <summary>Open the Environment detail view (also bound to '5' from home).</summary>
+    OpenEnvironment,
+
+    /// <summary>
     /// The section-aware "act on the selected row" action <c>Enter</c> is bound to. The dispatcher
     /// in <see cref="DashboardCli"/> routes this to a section-specific concrete action (reindex
     /// for Scopes, wire/unwire toggle for Clients, pull for Embeddings, etc.). Kept as a

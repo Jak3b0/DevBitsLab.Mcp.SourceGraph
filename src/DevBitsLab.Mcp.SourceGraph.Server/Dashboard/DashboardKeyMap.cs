@@ -1,9 +1,17 @@
 namespace DevBitsLab.Mcp.SourceGraph.Server.Dashboard;
 
 /// <summary>
-/// Central key-binding table for the dashboard, per design Decision 3. One static lookup that
-/// every keystroke runs through; aliases (<c>j</c> ≡ <c>↓</c>, <c>k</c> ≡ <c>↑</c>) are
+/// Central key-binding table for the dashboard. One static lookup that every keystroke runs
+/// through; aliases (<c>j</c> ≡ <c>↓</c>, <c>k</c> ≡ <c>↑</c>, <c>h</c> ≡ <c>Esc</c>) are
 /// explicit table entries so unit tests can assert the documented surface exhaustively.
+///
+/// <para>
+/// The home/detail-view rewrite changed the navigation model: <c>Tab</c> is no longer in service
+/// (no section cycle). <c>Esc</c> / <c>h</c> return to home; <c>1..5</c> jump from the home
+/// menu directly into a detail view. Section action keys (<c>r</c>, <c>R</c>, <c>w</c>, <c>u</c>,
+/// <c>p</c>, <c>v</c>) only resolve their work in the matching detail view; the dispatcher
+/// gates them silently in non-matching views.
+/// </para>
 ///
 /// <para>
 /// Unmapped keys return <c>false</c> with <see cref="DashboardAction.None"/>. The dispatcher
@@ -36,18 +44,16 @@ internal static class DashboardKeyMap
             };
         }
 
-        // Arrow keys + Tab.
+        // Arrow keys + Enter + Esc.
         switch (key.Key)
         {
             case ConsoleKey.UpArrow: return DashboardAction.MoveUp;
             case ConsoleKey.DownArrow: return DashboardAction.MoveDown;
-            case ConsoleKey.Tab:
-                return (key.Modifiers & ConsoleModifiers.Shift) == ConsoleModifiers.Shift
-                    ? DashboardAction.PreviousSection
-                    : DashboardAction.NextSection;
             case ConsoleKey.Enter: return DashboardAction.PrimaryAction;
-            case ConsoleKey.Escape: return DashboardAction.CloseDetail;
+            case ConsoleKey.Escape: return DashboardAction.GoHome;
             case ConsoleKey.Spacebar: return DashboardAction.None; // reserved
+            // Tab keys are no longer bound — the section cycle is gone, replaced by the
+            // home-view menu + view-aware navigation.
         }
 
         // Letter accelerators are case-sensitive: `r` reindex vs `R` rebuild differ. KeyChar is
@@ -61,8 +67,18 @@ internal static class DashboardKeyMap
             's' => DashboardAction.ForceRefresh,
             'j' => DashboardAction.MoveDown,
             'k' => DashboardAction.MoveUp,
+            // 'h' is the documented vim-style alias for Esc → home.
+            'h' => DashboardAction.GoHome,
 
-            // In-place (no gate)
+            // Number keys: direct jumps to a detail view. Only meaningful from home but harmless
+            // from any view — the dispatcher treats them as view transitions regardless.
+            '1' => DashboardAction.OpenScopes,
+            '2' => DashboardAction.OpenClients,
+            '3' => DashboardAction.OpenEmbeddings,
+            '4' => DashboardAction.OpenRecentActivity,
+            '5' => DashboardAction.OpenEnvironment,
+
+            // In-place (no gate). The dispatcher gates each to its matching view at run time.
             'r' => DashboardAction.ReindexScope,
             'w' => DashboardAction.WireClient,
             'p' => DashboardAction.EmbeddingsPull,
@@ -83,35 +99,56 @@ internal static class DashboardKeyMap
     }
 
     /// <summary>
-    /// Two-line key hint for the footer. Primary keys on top (always visible); secondary in-place
-    /// + guided keys on the second line so a first-time user finds them without pressing <c>?</c>.
+    /// Per-view footer hint. The home view shows its own menu-style hint; each detail view shows
+    /// only the keys that actually do something in its scope.
     ///
     /// <para>
     /// Returns Spectre markup with key glyphs in <see cref="DashboardTheme.Brand"/> and labels in
     /// <see cref="DashboardTheme.Muted"/>. Honours <see cref="Tools.LeafFormatter.Suppressed"/>:
-    /// in the no-leaf path the unicode glyphs (<c>⏎</c>, <c>⇥</c>, <c>↑↓</c>, <c>⇧R</c>) are
-    /// replaced with bracketed ASCII tokens (<c>[Enter]</c>, <c>[Tab]</c>, <c>[Up/Dn]</c>,
-    /// <c>[Shift+R]</c>) so terminals without nerd-font support still read cleanly.
+    /// in the no-leaf path unicode glyphs (<c>⏎</c>, <c>↑↓</c>) are replaced with bracketed
+    /// ASCII tokens (<c>[Enter]</c>, <c>[Up/Dn]</c>).
     /// </para>
     /// </summary>
-    public static string FooterHint
+    public static string For(DashboardView view)
     {
-        get
+        if (Tools.LeafFormatter.Suppressed)
         {
-            if (Tools.LeafFormatter.Suppressed)
+            return view switch
             {
-                const string row1 = "[Enter] act   [Tab] section   [Up/Dn] row   [q] quit   [?] more";
-                const string row2 = "[w] wire  [u] unwire  [r] reindex  [Shift+R] rebuild  [p] pull  [v] verify  [i] init  [d] demo  [l] log  [e] config";
-                return row1 + "\n" + row2;
-            }
-            // Markup: keys in brand, labels in muted grey. \n splits the two rows; Spectre's
-            // Markup parser preserves the newline so the renderer can lay it out as two lines.
-            var b = DashboardTheme.Brand;
-            var m = DashboardTheme.Muted;
-            var row1m = $"[{b}]⏎[/] [{m}]act[/]   [{b}]⇥[/] [{m}]section[/]   [{b}]↑↓[/] [{m}]row[/]   [{b}]q[/] [{m}]quit[/]   [{b}]?[/] [{m}]more[/]";
-            var row2m = $"[{b}]w[/] [{m}]wire[/]  [{b}]u[/] [{m}]unwire[/]  [{b}]r[/] [{m}]reindex[/]  [{b}]⇧R[/] [{m}]rebuild[/]  [{b}]p[/] [{m}]pull[/]  [{b}]v[/] [{m}]verify[/]  [{b}]i[/] [{m}]init[/]  [{b}]d[/] [{m}]demo[/]  [{b}]l[/] [{m}]log[/]  [{b}]e[/] [{m}]config[/]";
-            return row1m + "\n" + row2m;
+                DashboardView.Home =>
+                    "[Up/Dn] select   [Enter] open   1-5 jump   [?] help   [q] quit",
+                DashboardView.Scopes =>
+                    "[Up/Dn] row   [Enter]/[r] reindex   [R] rebuild   [d] demo   [Esc] home   [q] quit",
+                DashboardView.Clients =>
+                    "[Up/Dn] row   [Enter] toggle wire   [w] wire   [u] unwire   [Esc] home   [q] quit",
+                DashboardView.Embeddings =>
+                    "[Enter]/[p] pull   [v] verify   [Esc] home   [q] quit",
+                DashboardView.RecentActivity =>
+                    "[Up/Dn] row   [Enter] details (TODO)   [l] open full log   [Esc] home   [q] quit",
+                DashboardView.Environment =>
+                    "[Esc] home   [q] quit",
+                _ => "[Esc] home   [q] quit",
+            };
         }
+
+        var b = DashboardTheme.Brand;
+        var m = DashboardTheme.Muted;
+        return view switch
+        {
+            DashboardView.Home =>
+                $"[{b}]↑↓[/] [{m}]select[/]   [{b}]⏎[/] [{m}]open[/]   [{b}]1-5[/] [{m}]jump[/]   [{b}]?[/] [{m}]help[/]   [{b}]q[/] [{m}]quit[/]",
+            DashboardView.Scopes =>
+                $"[{b}]↑↓[/] [{m}]row[/]   [{b}]⏎/r[/] [{m}]reindex[/]   [{b}]R[/] [{m}]rebuild[/]   [{b}]d[/] [{m}]demo[/]   [{b}]Esc[/] [{m}]home[/]   [{b}]q[/] [{m}]quit[/]",
+            DashboardView.Clients =>
+                $"[{b}]↑↓[/] [{m}]row[/]   [{b}]⏎[/] [{m}]toggle wire[/]   [{b}]w[/] [{m}]wire[/]   [{b}]u[/] [{m}]unwire[/]   [{b}]Esc[/] [{m}]home[/]   [{b}]q[/] [{m}]quit[/]",
+            DashboardView.Embeddings =>
+                $"[{b}]⏎/p[/] [{m}]pull[/]   [{b}]v[/] [{m}]verify[/]   [{b}]Esc[/] [{m}]home[/]   [{b}]q[/] [{m}]quit[/]",
+            DashboardView.RecentActivity =>
+                $"[{b}]↑↓[/] [{m}]row[/]   [{b}]⏎[/] [{m}]details (TODO)[/]   [{b}]l[/] [{m}]open full log[/]   [{b}]Esc[/] [{m}]home[/]   [{b}]q[/] [{m}]quit[/]",
+            DashboardView.Environment =>
+                $"[{b}]Esc[/] [{m}]home[/]   [{b}]q[/] [{m}]quit[/]",
+            _ => $"[{b}]Esc[/] [{m}]home[/]   [{b}]q[/] [{m}]quit[/]",
+        };
     }
 
     /// <summary>
@@ -120,15 +157,15 @@ internal static class DashboardKeyMap
     /// </summary>
     public const string HelpText = """
         Navigation:
-          ↑/↓ or j/k      Move row within section
-          Tab/Shift+Tab   Next/previous section
-          Enter           Open detail pane
-          Esc             Close detail / modal
+          ↑/↓ or j/k      Move row within current view
+          1-5             Jump from Home into a detail view
+          Enter           Primary action (open menu item / section primary)
+          Esc or h        Return to Home
           q / Ctrl+C      Quit (exit 0)
           ?               Toggle this help
           s               Force refresh snapshot now
 
-        In-place actions:
+        Section actions (only effective in the matching detail view):
           r               Reindex selected scope (reconcile_drift)
           R               Rebuild selected scope (CONFIRM)
           w               Wire missing client

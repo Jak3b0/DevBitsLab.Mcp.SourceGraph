@@ -19,6 +19,13 @@ namespace DevBitsLab.Mcp.SourceGraph.Server.Dashboard;
 /// via a single <see cref="System.Threading.Channels.Channel{T}"/>-of-actions on the UI thread
 /// so the renderer is the only writer to the terminal.
 /// </para>
+///
+/// <para>
+/// View model: the dashboard has a <see cref="DashboardView.Home"/> landing view (summary block
+/// + numeric menu) and five detail views (Scopes, Clients, Embeddings, Recent activity,
+/// Environment). The user navigates from home into a detail view via Enter (on the highlighted
+/// menu item) or number keys 1–5, and returns to home with Esc or 'h'.
+/// </para>
 /// </summary>
 internal static class DashboardCli
 {
@@ -128,7 +135,7 @@ internal static class DashboardCli
     internal readonly record struct ToastState(string Text, DateTimeOffset SetAt, ToastSeverity Severity);
 
     /// <summary>
-    /// Encapsulates the per-frame state of the main loop: current snapshot, selection,
+    /// Encapsulates the per-frame state of the main loop: current snapshot, view, selection,
     /// help-overlay flag, status message, exit code. Keeping it as an instance class (vs. a
     /// pile of locals in <see cref="RunAsync"/>) lets the snapshot-changed event handler and
     /// the key-handler share state without a tangle of captured locals.
@@ -140,7 +147,8 @@ internal static class DashboardCli
         private readonly DashboardRenderOptions _renderOptions;
         private readonly Lock _gate = new();
         private DashboardSnapshot? _snapshot;
-        private DashboardSection _focused = DashboardSection.Scopes;
+        private DashboardView _currentView = DashboardView.Home;
+        private int _homeMenuIndex;
         private int _selectedRow;
         private bool _helpOpen;
         private ToastState _toast = new("", DateTimeOffset.MinValue, ToastSeverity.Info);
@@ -236,7 +244,7 @@ internal static class DashboardCli
         }
 
         /// <summary>
-        /// Resolve navigation-only actions (up/down/tab/help) without going through the
+        /// Resolve navigation-only actions (up/down/help) without going through the
         /// dispatcher. Returns false for guided actions so the caller knows to drop out of
         /// the Live region before spawning the subprocess.
         /// </summary>
@@ -250,18 +258,8 @@ internal static class DashboardCli
                 case DashboardAction.MoveDown:
                     MoveSelection(+1);
                     return true;
-                case DashboardAction.NextSection:
-                    ChangeSection(+1);
-                    return true;
-                case DashboardAction.PreviousSection:
-                    ChangeSection(-1);
-                    return true;
                 case DashboardAction.ToggleHelp:
                     lock (_gate) _helpOpen = !_helpOpen;
-                    MarkDirty();
-                    return true;
-                case DashboardAction.CloseDetail:
-                    lock (_gate) _helpOpen = false;
                     MarkDirty();
                     return true;
                 case DashboardAction.InitGuided:
@@ -277,31 +275,74 @@ internal static class DashboardCli
         private async Task DispatchActionAsync(DashboardAction action, CancellationToken token)
         {
             DashboardSnapshot? snap;
-            DashboardSelection sel;
+            DashboardView currentView;
+            int homeMenuIndex;
+            int selectedRow;
             lock (_gate)
             {
                 snap = _snapshot;
-                sel = new DashboardSelection(_focused, _selectedRow);
+                currentView = _currentView;
+                homeMenuIndex = _homeMenuIndex;
+                selectedRow = _selectedRow;
             }
             if (snap is null) return;
 
-            // PrimaryAction (Enter) is section-specific: Scopes → reindex, Clients → wire/unwire
-            // toggle, Embeddings → pull, RecentActivity → surface a discoverability hint. Resolve
-            // here before handing to the dispatcher so the dispatcher's per-action validation
-            // (e.g. "reindex requires Scopes section selected") fires under the right action.
-            if (action == DashboardAction.PrimaryAction)
+            // ──────────────────────────────────────────────────────────────────────
+            // View transitions (no work for the action dispatcher to do)
+            // ──────────────────────────────────────────────────────────────────────
+            var target = TargetViewFor(action);
+            if (target.HasValue)
             {
-                action = DashboardPrimaryAction.Resolve(sel, snap);
+                SwitchView(target.Value);
+                return;
             }
 
-            var ctx = new DashboardActionContext(
+            // PrimaryAction (Enter) is view-dependent:
+            //   - Home → open the highlighted menu item's view
+            //   - Detail → dispatch the section's primary action
+            if (action == DashboardAction.PrimaryAction)
+            {
+                if (currentView == DashboardView.Home)
+                {
+                    var entries = DashboardRenderer.HomeMenuEntries;
+                    if (homeMenuIndex >= 0 && homeMenuIndex < entries.Length)
+                    {
+                        SwitchView(entries[homeMenuIndex].View);
+                    }
+                    return;
+                }
+                action = DashboardPrimaryAction.ResolveForView(currentView, selectedRow, snap);
+                if (action == DashboardAction.None)
+                {
+                    // Surface a discoverability hint instead of hanging silently.
+                    lock (_gate)
+                    {
+                        _toast = new ToastState(
+                            "no primary action for this view",
+                            DateTimeOffset.UtcNow, ToastSeverity.Info);
+                        _dirty = true;
+                    }
+                    return;
+                }
+            }
+
+            // Section-specific action keys only resolve in their owning view; gate silently.
+            if (!IsActionAllowedInView(action, currentView))
+            {
+                return;
+            }
+
+            var section = currentView.ToSection() ?? DashboardSection.Scopes;
+            var sel = new DashboardSelection(section, selectedRow);
+
+            var actionCtx = new DashboardActionContext(
                 Snapshot: snap,
                 Selection: sel,
                 Console: _console,
                 Freshness: _freshness,
                 Root: _renderOptions.Root,
                 Policy: DashboardActionPolicy.Default);
-            var result = await DashboardActions.RunAsync(action, ctx, token).ConfigureAwait(false);
+            var result = await DashboardActions.RunAsync(action, actionCtx, token).ConfigureAwait(false);
             if (result.Quit) ExitCode = 0;
             lock (_gate)
             {
@@ -311,49 +352,68 @@ internal static class DashboardCli
             }
         }
 
+        private static bool IsActionAllowedInView(DashboardAction action, DashboardView view) =>
+            DashboardViewGating.IsAllowed(action, view);
+
+        /// <summary>
+        /// Map a view-transition action (<see cref="DashboardAction.GoHome"/>,
+        /// <see cref="DashboardAction.OpenScopes"/>, …) to the view it lands on. Returns null
+        /// for actions that aren't view transitions.
+        /// </summary>
+        private static DashboardView? TargetViewFor(DashboardAction action) => action switch
+        {
+            DashboardAction.GoHome => DashboardView.Home,
+            DashboardAction.OpenScopes => DashboardView.Scopes,
+            DashboardAction.OpenClients => DashboardView.Clients,
+            DashboardAction.OpenEmbeddings => DashboardView.Embeddings,
+            DashboardAction.OpenRecentActivity => DashboardView.RecentActivity,
+            DashboardAction.OpenEnvironment => DashboardView.Environment,
+            _ => null,
+        };
+
+        private void SwitchView(DashboardView view)
+        {
+            lock (_gate)
+            {
+                _currentView = view;
+                _selectedRow = 0;
+                _helpOpen = false;
+                _dirty = true;
+            }
+        }
+
         private void MoveSelection(int delta)
         {
             lock (_gate)
             {
                 if (_snapshot is null) return;
-                var count = CountRowsIn(_focused, _snapshot);
+                var count = CountRowsIn(_currentView, _snapshot);
                 if (count <= 0) return;
-                _selectedRow = ((_selectedRow + delta) % count + count) % count;
-                _dirty = true;
-            }
-        }
-
-        private void ChangeSection(int delta)
-        {
-            lock (_gate)
-            {
-                // Environment is always-unfocused (read-only, never enters the Tab cycle); the
-                // user reported in bug-1 that Tab landing on Environment looked broken because
-                // BuildEnvironmentSection didn't take a focused parameter. We skip it here so
-                // the Tab cycle is { Scopes, Clients, Embeddings, RecentActivity } only.
-                var cycle = new[]
+                if (_currentView == DashboardView.Home)
                 {
-                    DashboardSection.Scopes,
-                    DashboardSection.Clients,
-                    DashboardSection.Embeddings,
-                    DashboardSection.RecentActivity,
-                };
-                var idx = Array.IndexOf(cycle, _focused);
-                if (idx < 0) idx = 0; // defensive: if _focused was somehow Environment, land on Scopes
-                idx = ((idx + delta) % cycle.Length + cycle.Length) % cycle.Length;
-                _focused = cycle[idx];
-                _selectedRow = 0;
+                    _homeMenuIndex = ((_homeMenuIndex + delta) % count + count) % count;
+                }
+                else
+                {
+                    _selectedRow = ((_selectedRow + delta) % count + count) % count;
+                }
                 _dirty = true;
             }
         }
 
-        private static int CountRowsIn(DashboardSection section, DashboardSnapshot snapshot) => section switch
+        /// <summary>
+        /// How many selectable rows live in the given view? Home has 5 (one per menu item);
+        /// detail views report their data-row count (or 1 for Embeddings / 0 for Environment,
+        /// which is read-only).
+        /// </summary>
+        private static int CountRowsIn(DashboardView view, DashboardSnapshot snapshot) => view switch
         {
-            DashboardSection.Environment => 5, // five rows but not row-selectable in v1
-            DashboardSection.Scopes => snapshot.Scopes.Count,
-            DashboardSection.Clients => snapshot.Clients.Count,
-            DashboardSection.Embeddings => 1,
-            DashboardSection.RecentActivity => snapshot.RecentActivity.Count,
+            DashboardView.Home => DashboardRenderer.HomeMenuEntries.Length,
+            DashboardView.Scopes => snapshot.Scopes.Count,
+            DashboardView.Clients => snapshot.Clients.Count,
+            DashboardView.Embeddings => 1,
+            DashboardView.RecentActivity => Math.Min(snapshot.RecentActivity.Count, 24),
+            DashboardView.Environment => 0,
             _ => 0,
         };
 
@@ -380,14 +440,16 @@ internal static class DashboardCli
         private void Redraw(Layout layout)
         {
             DashboardSnapshot? snap;
-            DashboardSection focused;
+            DashboardView view;
+            int homeMenuIndex;
             int selectedRow;
             bool helpOpen;
             ToastState toast;
             lock (_gate)
             {
                 snap = _snapshot;
-                focused = _focused;
+                view = _currentView;
+                homeMenuIndex = _homeMenuIndex;
                 selectedRow = _selectedRow;
                 helpOpen = _helpOpen;
                 toast = _toast;
@@ -399,20 +461,23 @@ internal static class DashboardCli
                 return;
             }
 
-            layout[DashboardLayout.HeaderRegion].Update(DashboardRenderer.BuildHeader(snap, _renderOptions));
-            // Environment is never in the Tab cycle — render always-unfocused.
-            layout[DashboardLayout.EnvironmentRegion].Update(DashboardRenderer.BuildEnvironmentSection(snap, _renderOptions, focused: false));
-            layout[DashboardLayout.ScopesRegion].Update(DashboardRenderer.BuildScopesSection(snap, _renderOptions,
-                focused: focused == DashboardSection.Scopes, selectedRow: selectedRow));
-            layout[DashboardLayout.ClientsRegion].Update(DashboardRenderer.BuildClientsSection(snap, _renderOptions,
-                focused: focused == DashboardSection.Clients, selectedRow: selectedRow));
-            layout[DashboardLayout.EmbeddingsRegion].Update(DashboardRenderer.BuildEmbeddingsSection(snap, _renderOptions,
-                focused: focused == DashboardSection.Embeddings));
-            layout[DashboardLayout.RecentRegion].Update(DashboardRenderer.BuildRecentActivitySection(snap, _renderOptions,
-                focused: focused == DashboardSection.RecentActivity, selectedRow: selectedRow));
+            layout[DashboardLayout.HeaderRegion].Update(DashboardRenderer.BuildHeader(snap, _renderOptions, view));
+
+            IRenderable body = view switch
+            {
+                DashboardView.Home => DashboardRenderer.BuildHome(snap, _renderOptions, homeMenuIndex),
+                DashboardView.Scopes => DashboardRenderer.BuildScopesDetail(snap, _renderOptions, selectedRow),
+                DashboardView.Clients => DashboardRenderer.BuildClientsDetail(snap, _renderOptions, selectedRow),
+                DashboardView.Embeddings => DashboardRenderer.BuildEmbeddingsDetail(snap, _renderOptions),
+                DashboardView.RecentActivity => DashboardRenderer.BuildRecentActivityDetail(snap, _renderOptions, selectedRow),
+                DashboardView.Environment => DashboardRenderer.BuildEnvironmentDetail(snap, _renderOptions),
+                _ => DashboardRenderer.BuildHome(snap, _renderOptions, homeMenuIndex),
+            };
+            layout[DashboardLayout.BodyRegion].Update(body);
+
             var footer = helpOpen
                 ? RenderHelpFooter()
-                : DashboardRenderer.BuildFooter(toast);
+                : DashboardRenderer.BuildFooter(toast, view);
             layout[DashboardLayout.FooterRegion].Update(footer);
         }
 
@@ -429,39 +494,95 @@ internal static class DashboardCli
 }
 
 /// <summary>
-/// Routes the <c>Enter</c> (PrimaryAction) key to a concrete action based on which section is
-/// focused. Lifted out of <see cref="DashboardCli"/>'s private LoopState so unit tests can
-/// pin the wire/unwire toggle behaviour the spec calls out without standing up the full loop.
+/// Gates which dashboard actions are allowed in which views. Lifted out of
+/// <see cref="DashboardCli"/>'s private LoopState so unit tests can pin the table without
+/// standing up the full loop.
+///
+/// <para>
+/// The rule: section-specific action keys (<c>r</c>, <c>R</c>, <c>w</c>, <c>u</c>, <c>p</c>,
+/// <c>v</c>) only fire their action in the matching detail view; firing them from another view
+/// is dropped silently. View-agnostic actions (quit, force refresh, guided actions, view
+/// transitions) are always allowed.
+/// </para>
+/// </summary>
+internal static class DashboardViewGating
+{
+    /// <summary>
+    /// True iff <paramref name="action"/> is allowed to dispatch in <paramref name="view"/>.
+    /// Returns false for section-specific actions targeted at the wrong view, true otherwise.
+    /// </summary>
+    public static bool IsAllowed(DashboardAction action, DashboardView view) => action switch
+    {
+        // View-agnostic actions — always allowed.
+        DashboardAction.Quit or DashboardAction.ForceRefresh or
+        DashboardAction.ToggleHelp or DashboardAction.None => true,
+        DashboardAction.InitGuided or DashboardAction.DemoGuided or
+        DashboardAction.OpenLogInPager or DashboardAction.OpenConfigInEditor => true,
+        // View transitions — always allowed (the dispatcher handles them inline).
+        DashboardAction.GoHome or DashboardAction.OpenScopes or
+        DashboardAction.OpenClients or DashboardAction.OpenEmbeddings or
+        DashboardAction.OpenRecentActivity or DashboardAction.OpenEnvironment => true,
+
+        // Scopes-only
+        DashboardAction.ReindexScope or DashboardAction.RebuildScope => view == DashboardView.Scopes,
+        // Clients-only
+        DashboardAction.WireClient or DashboardAction.UnwireClient => view == DashboardView.Clients,
+        // Embeddings-only
+        DashboardAction.EmbeddingsPull or DashboardAction.EmbeddingsVerify => view == DashboardView.Embeddings,
+
+        _ => true,
+    };
+}
+
+/// <summary>
+/// Routes the <c>Enter</c> (PrimaryAction) key inside a detail view to a concrete action based
+/// on which view is active. Lifted out of <see cref="DashboardCli"/>'s private LoopState so unit
+/// tests can pin the per-view dispatch (including the Clients wire/unwire toggle) without
+/// standing up the full loop.
 /// </summary>
 internal static class DashboardPrimaryAction
 {
     /// <summary>
-    /// Map <c>Enter</c> (PrimaryAction) to the section-specific concrete action.
-    /// <list type="bullet">
-    /// <item><see cref="DashboardSection.Scopes"/> → reindex the selected scope.</item>
-    /// <item><see cref="DashboardSection.Clients"/> → toggle wire/unwire on the selected client (the wire/unwire affordance the spec calls out for the Clients section).</item>
-    /// <item><see cref="DashboardSection.Embeddings"/> → pull the active model.</item>
-    /// <item><see cref="DashboardSection.RecentActivity"/> → no primary action yet (return <see cref="DashboardAction.None"/>; the dispatcher surfaces a discoverability hint).</item>
-    /// <item><see cref="DashboardSection.Environment"/> → no primary action (Environment is never in the focus cycle).</item>
-    /// </list>
+    /// Map <c>Enter</c> (PrimaryAction) to the section-specific concrete action for a detail
+    /// view. Home is handled directly by the loop (open the highlighted menu item) and never
+    /// reaches this method.
     /// </summary>
-    public static DashboardAction Resolve(DashboardSelection sel, DashboardSnapshot snap) =>
-        sel.FocusedSection switch
+    public static DashboardAction ResolveForView(DashboardView view, int selectedRow, DashboardSnapshot snap) =>
+        view switch
         {
-            DashboardSection.Scopes => DashboardAction.ReindexScope,
-            DashboardSection.Clients => ResolveClientToggle(sel, snap),
-            DashboardSection.Embeddings => DashboardAction.EmbeddingsPull,
-            DashboardSection.RecentActivity => DashboardAction.None,
-            DashboardSection.Environment => DashboardAction.None,
+            DashboardView.Scopes => DashboardAction.ReindexScope,
+            DashboardView.Clients => ResolveClientToggle(selectedRow, snap),
+            DashboardView.Embeddings => DashboardAction.EmbeddingsPull,
+            DashboardView.RecentActivity => DashboardAction.None,
+            DashboardView.Environment => DashboardAction.None,
             _ => DashboardAction.None,
         };
 
-    private static DashboardAction ResolveClientToggle(DashboardSelection sel, DashboardSnapshot snap)
+    /// <summary>
+    /// Legacy entry point preserved for unit tests that drove the previous section-based
+    /// resolver. Re-implemented in terms of <see cref="ResolveForView"/> so the two paths can't
+    /// drift.
+    /// </summary>
+    public static DashboardAction Resolve(DashboardSelection sel, DashboardSnapshot snap)
+    {
+        var view = sel.FocusedSection switch
+        {
+            DashboardSection.Scopes => DashboardView.Scopes,
+            DashboardSection.Clients => DashboardView.Clients,
+            DashboardSection.Embeddings => DashboardView.Embeddings,
+            DashboardSection.RecentActivity => DashboardView.RecentActivity,
+            DashboardSection.Environment => DashboardView.Environment,
+            _ => DashboardView.Home,
+        };
+        return ResolveForView(view, sel.RowIndex, snap);
+    }
+
+    private static DashboardAction ResolveClientToggle(int selectedRow, DashboardSnapshot snap)
     {
         // Mirror DashboardActions.OrderedClients ordering so the same row index resolves.
         var clients = snap.Clients.OrderBy(c => c.Scope == "project" ? 0 : 1).ToArray();
-        if (sel.RowIndex < 0 || sel.RowIndex >= clients.Length) return DashboardAction.WireClient;
-        return clients[sel.RowIndex].ContainsSourcegraphEntry
+        if (selectedRow < 0 || selectedRow >= clients.Length) return DashboardAction.WireClient;
+        return clients[selectedRow].ContainsSourcegraphEntry
             ? DashboardAction.UnwireClient
             : DashboardAction.WireClient;
     }

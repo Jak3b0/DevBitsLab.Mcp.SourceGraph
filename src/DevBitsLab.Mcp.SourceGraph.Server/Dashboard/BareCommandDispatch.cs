@@ -47,10 +47,11 @@ internal static class BareCommandDispatch
     /// The previous version only checked stdin redirection, which mis-classified
     /// <c>sourcegraph-mcp | cat</c> (stdin still a tty, stdout piped) as interactive and launched
     /// the dashboard — its ANSI redraw codes then poured into the pipe instead of dispatching to
-    /// <c>status</c> as documented.
+    /// <c>status</c> as documented. The method name reflects the broader contract: "is ANY stdio
+    /// redirected, or are we non-interactive?".
     /// </para>
     /// </summary>
-    public static bool IsStdinRedirectedOrNonInteractive()
+    public static bool IsStdioRedirectedOrNonInteractive()
     {
         try
         {

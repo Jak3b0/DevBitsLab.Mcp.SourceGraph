@@ -45,13 +45,19 @@ internal static class AddScopeForm
         console.MarkupLine($"[{DashboardTheme.MutedDim}]─── Add scope ───[/]");
         console.WriteLine();
 
-        // 1. Name — must be a valid kebab-case scope id and not already taken.
+        // 1. Name — must be a valid kebab-case scope id and not already taken. Empty input
+        // dismisses the form (see the class docs). The validator accepts empty/whitespace as
+        // Success so the prompt returns rather than re-prompting; the post-prompt check below
+        // catches the empty case and returns Cancelled. (Previously the validator rejected
+        // empty as "name is required", which made the cancel path unreachable from real user
+        // input — they could only get out by typing something valid.)
+        console.MarkupLine($"[{DashboardTheme.MutedDim}](Leave a field empty and press Enter to cancel.)[/]");
         var name = console.Prompt(
             new TextPrompt<string>("[bold]Scope name:[/]")
                 .Validate(candidate =>
                 {
                     if (string.IsNullOrWhiteSpace(candidate))
-                        return ValidationResult.Error("[red]name is required[/]");
+                        return ValidationResult.Success(); // empty → cancel via post-prompt check
                     if (!ScopeIdValidator.IsValid(candidate.Trim()))
                         return ValidationResult.Error("[red]must match ^[[a-z0-9]][[a-z0-9-]]{0,63}$ (kebab-case slug)[/]");
                     if (config.Scopes.Any(s => string.Equals(s.Id, candidate.Trim(), StringComparison.Ordinal)))
@@ -63,13 +69,14 @@ internal static class AddScopeForm
 
         // 2. Solution path — must resolve to an existing file after env-var expansion.
         // The inline form doesn't support glob patterns; users wanting glob-based scopes can
-        // edit `.sourcegraph.json` directly via `[e]`. Keeping the prompt text honest.
+        // edit `.sourcegraph.json` directly via `[e]`. Same empty-input cancel semantics as
+        // the name prompt above.
         var solution = console.Prompt(
             new TextPrompt<string>("[bold]Solution path:[/]")
                 .Validate(candidate =>
                 {
                     if (string.IsNullOrWhiteSpace(candidate))
-                        return ValidationResult.Error("[red]solution path is required[/]");
+                        return ValidationResult.Success(); // empty → cancel via post-prompt check
                     var expanded = ExpandPath(candidate.Trim(), root);
                     if (!File.Exists(expanded))
                         return ValidationResult.Error($"[red]file not found:[/] {Markup.Escape(expanded)}");

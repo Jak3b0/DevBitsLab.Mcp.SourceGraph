@@ -186,13 +186,25 @@ internal sealed class FreshnessSource : IDisposable
         try
         {
             var snapshot = await _snapshotSource.BuildAsync(_root, _options, CancellationToken.None).ConfigureAwait(false);
+            // Re-check `_disposed` under the lock before publishing. An in-flight rebuild
+            // scheduled before Dispose() can still complete naturally after teardown — if we
+            // assigned to `_latest` or fired `SnapshotChanged` here, dashboard subscribers
+            // could run after their state was torn down (use-after-dispose / late UI updates).
+            // BuildAsync isn't cancellable today; the disposed-guard is the cheapest correct
+            // bound on subscriber lifetime.
+            bool publish;
             lock (_gate)
             {
+                if (_disposed) return;
                 _latest = snapshot;
+                publish = true;
             }
-            // Fire outside the lock so subscribers can't deadlock against a re-entrant request.
-            try { SnapshotChanged?.Invoke(snapshot); }
-            catch { /* subscriber threw; not our problem — keep the source alive */ }
+            if (publish)
+            {
+                // Fire outside the lock so subscribers can't deadlock against a re-entrant request.
+                try { SnapshotChanged?.Invoke(snapshot); }
+                catch { /* subscriber threw; not our problem — keep the source alive */ }
+            }
         }
         catch (IOException)
         {

@@ -17,11 +17,12 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
 
-// Bare-command dispatch: a bare `sourcegraph-mcp` invocation drops into the dashboard under a
-// tty and into `status` under redirected stdin / non-interactive contexts. The rewrite is a no-op
-// when a positional subcommand or `--help` is already present. See
-// openspec/changes/add-operator-dashboard/design.md decision 2.
-args = BareCommandDispatch.Rewrite(args, BareCommandDispatch.IsStdinRedirectedOrNonInteractive);
+// Bare-command dispatch: a bare `sourcegraph-mcp` invocation drops into the dashboard when ALL
+// stdio streams are attached to a tty (stdin for key input, stdout + stderr for ANSI cursor
+// positioning) AND the process is interactive. Any redirected stream → route to `status`, the
+// headless surface. The rewrite is a no-op when a positional subcommand or `--help` is already
+// present. See openspec/changes/add-operator-dashboard/design.md decision 2.
+args = BareCommandDispatch.Rewrite(args, BareCommandDispatch.IsStdioRedirectedOrNonInteractive);
 
 CommandLine cli;
 try

@@ -50,11 +50,15 @@ public sealed class UnifiedDiffRendererTests
     public void Render_equalInputs_emitsHeadersOnly()
     {
         // No change → no hunks. Headers still get written (the caller decides whether to bother
-        // calling Render in the first place).
+        // calling Render in the first place). `TextWriter.WriteLine` honours the host's line
+        // terminator (`\n` on Unix, `\r\n` on Windows), so we split on both forms to keep this
+        // test cross-platform — splitting on `'\n'` alone leaves a trailing `\r` on Windows that
+        // the byte-exact `Be(...)` assertion catches.
         var same = Encoding.UTF8.GetBytes("hello\nworld\n");
         using var sw = new StringWriter();
         UnifiedDiffRenderer.Render(same, same, "from", "to", sw);
-        var lines = sw.ToString().Split('\n').Where(l => l.Length > 0).ToList();
+        var lines = sw.ToString().Split(new[] { "\r\n", "\n" }, StringSplitOptions.None)
+            .Where(l => l.Length > 0).ToList();
         lines.Should().HaveCount(2);
         lines[0].Should().Be("--- from");
         lines[1].Should().Be("+++ to");

@@ -552,7 +552,9 @@ The dashboard SHALL exit cleanly with code `0` on `q`, `Q`, or `Ctrl+C`; on unca
 - **THEN** the Spectre `Live` block exits; the cursor is restored to visible state; no ANSI escape sequence remains in the terminal's output buffer; the process exits with code `0`
 
 ### Requirement: Bare command dispatch
-The CLI SHALL accept `sourcegraph-mcp` invoked with no positional arguments and no `--help` / `-h` flag, and SHALL dispatch to either the `dashboard` subcommand or the `status` subcommand based on the stdin disposition: when stdin is a tty (`Console.IsInputRedirected == false` AND `Environment.UserInteractive == true`), the dispatch target SHALL be `dashboard`; otherwise the dispatch target SHALL be `status`.
+The CLI SHALL accept `sourcegraph-mcp` invoked with no positional arguments and no `--help` / `-h` flag, and SHALL dispatch to either the `dashboard` subcommand or the `status` subcommand based on the stdio disposition: when every standard stream is attached to a tty (`Console.IsInputRedirected == false` AND `Console.IsOutputRedirected == false` AND `Console.IsErrorRedirected == false` AND `Environment.UserInteractive == true`), the dispatch target SHALL be `dashboard`; otherwise (any stream redirected, or the process running non-interactively) the dispatch target SHALL be `status`.
+
+The dashboard requires all three streams attached: stdin for key input, stdout and stderr for ANSI cursor positioning. Routing on stdin alone would let `sourcegraph-mcp | cat` (stdin a tty, stdout piped) enter the dashboard and pour ANSI redraw codes into the pipe — which is why every stream is checked.
 
 Flags passed alongside the bare invocation (e.g. `sourcegraph-mcp --root /work/Repo`) SHALL be propagated to the dispatched subcommand.
 

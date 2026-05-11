@@ -574,22 +574,41 @@ internal static class DashboardActions
     }
 
     /// <summary>
-    /// Locate the right way to relaunch <c>sourcegraph-mcp</c>: try the binary by name first
-    /// (global tool / on PATH), then the current ProcessPath. Mirrors InitCli's pre-warm logic.
+    /// Locate the right way to relaunch <c>sourcegraph-mcp</c>. Uses the same strategy as
+    /// <c>InitCli.PrewarmAsync</c>'s pre-warm path:
+    ///
+    /// <list type="number">
+    /// <item><c>Assembly.GetEntryAssembly()?.Location</c> — reliable in every run mode
+    /// (dev <c>dotnet &lt;dll&gt;</c>, global tool, <c>dotnet publish</c> apphost). Empty only
+    /// under single-file deployment.</item>
+    /// <item><c>Environment.ProcessPath</c> — the executable that started the process. In dev
+    /// mode this is the dotnet host (not a sourcegraph binary), so we only accept it when its
+    /// base name is exactly <c>sourcegraph-mcp</c> (the apphost form).</item>
+    /// <item><c>dotnet sourcegraph-mcp</c> — global-tool fallback when neither hint resolved.</item>
+    /// </list>
+    ///
+    /// The previous implementation read <c>Environment.ProcessPath</c> first and assumed
+    /// anything not ending in <c>.dll</c> was a sourcegraph apphost — which meant
+    /// <c>dotnet &lt;dll&gt;</c> runs (where ProcessPath IS the dotnet host) constructed
+    /// <c>dotnet index &lt;sln&gt;</c> and failed loudly.
     /// </summary>
     internal static (string File, string[] Args) ResolveSourceGraphLaunch(string[] sgArgs)
     {
+        var entryDll = System.Reflection.Assembly.GetEntryAssembly()?.Location;
+        if (!string.IsNullOrEmpty(entryDll) && entryDll.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
+        {
+            var args = new List<string> { entryDll };
+            args.AddRange(sgArgs);
+            return ("dotnet", args.ToArray());
+        }
         var processPath = Environment.ProcessPath;
         if (!string.IsNullOrEmpty(processPath))
         {
-            if (processPath.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
+            var baseName = Path.GetFileNameWithoutExtension(processPath);
+            if (string.Equals(baseName, "sourcegraph-mcp", StringComparison.OrdinalIgnoreCase))
             {
-                var args = new List<string> { processPath };
-                args.AddRange(sgArgs);
-                return ("dotnet", args.ToArray());
+                return (processPath, sgArgs);
             }
-            // Native apphost.
-            return (processPath, sgArgs);
         }
         return ("sourcegraph-mcp", sgArgs);
     }

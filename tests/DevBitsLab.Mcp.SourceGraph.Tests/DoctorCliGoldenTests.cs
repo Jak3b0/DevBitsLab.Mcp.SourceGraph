@@ -224,6 +224,23 @@ public sealed class DoctorCliGoldenTests : IDisposable
         tempRoot = tempRoot.Replace('\\', '/');
 
         s = s.Replace(tempRoot, "__ROOT__");
+
+        // Cache-dir substitution runs BEFORE the home substitution. Reason: on Windows the
+        // fixture's USERPROFILE override doesn't reach `Environment.GetFolderPath(UserProfile)`
+        // — .NET uses SHGetKnownFolderPath, which reads from the registry, not the env var —
+        // so `home` ends up being the runner's REAL home (e.g. `C:/Users/runneradmin`). The
+        // isolated cache dir is rooted at `Path.GetTempPath()` which on Windows lives under
+        // that real home (`C:/Users/runneradmin/AppData/Local/Temp/sg-doctor-cache-…`). If
+        // we ran the home replace first, it would consume the `C:/Users/runneradmin` prefix
+        // of the cache path and the cache regex would only catch what's left, producing
+        // `__HOME____CACHE_DIR__`. By doing cache first we consume the full cache path
+        // before home can partial-match it.
+        //
+        // The regex allows an optional `[A-Za-z]:` drive prefix (Windows after backslash
+        // normalisation has paths like `C:/Users/...`); on Unix it just matches a path
+        // starting at `/`.
+        s = Regex.Replace(s, @"(?:[A-Za-z]:)?/[A-Za-z0-9_./-]+/devbitslab\.sourcegraph/models", "__CACHE_DIR__");
+
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile,
             Environment.SpecialFolderOption.DoNotVerify);
         if (!string.IsNullOrEmpty(home))
@@ -234,12 +251,10 @@ public sealed class DoctorCliGoldenTests : IDisposable
         // Normalise common machine-specific fields.
         s = Regex.Replace(s, @"\.NET SDK \d+\.\d+\.\d+", ".NET SDK __SDK_VERSION__");
         s = Regex.Replace(s, @"\(\d+ MB\)", "(__SIZE__)");
-        // Default cache may live under either XDG_CACHE_HOME (linux), %LOCALAPPDATA% (win),
-        // or ~/.cache (mac). The home substitution above usually catches it, but XDG variants
-        // can override the path entirely; collapse the absolute prefix here. Also collapse the
-        // home-prefix-then-cache combination so the post-home replacement reads naturally.
+        // Belt-and-braces: catch any post-home-replace `__HOME__/.cache/...` form that wasn't
+        // matched by the absolute-path regex above. Mostly defensive — the cache-first ordering
+        // makes this unreachable in normal cases.
         s = Regex.Replace(s, @"__HOME__/\.cache/devbitslab\.sourcegraph/models", "__CACHE_DIR__");
-        s = Regex.Replace(s, @"/[A-Za-z0-9_./-]+/devbitslab\.sourcegraph/models", "__CACHE_DIR__");
         return s;
     }
 }

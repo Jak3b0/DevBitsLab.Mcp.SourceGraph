@@ -271,6 +271,17 @@ internal static class DashboardCli
                     // TextPrompt<T>, which fights Live region's terminal management. The same
                     // outer-loop suspend/resume pattern that init / demo use applies.
                     return false; // guided: must suspend Live
+                case DashboardAction.ReindexScope:
+                case DashboardAction.RebuildScope:
+                    // Reindex / rebuild shell out to `sourcegraph-mcp index <solution>` which
+                    // can run for tens of seconds to minutes against a real solution AND
+                    // writes indexer-progress lines to stdio. Running that inside the Live
+                    // region interleaves the subprocess output with Spectre's cursor positioning
+                    // and leaves the terminal in a broken state. They're "in-place" in the
+                    // permission sense (no input collection needed) but interactively they
+                    // behave like guided actions — drop out of Live, run visibly, resume.
+                    // Rebuild's confirm modal renders cleanly outside Live too.
+                    return false; // guided: must suspend Live
                 default:
                     return true;
             }

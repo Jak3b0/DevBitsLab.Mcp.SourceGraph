@@ -599,7 +599,7 @@ Guided actions (`[i]`, `[d]`, `[l]`, `[e]`) SHALL NOT gate at the dashboard laye
 
 #### Scenario: `[u]` unwire proceeds on explicit yes
 - **WHEN** the user presses `u` on a wired `claude-code` row and answers `y` to the confirm prompt
-- **THEN** the `mcpServers.sourcegraph` entry is removed from `<root>/.mcp.json` (other entries preserved); the snapshot rebuilds; the Clients section's `claude-code` row status-dot flips from `●` to `○` (or `[x]` to `[ ]` under `--no-leaf`)
+- **THEN** the `mcpServers.sourcegraph` entry is removed from `<root>/.mcp.json` (other entries preserved); the snapshot rebuilds; the Clients section's `claude-code` row state-label flips from `wired` (brand-green) to `not wired` (muted grey); the row's leading-column selection indicator (`◉` selected, `○` not selected) is unaffected
 
 #### Scenario: `[r]` reindex does NOT prompt
 - **WHEN** the user navigates to a scope row and presses `r`

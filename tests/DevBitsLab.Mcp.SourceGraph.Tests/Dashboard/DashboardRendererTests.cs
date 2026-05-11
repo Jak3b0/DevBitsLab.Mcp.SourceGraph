@@ -59,11 +59,12 @@ public sealed class DashboardRendererTests : IDisposable
     }
 
     [Fact]
-    public void BuildHome_highlightedRow_drawsSelectionBar()
+    public void BuildHome_highlightedRow_drawsSelectionDot()
     {
         var output = RenderToString(_ => DashboardRenderer.BuildHome(Healthy(), DefaultOptions(), menuIndex: 2));
-        // Brand-coloured ▌ marks the highlighted menu row.
-        output.Should().Contain("▌");
+        // Brand-coloured fisheye ◉ marks the highlighted menu row; muted ○ for the rest.
+        output.Should().Contain(DashboardTheme.SelectedDot);
+        output.Should().Contain(DashboardTheme.UnselectedDot);
     }
 
     [Fact]
@@ -133,7 +134,9 @@ public sealed class DashboardRendererTests : IDisposable
             },
         };
         var output = RenderToString(_ => DashboardRenderer.BuildScopesDetail(snap, DefaultOptions(), selectedRow: 1));
-        output.Should().Contain("▌");
+        // The new model: ◉ marks the selected row in the leading column; ○ marks non-selected.
+        output.Should().Contain(DashboardTheme.SelectedDot);
+        output.Should().Contain(DashboardTheme.UnselectedDot);
     }
 
     [Fact]
@@ -310,6 +313,30 @@ public sealed class DashboardRendererTests : IDisposable
         DashboardRenderer.FormatRelativeTime(TimeSpan.FromMinutes(11)).Should().Be("11m ago");
         DashboardRenderer.FormatRelativeTime(TimeSpan.FromHours(5)).Should().Be("5h ago");
         DashboardRenderer.FormatRelativeTime(TimeSpan.FromDays(3)).Should().Be("3d ago");
+    }
+
+    [Fact]
+    public void SelectionDot_default_returnsFisheyeAndHollowCircle()
+    {
+        // Default mode: selected → brand-coloured fisheye ◉; not-selected → muted hollow ○.
+        var sel = DashboardTheme.SelectionDot(selected: true);
+        var unsel = DashboardTheme.SelectionDot(selected: false);
+        sel.Should().Contain(DashboardTheme.SelectedDot);
+        sel.Should().Contain(DashboardTheme.Brand);
+        unsel.Should().Contain(DashboardTheme.UnselectedDot);
+        unsel.Should().Contain(DashboardTheme.Muted);
+    }
+
+    [Fact]
+    public void SelectionDot_noLeaf_returnsBracketTokens()
+    {
+        // Under --no-leaf: selected → [[>]], not-selected → [[ ]] (escape-doubled brackets so
+        // Spectre's Markup parser doesn't interpret them).
+        LeafFormatter.Suppressed = true;
+        var sel = DashboardTheme.SelectionDot(selected: true);
+        var unsel = DashboardTheme.SelectionDot(selected: false);
+        sel.Should().Be("[[>]]");
+        unsel.Should().Be("[[ ]]");
     }
 
     [Fact]

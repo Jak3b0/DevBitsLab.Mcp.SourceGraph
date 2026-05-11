@@ -394,11 +394,13 @@ internal static class DashboardRenderer
             return new Padder(new Rows(rows)).PadLeft(2).PadRight(1);
         }
 
-        // Header + data share the same column layout; build it once.
+        // Header + data share the same column layout; build it once. Column widths after the
+        // selection-cue refactor: the leading column holds the selection indicator (◉/○); the
+        // Status column shows the status word coloured by severity (no leading status-dot).
         Grid NewScopesGrid() => new Grid()
             .AddColumn(new GridColumn().NoWrap().Width(2))
             .AddColumn(new GridColumn().NoWrap().Width(14))
-            .AddColumn(new GridColumn().NoWrap().Width(14))
+            .AddColumn(new GridColumn().NoWrap().Width(11))
             .AddColumn(new GridColumn().NoWrap().Width(13).RightAligned())
             .AddColumn(new GridColumn().NoWrap().Width(12).RightAligned())
             .AddColumn(new GridColumn().NoWrap().Width(16))
@@ -428,7 +430,8 @@ internal static class DashboardRenderer
             var failed = s.FailedProjects.Count > 0
                 ? $"{s.FailedProjects.Count} project{(s.FailedProjects.Count == 1 ? "" : "s")}"
                 : "—";
-            var statusCell = $"{DashboardTheme.Dot(kind)} {Markup.Escape(s.Status)}";
+            // Status moves to text colour — no leading dot in the row.
+            var statusCell = $"[{DashboardTheme.ColorFor(kind)}]{Markup.Escape(s.Status)}[/]";
             var selected = i == selectedRow;
 
             grid.AddRow(
@@ -506,11 +509,13 @@ internal static class DashboardRenderer
 
         var ordered = snapshot.Clients.OrderBy(c => c.Scope == "project" ? 0 : 1).ToArray();
 
+        // Column widths after the selection-cue refactor: leading column is the selection
+        // indicator (◉/○); the row's wired/unwired state is communicated by colouring the
+        // state-label cell (no leading status-dot column).
         var grid = new Grid()
             .AddColumn(new GridColumn().NoWrap().Width(2))
             .AddColumn(new GridColumn().NoWrap().Width(18))
             .AddColumn(new GridColumn().NoWrap().Width(10))
-            .AddColumn(new GridColumn().NoWrap().Width(3))
             .AddColumn(new GridColumn().NoWrap().Width(14))
             .AddColumn(new GridColumn().NoWrap());
 
@@ -531,8 +536,7 @@ internal static class DashboardRenderer
                     ? $"[bold {DashboardTheme.Brand}]{Markup.Escape(c.Slug)}[/]"
                     : Markup.Escape(c.Slug)),
                 new Markup($"[{DashboardTheme.Muted}]{Markup.Escape(c.Scope)}[/]"),
-                new Markup(DashboardTheme.Dot(kind)),
-                new Markup(Markup.Escape(stateLabel)),
+                new Markup($"[{DashboardTheme.ColorFor(kind)}]{Markup.Escape(stateLabel)}[/]"),
                 new Markup($"[{DashboardTheme.Muted}]{Markup.Escape(path)}[/]"));
         }
         rows.Add(grid);
@@ -569,8 +573,10 @@ internal static class DashboardRenderer
         var emb = snapshot.Embeddings;
         var rows = new List<IRenderable> { new Markup("") };
 
+        // Embeddings shows a single conceptual row (one model) so there's no selection cue —
+        // the leading-indicator column is dropped entirely; the key column carries the label
+        // and the value column carries the value.
         var grid = new Grid()
-            .AddColumn(new GridColumn().NoWrap().Width(2)) // blank cursor column
             .AddColumn(new GridColumn().NoWrap().Width(14)) // key
             .AddColumn(new GridColumn().NoWrap());          // value
 
@@ -584,7 +590,6 @@ internal static class DashboardRenderer
         foreach (var (key, value) in pairs)
         {
             grid.AddRow(
-                new Markup(" "),
                 new Markup($"[bold]{Markup.Escape(key)}[/]"),
                 new Markup(Markup.Escape(value)));
         }
@@ -721,15 +726,13 @@ internal static class DashboardRenderer
     }
 
     /// <summary>
-    /// Render the left-cursor column. A selected row shows a brand-coloured vertical bar; other
-    /// rows show a single space (keeps column alignment). Honours <see cref="LeafFormatter.Suppressed"/>.
+    /// Render the leading selection-indicator cell. Selected rows get a brand-coloured fisheye
+    /// <c>◉</c> (filled circle with built-in outline); non-selected rows get a muted hollow
+    /// <c>○</c>. Replaces the prior <c>▌</c> bar-plus-status-dot pattern: under the new model,
+    /// the leading dot communicates "you are here" and the row's status meaning lives in the
+    /// colour of its status word. Honours <see cref="LeafFormatter.Suppressed"/>.
     /// </summary>
-    private static Markup SelectionMarker(bool selected)
-    {
-        if (!selected) return new Markup(DashboardTheme.Unselected);
-        if (LeafFormatter.Suppressed) return new Markup(">");
-        return new Markup($"[{DashboardTheme.Brand}]{DashboardTheme.SelectedBar}[/]");
-    }
+    private static Markup SelectionMarker(bool selected) => new(DashboardTheme.SelectionDot(selected));
 
     /// <summary>Operator-friendly relative time like <c>2m ago</c> / <c>3h ago</c>; matches StatusRenderer.</summary>
     internal static string FormatRelativeTime(TimeSpan delta)

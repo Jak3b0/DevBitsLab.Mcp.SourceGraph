@@ -43,7 +43,11 @@ internal static class DashboardRenderer
         var leaf = LeafFormatter.Suppressed ? "[x]" : DashboardTheme.BrandLeaf;
         var leafText = Markup.Escape(leaf);
         var version = Markup.Escape(options.Version);
-        var rendered = Markup.Escape(PathDisplay.Render(options.Root, options.Root, options.Home));
+        // PathDisplay's repo-relative rule would render the root path against itself as ".",
+        // which tells the operator nothing about which repo they're looking at. The header
+        // wants the path itself, so we apply only the home-relative rule (~/...) and fall
+        // back to absolute by passing an empty base — this disables the repo-relative branch.
+        var rendered = Markup.Escape(PathDisplay.Render(options.Root, root: "", options.Home));
         var brand = DashboardTheme.Brand;
         var muted = DashboardTheme.Muted;
         var mutedDim = DashboardTheme.MutedDim;

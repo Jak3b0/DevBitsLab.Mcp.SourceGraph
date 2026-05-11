@@ -696,4 +696,38 @@ public sealed class DashboardActionsTests : IDisposable
                 Array.Empty<string>(), Array.Empty<string>(), false),
         },
     };
+
+    // ────────────────────────────────────────────────────────────────────────────────
+    // SplitCommandLine — $PAGER / $EDITOR argument parsing
+    // ────────────────────────────────────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData("", "", new string[0])]
+    [InlineData("less", "less", new string[0])]
+    [InlineData("less -R", "less", new[] { "-R" })]
+    [InlineData("code --wait", "code", new[] { "--wait" })]
+    [InlineData("vim -p", "vim", new[] { "-p" })]
+    [InlineData("/usr/local/bin/less -R --quit", "/usr/local/bin/less", new[] { "-R", "--quit" })]
+    public void SplitCommandLine_splitsWhitespaceTokens(string input, string expectedFile, string[] expectedArgs)
+    {
+        var (file, args) = DashboardActions.SplitCommandLine(input);
+        file.Should().Be(expectedFile);
+        args.Should().Equal(expectedArgs);
+    }
+
+    [Fact]
+    public void SplitCommandLine_doubleQuotedTokenPreservesSpaces()
+    {
+        var (file, args) = DashboardActions.SplitCommandLine("\"My Editor.exe\" --wait /tmp/foo");
+        file.Should().Be("My Editor.exe");
+        args.Should().Equal("--wait", "/tmp/foo");
+    }
+
+    [Fact]
+    public void SplitCommandLine_singleQuotedTokenPreservesSpaces()
+    {
+        var (file, args) = DashboardActions.SplitCommandLine("/usr/bin/code 'My Folder/file.txt'");
+        file.Should().Be("/usr/bin/code");
+        args.Should().Equal("My Folder/file.txt");
+    }
 }

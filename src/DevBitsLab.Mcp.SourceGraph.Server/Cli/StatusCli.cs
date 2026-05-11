@@ -26,19 +26,21 @@ internal static class StatusCli
 {
     /// <summary>
     /// Production entry point: resolves flags, builds the snapshot, renders, returns the
-    /// evaluated exit code. The stdin-disposition probe defaults to
-    /// <see cref="Console.IsInputRedirected"/>; tests invoke <see cref="RunAsync(CommandLine, Func{bool})"/>
-    /// with an injected probe to exercise the watch/one-shot branch deterministically.
+    /// evaluated exit code. The "is stdio redirected?" probe defaults to a check covering
+    /// stdin AND stdout (so <c>status --watch | cat</c> correctly downgrades — stdout being a
+    /// pipe means the ANSI cursor codes would otherwise pour into the pipe).
     /// </summary>
     public static Task<int> RunAsync(CommandLine cli)
-        => RunAsync(cli, static () => Console.IsInputRedirected);
+        => RunAsync(cli, static () => Console.IsInputRedirected || Console.IsOutputRedirected);
 
     /// <summary>
     /// Test-injectable overload: same flow as the public <see cref="RunAsync(CommandLine)"/>
-    /// but routes the "is stdin redirected?" probe through the caller. Tests use this to make the
-    /// watch/one-shot branch decision deterministic regardless of the host runner's stdin state.
+    /// but routes the "is stdio redirected?" probe through the caller. Tests use this to make the
+    /// watch/one-shot branch decision deterministic regardless of the host runner's stdio state.
+    /// The probe should return true if EITHER stdin or stdout is redirected — watch mode needs
+    /// both attached to a tty so the redraw codes don't pollute a downstream consumer.
     /// </summary>
-    internal static async Task<int> RunAsync(CommandLine cli, Func<bool> isStdinRedirected)
+    internal static async Task<int> RunAsync(CommandLine cli, Func<bool> isStdioRedirected)
     {
         var root = cli.ResolvedRepoRoot();
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile,
@@ -61,7 +63,7 @@ internal static class StatusCli
             RecentActivityCap: 50,
             ModelId: cli.Model);
 
-        if (cli.Watch && !isStdinRedirected())
+        if (cli.Watch && !isStdioRedirected())
         {
             return await RunWatchAsync(cli, root, home, options).ConfigureAwait(false);
         }

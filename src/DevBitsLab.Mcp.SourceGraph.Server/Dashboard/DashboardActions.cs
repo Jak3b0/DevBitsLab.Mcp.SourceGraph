@@ -462,17 +462,66 @@ internal static class DashboardActions
     private static Task<DashboardActionResult> OpenLogInPagerAsync(DashboardActionContext ctx, CancellationToken token)
     {
         var pager = Environment.GetEnvironmentVariable("PAGER");
-        if (string.IsNullOrEmpty(pager)) pager = "less";
-        var args = pager == "less" ? new[] { "-R", ctx.Snapshot.UsageLogPath } : new[] { ctx.Snapshot.UsageLogPath };
-        return RunGuidedSubprocessAsync(ctx, pager, args, "pager", token);
+        if (string.IsNullOrEmpty(pager)) pager = "less -R";
+        var (file, baseArgs) = SplitCommandLine(pager);
+        var args = new List<string>(baseArgs) { ctx.Snapshot.UsageLogPath };
+        return RunGuidedSubprocessAsync(ctx, file, args.ToArray(), "pager", token);
     }
 
     private static Task<DashboardActionResult> OpenConfigInEditorAsync(DashboardActionContext ctx, CancellationToken token)
     {
         var editor = Environment.GetEnvironmentVariable("EDITOR");
         if (string.IsNullOrEmpty(editor)) editor = "vi";
+        var (file, baseArgs) = SplitCommandLine(editor);
         var cfg = Path.Join(ctx.Root, ".sourcegraph.json");
-        return RunGuidedSubprocessAsync(ctx, editor, new[] { cfg }, "editor", token);
+        var args = new List<string>(baseArgs) { cfg };
+        return RunGuidedSubprocessAsync(ctx, file, args.ToArray(), "editor", token);
+    }
+
+    /// <summary>
+    /// Split a shell-style command-line string into its executable and initial argument list.
+    /// Honours common conventions:
+    /// <list type="bullet">
+    /// <item>Tokens separated by ASCII whitespace.</item>
+    /// <item>Double-quoted segments preserve embedded whitespace (e.g. <c>"My App"</c>).</item>
+    /// <item>Single-quoted segments work the same way (handy for paths with spaces on Unix).</item>
+    /// </list>
+    /// Used to parse <c>$PAGER</c> / <c>$EDITOR</c> values like <c>"less -R"</c>,
+    /// <c>"code --wait"</c>, or <c>"vim -p"</c>, where the env var carries args alongside the
+    /// executable name. The previous implementation passed the entire string to
+    /// <see cref="ProcessStartInfo"/> as the file name, which fails to start when there are any
+    /// arguments embedded in the variable.
+    /// </summary>
+    internal static (string File, IReadOnlyList<string> Args) SplitCommandLine(string commandLine)
+    {
+        if (string.IsNullOrWhiteSpace(commandLine))
+            return ("", Array.Empty<string>());
+
+        var tokens = new List<string>();
+        var current = new System.Text.StringBuilder();
+        char? quote = null;
+        foreach (var c in commandLine)
+        {
+            if (quote.HasValue)
+            {
+                if (c == quote.Value) { quote = null; }
+                else { current.Append(c); }
+                continue;
+            }
+            if (c == '"' || c == '\'') { quote = c; continue; }
+            if (char.IsWhiteSpace(c))
+            {
+                if (current.Length > 0) { tokens.Add(current.ToString()); current.Clear(); }
+                continue;
+            }
+            current.Append(c);
+        }
+        if (current.Length > 0) tokens.Add(current.ToString());
+
+        if (tokens.Count == 0) return ("", Array.Empty<string>());
+        var file = tokens[0];
+        var args = tokens.Count > 1 ? tokens.GetRange(1, tokens.Count - 1) : new List<string>();
+        return (file, args);
     }
 
     /// <summary>

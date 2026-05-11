@@ -38,14 +38,25 @@ internal static class BareCommandDispatch
     }
 
     /// <summary>
-    /// Production probe: stdin-is-tty equivalent. True when stdin is a pipe/file OR the process
-    /// is running without user interaction (service-account / non-tty contexts).
+    /// Production probe: returns true when ANY stdio stream is redirected or the process is
+    /// running non-interactively. The dashboard needs all three streams attached to a tty (stdin
+    /// for key input; stdout + stderr for ANSI cursor positioning). If any stream is a pipe or
+    /// file, we route to <c>status</c> instead — the headless surface that prints once and exits.
+    ///
+    /// <para>
+    /// The previous version only checked stdin redirection, which mis-classified
+    /// <c>sourcegraph-mcp | cat</c> (stdin still a tty, stdout piped) as interactive and launched
+    /// the dashboard — its ANSI redraw codes then poured into the pipe instead of dispatching to
+    /// <c>status</c> as documented.
+    /// </para>
     /// </summary>
     public static bool IsStdinRedirectedOrNonInteractive()
     {
         try
         {
             if (Console.IsInputRedirected) return true;
+            if (Console.IsOutputRedirected) return true;
+            if (Console.IsErrorRedirected) return true;
             // Environment.UserInteractive is false for service-account / non-tty contexts; we
             // route those to `status` because the dashboard requires a tty to be useful.
             return !Environment.UserInteractive;

@@ -92,9 +92,16 @@ internal static class AddScopeForm
     }
 
     /// <summary>
-    /// Expand environment-variable placeholders (<c>${VAR}</c>) and <c>~/</c> in the input. The
-    /// dashboard reads the same vocabulary as the CLI here so the form's "file not found"
-    /// validation accepts the same paths the user would type in <c>scopes add --solution</c>.
+    /// Expand placeholder syntax in the input — the same vocabulary <c>CommandLine</c> accepts
+    /// for <c>--solution</c> and friends, so the form's "file not found" validation accepts the
+    /// same paths the user would type in <c>scopes add --solution</c>. Supported:
+    /// <list type="bullet">
+    /// <item><c>${workspaceFolder}</c> → <paramref name="root"/></item>
+    /// <item><c>${HOME}</c> → user profile</item>
+    /// <item><c>~/</c> prefix → user profile</item>
+    /// <item><c>${VAR}</c> for any other env var, via <see cref="CommandLine.ExpandTokens"/></item>
+    /// <item>relative path → resolved against <paramref name="root"/></item>
+    /// </list>
     /// </summary>
     private static string ExpandPath(string raw, string root)
     {
@@ -110,8 +117,12 @@ internal static class AddScopeForm
         {
             expanded = Path.Join(home, expanded[2..]);
         }
-        // Any remaining ${X} → process env.
-        expanded = Environment.ExpandEnvironmentVariables(expanded);
+        // Any remaining ${VAR} → process env. Reuse CommandLine.ExpandTokens so the dashboard
+        // and the CLI agree on the placeholder grammar. (The previous implementation called
+        // `Environment.ExpandEnvironmentVariables`, which only expands the `%VAR%` Windows
+        // form and silently passed `${FOO}` through unexpanded — the validation then said
+        // "file not found" for a path the CLI's `--solution` would have happily resolved.)
+        expanded = Cli.CommandLine.ExpandTokens(expanded);
         // Relative path → resolve against root.
         if (!Path.IsPathRooted(expanded))
         {

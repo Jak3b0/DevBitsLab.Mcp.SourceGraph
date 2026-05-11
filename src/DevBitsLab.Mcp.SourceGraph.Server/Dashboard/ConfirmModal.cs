@@ -8,10 +8,12 @@ namespace DevBitsLab.Mcp.SourceGraph.Server.Dashboard;
 /// default <c>No</c>, dismissable with <c>Esc</c> or <c>n</c>.
 ///
 /// <para>
-/// The dispatcher gates exactly the two destructive in-place actions through this modal:
-/// <see cref="DashboardAction.RebuildScope"/> (archive + cold-index) and
+/// The dispatcher gates every destructive in-place action through this modal:
+/// <see cref="DashboardAction.RebuildScope"/> (archive + cold-index),
 /// <see cref="DashboardAction.UnwireClient"/> (removes the <c>sourcegraph</c> entry from a
-/// client config). All other actions are read-only or idempotent and don't gate.
+/// client config), and <see cref="DashboardAction.RemoveScope"/> (removes a scope from
+/// <c>.sourcegraph.json</c>; the on-disk per-scope DB is preserved as a re-add cache). All
+/// other actions are read-only or idempotent and don't gate.
 /// </para>
 /// </summary>
 internal static class ConfirmModal

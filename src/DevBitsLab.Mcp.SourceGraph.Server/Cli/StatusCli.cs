@@ -25,9 +25,20 @@ namespace DevBitsLab.Mcp.SourceGraph.Server.Cli;
 internal static class StatusCli
 {
     /// <summary>
-    /// Resolve flags, build the snapshot, render, and return the evaluated exit code.
+    /// Production entry point: resolves flags, builds the snapshot, renders, returns the
+    /// evaluated exit code. The stdin-disposition probe defaults to
+    /// <see cref="Console.IsInputRedirected"/>; tests invoke <see cref="RunAsync(CommandLine, Func{bool})"/>
+    /// with an injected probe to exercise the watch/one-shot branch deterministically.
     /// </summary>
-    public static async Task<int> RunAsync(CommandLine cli)
+    public static Task<int> RunAsync(CommandLine cli)
+        => RunAsync(cli, static () => Console.IsInputRedirected);
+
+    /// <summary>
+    /// Test-injectable overload: same flow as the public <see cref="RunAsync(CommandLine)"/>
+    /// but routes the "is stdin redirected?" probe through the caller. Tests use this to make the
+    /// watch/one-shot branch decision deterministic regardless of the host runner's stdin state.
+    /// </summary>
+    internal static async Task<int> RunAsync(CommandLine cli, Func<bool> isStdinRedirected)
     {
         var root = cli.ResolvedRepoRoot();
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile,
@@ -50,7 +61,7 @@ internal static class StatusCli
             RecentActivityCap: 50,
             ModelId: cli.Model);
 
-        if (cli.Watch && !Console.IsInputRedirected)
+        if (cli.Watch && !isStdinRedirected())
         {
             return await RunWatchAsync(cli, root, home, options).ConfigureAwait(false);
         }

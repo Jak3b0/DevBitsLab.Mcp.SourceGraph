@@ -37,10 +37,11 @@ public sealed class StatusCliWatchTests : IDisposable
     [Fact]
     public async Task Status_watch_underNonTty_downgradesToSingleSnapshot()
     {
-        // Test harness has stdin closed → Console.IsInputRedirected == true → --watch downgrades.
-        Console.IsInputRedirected.Should().BeTrue("test runners always redirect stdin");
+        // Force the stdin-redirected branch deterministically via the injectable probe overload —
+        // some test runners (IDE / custom harnesses) don't redirect stdin, which would otherwise
+        // make the assertion depend on the host environment.
         var cli = CommandLine.Parse(new[] { "status", "--root", _tempRoot, "--watch", "--watch-interval", "1" });
-        var rc = await StatusCli.RunAsync(cli);
+        var rc = await StatusCli.RunAsync(cli, isStdinRedirected: () => true);
         // The downgraded path renders exactly once and returns. No ANSI clear codes appear
         // because the watch loop isn't entered.
         var output = _stdout.ToString();

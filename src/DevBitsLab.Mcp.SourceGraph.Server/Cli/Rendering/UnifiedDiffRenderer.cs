@@ -62,9 +62,11 @@ internal static class UnifiedDiffRenderer
             var newCount = hunk.NewEnd - hunk.NewStart;
             writer.WriteLine($"@@ -{hunk.OldStart + 1},{oldCount} +{hunk.NewStart + 1},{newCount} @@");
 
-            // Walk the hunk's range, emitting context / removals / additions.
+            // Walk the hunk's range, emitting context / removals / additions. We only track the
+            // old-side index `oi` because every emitted line reads from `oldLines` (context,
+            // deletions) or addresses the new-side block range directly via `block.InsertStartB`.
+            // A new-side cursor isn't needed.
             var oi = hunk.OldStart;
-            var ni = hunk.NewStart;
             foreach (var block in hunk.Blocks)
             {
                 // Emit any context lines that come before this block (up to block.DeleteStartA).
@@ -72,7 +74,6 @@ internal static class UnifiedDiffRenderer
                 {
                     writer.WriteLine(" " + oldLines[oi]);
                     oi++;
-                    ni++;
                 }
                 // Emit deletions.
                 for (var i = 0; i < block.DeleteCountA; i++)
@@ -85,14 +86,12 @@ internal static class UnifiedDiffRenderer
                     writer.WriteLine("+" + newLines[block.InsertStartB + i]);
                 }
                 oi += block.DeleteCountA;
-                ni += block.InsertCountB;
             }
             // Emit trailing context up to OldEnd.
             while (oi < hunk.OldEnd)
             {
                 writer.WriteLine(" " + oldLines[oi]);
                 oi++;
-                ni++;
             }
         }
     }

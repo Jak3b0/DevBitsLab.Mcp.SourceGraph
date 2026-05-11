@@ -1,3 +1,5 @@
+using DevBitsLab.Mcp.SourceGraph.Server.Tools;
+
 namespace DevBitsLab.Mcp.SourceGraph.Server.Dashboard;
 
 /// <summary>
@@ -108,14 +110,14 @@ internal static class DashboardKeyMap
     ///
     /// <para>
     /// Returns Spectre markup with key glyphs in <see cref="DashboardTheme.Brand"/> and labels in
-    /// <see cref="DashboardTheme.Muted"/>. Honours <see cref="Tools.LeafFormatter.Suppressed"/>:
+    /// <see cref="DashboardTheme.Muted"/>. Honours <see cref="LeafFormatter.Suppressed"/>:
     /// in the no-leaf path unicode glyphs (<c>⏎</c>, <c>↑↓</c>) are replaced with bracketed
     /// ASCII tokens (<c>[Enter]</c>, <c>[Up/Dn]</c>).
     /// </para>
     /// </summary>
     public static string For(DashboardView view)
     {
-        if (Tools.LeafFormatter.Suppressed)
+        if (LeafFormatter.Suppressed)
         {
             // CRITICAL: the returned string is wrapped in `new Markup(...)` at the callsite
             // (see DashboardRenderer.BuildFooter). Spectre.Markup parses `[...]` as style tags
@@ -136,7 +138,7 @@ internal static class DashboardKeyMap
                 DashboardView.Embeddings =>
                     "[[Enter]]/[[p]] pull   [[v]] verify   [[Esc]] home   [[q]] quit",
                 DashboardView.RecentActivity =>
-                    "[[Up/Dn]] row   [[Enter]] details (TODO)   [[l]] open full log   [[Esc]] home   [[q]] quit",
+                    "[[Up/Dn]] row   [[l]] open full log   [[Esc]] home   [[q]] quit",
                 DashboardView.Environment =>
                     "[[Esc]] home   [[q]] quit",
                 _ => "[[Esc]] home   [[q]] quit",
@@ -156,7 +158,7 @@ internal static class DashboardKeyMap
             DashboardView.Embeddings =>
                 $"[{b}]⏎/p[/] [{m}]pull[/]   [{b}]v[/] [{m}]verify[/]   [{b}]Esc[/] [{m}]home[/]   [{b}]q[/] [{m}]quit[/]",
             DashboardView.RecentActivity =>
-                $"[{b}]↑↓[/] [{m}]row[/]   [{b}]⏎[/] [{m}]details (TODO)[/]   [{b}]l[/] [{m}]open full log[/]   [{b}]Esc[/] [{m}]home[/]   [{b}]q[/] [{m}]quit[/]",
+                $"[{b}]↑↓[/] [{m}]row[/]   [{b}]l[/] [{m}]open full log[/]   [{b}]Esc[/] [{m}]home[/]   [{b}]q[/] [{m}]quit[/]",
             DashboardView.Environment =>
                 $"[{b}]Esc[/] [{m}]home[/]   [{b}]q[/] [{m}]quit[/]",
             _ => $"[{b}]Esc[/] [{m}]home[/]   [{b}]q[/] [{m}]quit[/]",

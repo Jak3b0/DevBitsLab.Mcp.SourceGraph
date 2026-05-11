@@ -210,11 +210,23 @@ internal static class DashboardCli
                                 quit = true;
                                 return;
                             }
+                            // PrimaryAction (Enter) is view-dependent: on detail views it resolves
+                            // to a section-specific concrete action that may or may not need to
+                            // suspend the Live region (e.g. UnwireClient shows a ConfirmModal,
+                            // ReindexScope shells out with inherited stdio). Pre-resolve here so
+                            // the HandleNavigation suspend-Live check sees the CONCRETE action.
+                            // If we left it as the generic PrimaryAction, it would always be
+                            // classified as stay-in-Live and the inner ConfirmModal / subprocess
+                            // would fight the Live region → Spectre concurrency error. Home's
+                            // PrimaryAction stays generic — it's a view-transition handled
+                            // inside DispatchActionAsync.
+                            action = ResolvePrimaryIfDetailView(action);
                             var stayInLive = HandleNavigation(action);
                             if (!stayInLive)
                             {
-                                // Guided action: leave Live so the subprocess has the terminal
-                                // to itself. The outer loop runs it and re-enters Live afterwards.
+                                // Suspend-Live action: leave Live so the prompt / subprocess /
+                                // editor has the terminal to itself. The outer loop runs it and
+                                // re-enters Live afterwards.
                                 pendingGuided = action;
                                 return;
                             }
@@ -244,9 +256,46 @@ internal static class DashboardCli
         }
 
         /// <summary>
+        /// When <paramref name="action"/> is <see cref="DashboardAction.PrimaryAction"/> and the
+        /// current view is a detail view (anything other than Home), resolve it to the concrete
+        /// section action it would trigger — so the downstream suspend-Live check can see whether
+        /// that concrete action needs the terminal exclusively. Home stays generic: its primary
+        /// action is "open the highlighted menu item", which is a view-transition handled inside
+        /// <see cref="DispatchActionAsync"/>.
+        ///
+        /// <para>
+        /// Without this pre-resolution, <c>Enter</c> on the Clients view (which can resolve to
+        /// <see cref="DashboardAction.UnwireClient"/> via the toggle) would reach the dispatcher
+        /// still classified as <c>PrimaryAction</c>, bypass the suspend-Live branch in
+        /// <see cref="HandleNavigation"/>, and pop the <see cref="ConfirmModal"/> inside the Live
+        /// region — Spectre then throws "Trying to run one or more interactive functions
+        /// concurrently." The same trap applied to <see cref="DashboardAction.ReindexScope"/> via
+        /// <c>Enter</c> on the Scopes view.
+        /// </para>
+        /// </summary>
+        private DashboardAction ResolvePrimaryIfDetailView(DashboardAction action)
+        {
+            if (action != DashboardAction.PrimaryAction) return action;
+            DashboardSnapshot? snap;
+            DashboardView view;
+            int selectedRow;
+            lock (_gate)
+            {
+                snap = _snapshot;
+                view = _currentView;
+                selectedRow = _selectedRow;
+            }
+            if (snap is null || view == DashboardView.Home) return action;
+            var resolved = DashboardPrimaryAction.ResolveForView(view, selectedRow, snap);
+            // None means "this view has no primary action" (Environment / RecentActivity). Leave
+            // the action as PrimaryAction so the dispatcher surfaces the documented hint toast.
+            return resolved == DashboardAction.None ? action : resolved;
+        }
+
+        /// <summary>
         /// Resolve navigation-only actions (up/down/help) without going through the
-        /// dispatcher. Returns false for guided actions so the caller knows to drop out of
-        /// the Live region before spawning the subprocess.
+        /// dispatcher. Returns false for actions in the suspend-Live set so the caller
+        /// knows to drop out of the Live region before running them.
         /// </summary>
         private bool HandleNavigation(DashboardAction action)
         {
@@ -262,40 +311,8 @@ internal static class DashboardCli
                     lock (_gate) _helpOpen = !_helpOpen;
                     MarkDirty();
                     return true;
-                case DashboardAction.InitGuided:
-                case DashboardAction.DemoGuided:
-                case DashboardAction.OpenLogInPager:
-                case DashboardAction.OpenConfigInEditor:
-                case DashboardAction.AddScope:
-                case DashboardAction.RemoveScope:
-                case DashboardAction.UnwireClient:
-                case DashboardAction.ReindexScope:
-                case DashboardAction.RebuildScope:
-                    // The "must suspend Live" set. Any action that (a) shows a Spectre prompt
-                    // (ConfirmModal / TextPrompt / etc.), (b) spawns a subprocess with
-                    // inherited stdio, or (c) opens an external editor/pager needs the
-                    // terminal exclusively — running it inside Spectre's Live block
-                    // interleaves output with Live's cursor positioning and corrupts the
-                    // terminal state. The outer-loop suspend/resume pattern drops Live, runs
-                    // the action against a clean terminal, then re-enters Live.
-                    //
-                    // Membership audit:
-                    //   - InitGuided / DemoGuided / OpenLogInPager / OpenConfigInEditor:
-                    //     subprocess with inherited stdio.
-                    //   - AddScope: Spectre TextPrompt form.
-                    //   - RemoveScope / UnwireClient / RebuildScope: ConfirmModal (Spectre
-                    //     ConfirmationPrompt) — same Live-fighting behaviour as TextPrompt.
-                    //   - ReindexScope / RebuildScope: also shell out to
-                    //     `sourcegraph-mcp index` and need the terminal for the indexer's
-                    //     progress lines.
-                    //
-                    // Actions NOT in this set (intentionally stay in-place):
-                    //   - WireClient: writer file IO only, no prompt or stdio.
-                    //   - EmbeddingsPull / EmbeddingsVerify: HTTP / file IO only, no
-                    //     terminal interaction.
-                    return false;
                 default:
-                    return true;
+                    return !DashboardLiveSuspend.RequiresSuspend(action);
             }
         }
 
@@ -614,4 +631,62 @@ internal static class DashboardPrimaryAction
             ? DashboardAction.UnwireClient
             : DashboardAction.WireClient;
     }
+}
+
+/// <summary>
+/// Classifies dashboard actions by whether running them inside Spectre's <c>Live</c> region is
+/// safe. Lifted out of <see cref="DashboardCli"/>'s private LoopState so the main loop and unit
+/// tests share a single source of truth for the "must suspend Live before running" decision.
+///
+/// <para>
+/// Spectre throws <c>InvalidOperationException: "Trying to run one or more interactive functions
+/// concurrently"</c> if a <c>ConfirmationPrompt</c> / <c>TextPrompt</c> / <c>Status</c> /
+/// <c>Progress</c> is started while a <c>Live</c> block is active. Subprocesses that inherit
+/// stdio also collide — their output interleaves with Live's cursor codes and corrupts the
+/// terminal state. The fix is to drop the Live block, run the action against a clean terminal,
+/// then re-enter Live. This predicate names that set explicitly so the loop's pre-resolution
+/// step (see <c>ResolvePrimaryIfDetailView</c>) can route <c>Enter</c>-resolved actions through
+/// the same suspend gate as their key-bound siblings.
+/// </para>
+/// </summary>
+internal static class DashboardLiveSuspend
+{
+    /// <summary>
+    /// True iff <paramref name="action"/> must be run with Spectre's <c>Live</c> region suspended.
+    ///
+    /// <para>
+    /// Membership audit:
+    ///   <list type="bullet">
+    ///   <item><see cref="DashboardAction.InitGuided"/> / <see cref="DashboardAction.DemoGuided"/>
+    ///     / <see cref="DashboardAction.OpenLogInPager"/> /
+    ///     <see cref="DashboardAction.OpenConfigInEditor"/> — subprocess with inherited stdio.</item>
+    ///   <item><see cref="DashboardAction.AddScope"/> — Spectre <c>TextPrompt</c> form.</item>
+    ///   <item><see cref="DashboardAction.RemoveScope"/> / <see cref="DashboardAction.UnwireClient"/>
+    ///     / <see cref="DashboardAction.RebuildScope"/> — <see cref="ConfirmModal"/>
+    ///     (Spectre <c>ConfirmationPrompt</c>).</item>
+    ///   <item><see cref="DashboardAction.ReindexScope"/> / <see cref="DashboardAction.RebuildScope"/>
+    ///     — also shell out to <c>sourcegraph-mcp index</c>; needs the terminal for the
+    ///     indexer's own progress lines.</item>
+    ///   </list>
+    /// </para>
+    ///
+    /// <para>
+    /// Stay-in-place (NOT listed here): <see cref="DashboardAction.WireClient"/> (writer file IO
+    /// only), <see cref="DashboardAction.EmbeddingsPull"/> / <see cref="DashboardAction.EmbeddingsVerify"/>
+    /// (HTTP / file IO only, no terminal interaction).
+    /// </para>
+    /// </summary>
+    public static bool RequiresSuspend(DashboardAction action) => action switch
+    {
+        DashboardAction.InitGuided or
+        DashboardAction.DemoGuided or
+        DashboardAction.OpenLogInPager or
+        DashboardAction.OpenConfigInEditor or
+        DashboardAction.AddScope or
+        DashboardAction.RemoveScope or
+        DashboardAction.UnwireClient or
+        DashboardAction.ReindexScope or
+        DashboardAction.RebuildScope => true,
+        _ => false,
+    };
 }

@@ -217,6 +217,79 @@ public sealed class DashboardCliViewTests
             .Should().Be(DashboardAction.None);
     }
 
+    // ────────────────────────────────────────────────────────────────────────────────
+    // Live-suspend classification (regression for "Enter on already-wired client crashed
+    // with Spectre concurrency error" — the resolved UnwireClient must be classified as
+    // suspend-Live so the main loop drops out of the Live region before ConfirmModal opens)
+    // ────────────────────────────────────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData((int)DashboardAction.UnwireClient, true)]
+    [InlineData((int)DashboardAction.RemoveScope, true)]
+    [InlineData((int)DashboardAction.RebuildScope, true)]
+    [InlineData((int)DashboardAction.ReindexScope, true)]
+    [InlineData((int)DashboardAction.AddScope, true)]
+    [InlineData((int)DashboardAction.InitGuided, true)]
+    [InlineData((int)DashboardAction.DemoGuided, true)]
+    [InlineData((int)DashboardAction.OpenLogInPager, true)]
+    [InlineData((int)DashboardAction.OpenConfigInEditor, true)]
+    [InlineData((int)DashboardAction.WireClient, false)]
+    [InlineData((int)DashboardAction.EmbeddingsPull, false)]
+    [InlineData((int)DashboardAction.EmbeddingsVerify, false)]
+    [InlineData((int)DashboardAction.MoveUp, false)]
+    [InlineData((int)DashboardAction.PrimaryAction, false)]
+    public void LiveSuspend_classifiesActions(int actionInt, bool requiresSuspend)
+    {
+        DashboardLiveSuspend.RequiresSuspend((DashboardAction)actionInt)
+            .Should().Be(requiresSuspend);
+    }
+
+    [Fact]
+    public void EnterOnWiredClient_resolvesToUnwire_andRequiresSuspend()
+    {
+        // The composition that previously crashed: Enter on Clients view + a wired client
+        // resolves to UnwireClient (which shows ConfirmModal). The main loop relies on
+        // RequiresSuspend(resolved) to drop Live BEFORE the prompt opens. If this returns
+        // false we're back to the Spectre "interactive functions concurrently" exception.
+        var snap = MakeSnapshot() with
+        {
+            Clients = new[]
+            {
+                new ClientRow("continue", "project", "/r/.continue/mcp/sourcegraph.yaml", true, true),
+            },
+        };
+        var resolved = DashboardPrimaryAction.ResolveForView(DashboardView.Clients, 0, snap);
+        resolved.Should().Be(DashboardAction.UnwireClient);
+        DashboardLiveSuspend.RequiresSuspend(resolved).Should().BeTrue();
+    }
+
+    [Fact]
+    public void EnterOnUnwiredClient_resolvesToWire_andStaysInLive()
+    {
+        // The other half of the toggle: an unwired client resolves to WireClient, which is
+        // pure file IO and safely runs inside the Live region.
+        var snap = MakeSnapshot() with
+        {
+            Clients = new[]
+            {
+                new ClientRow("continue", "project", "/r/.continue/mcp/sourcegraph.yaml", true, false),
+            },
+        };
+        var resolved = DashboardPrimaryAction.ResolveForView(DashboardView.Clients, 0, snap);
+        resolved.Should().Be(DashboardAction.WireClient);
+        DashboardLiveSuspend.RequiresSuspend(resolved).Should().BeFalse();
+    }
+
+    [Fact]
+    public void EnterOnScopesView_resolvesToReindex_andRequiresSuspend()
+    {
+        // Enter on Scopes view dispatches reindex, which shells out to `sourcegraph-mcp index`
+        // with inherited stdio — must suspend Live for the same reason as the modal path.
+        var resolved = DashboardPrimaryAction.ResolveForView(DashboardView.Scopes, 0, MakeSnapshot());
+        resolved.Should().Be(DashboardAction.ReindexScope);
+        DashboardLiveSuspend.RequiresSuspend(resolved).Should().BeTrue();
+    }
+
     private static DashboardSnapshot MakeSnapshot() => new(
         Environment: new EnvironmentSurface(
             DotnetSdkVersion: "10.0.100",

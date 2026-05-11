@@ -426,6 +426,7 @@ internal static class InitCli
         }
         Console.WriteLine();
         Console.WriteLine("Next:");
+        Console.WriteLine("  • Add `.sourcegraph/` to your `.gitignore` (contains local cache & logs).");
         Console.WriteLine("  • Open this repo in your MCP client.");
         Console.WriteLine("  • Verify with `sourcegraph-mcp demo`.");
     }

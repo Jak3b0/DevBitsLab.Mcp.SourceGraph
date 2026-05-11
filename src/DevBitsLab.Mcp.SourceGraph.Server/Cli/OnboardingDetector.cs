@@ -135,6 +135,47 @@ internal static class OnboardingDetector
     }
 
     /// <summary>
+    /// Per-client picker default-on signal, computed from detection state. Used by the polished
+    /// <c>init</c> picker so first-run defaults track what the user actually has installed.
+    /// Rules (see the <c>init batched client picker</c> requirement):
+    /// <list type="bullet">
+    /// <item><c>claude-code</c>: always on (project-scoped <c>.mcp.json</c> is the canonical wire-up).</item>
+    /// <item><c>copilot</c>: always on (<c>.vscode/mcp.json</c> is the committed-config pattern).</item>
+    /// <item><c>cursor</c>: on iff <c>&lt;root&gt;/.cursor/</c> directory OR <c>~/.cursor/mcp.json</c> exists.</item>
+    /// <item><c>continue</c>: on iff <c>&lt;root&gt;/.continue/</c> directory OR <c>~/.continue/mcp/sourcegraph.yaml</c> exists.</item>
+    /// <item><c>claude-desktop</c>: on iff the platform-specific config file exists.</item>
+    /// </list>
+    /// </summary>
+    public static IReadOnlyDictionary<ClientId, bool> ComputePickerDefaults(string root)
+    {
+        var rooted = string.IsNullOrEmpty(root) ? Directory.GetCurrentDirectory() : Path.GetFullPath(root);
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile,
+            Environment.SpecialFolderOption.DoNotVerify);
+
+        var cursorOn = Directory.Exists(Path.Join(rooted, ".cursor"))
+            || (!string.IsNullOrEmpty(home) && File.Exists(Path.Join(home, ".cursor", "mcp.json")));
+
+        var continueOn = Directory.Exists(Path.Join(rooted, ".continue"))
+            || (!string.IsNullOrEmpty(home) && File.Exists(Path.Join(home, ".continue", "mcp", "sourcegraph.yaml")));
+
+        var claudeDesktopOn = false;
+        if (!string.IsNullOrEmpty(home))
+        {
+            var desktopPath = ClaudeDesktopUserPath(home);
+            claudeDesktopOn = !string.IsNullOrEmpty(desktopPath) && File.Exists(desktopPath);
+        }
+
+        return new Dictionary<ClientId, bool>
+        {
+            [ClientId.ClaudeCode] = true,
+            [ClientId.Copilot] = true,
+            [ClientId.Cursor] = cursorOn,
+            [ClientId.Continue] = continueOn,
+            [ClientId.ClaudeDesktop] = claudeDesktopOn,
+        };
+    }
+
+    /// <summary>
     /// Per-OS Claude Desktop config path: %APPDATA%\Claude\ on Windows,
     /// ~/Library/Application Support/Claude/ on macOS, ~/.config/Claude/ elsewhere.
     /// </summary>

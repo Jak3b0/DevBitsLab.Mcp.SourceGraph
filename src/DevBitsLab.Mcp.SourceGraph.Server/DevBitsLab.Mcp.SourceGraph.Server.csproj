@@ -33,6 +33,8 @@
     <PackageReference Include="ModelContextProtocol" />
     <PackageReference Include="Microsoft.Extensions.Hosting" />
     <PackageReference Include="Microsoft.Extensions.Logging" />
+    <PackageReference Include="DiffPlex" />
+    <PackageReference Include="Spectre.Console" />
     <ProjectReference Include="..\DevBitsLab.Mcp.SourceGraph.Core\DevBitsLab.Mcp.SourceGraph.Core.csproj" />
     <ProjectReference Include="..\DevBitsLab.Mcp.SourceGraph.Storage\DevBitsLab.Mcp.SourceGraph.Storage.csproj" />
     <ProjectReference Include="..\DevBitsLab.Mcp.SourceGraph.Indexing\DevBitsLab.Mcp.SourceGraph.Indexing.csproj" />

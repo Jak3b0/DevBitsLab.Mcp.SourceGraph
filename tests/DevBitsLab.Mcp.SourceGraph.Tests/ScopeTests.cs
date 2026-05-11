@@ -88,6 +88,85 @@ public sealed class ScopeTests
     }
 
     [Fact]
+    public void ScopeConfigLoader_emptyScopesArray_returnsEmptyConfigForRecovery()
+    {
+        // When the user removes the last scope (via CLI `scopes remove` or hand-edit),
+        // `.sourcegraph.json` ends up with `"scopes": []`. The loader treats that as a
+        // recoverable empty config — not a hard error — so subsequent `scopes add` /
+        // dashboard `[N]` can write a fresh scope over the empty file. Throwing here used to
+        // leave the user stuck with "malformed .sourcegraph.json" on every load.
+        var tmp = Path.Combine(Path.GetTempPath(), "scope-tests-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tmp);
+        try
+        {
+            File.WriteAllText(Path.Combine(tmp, ".sourcegraph.json"), """
+                { "scopes": [] }
+                """);
+            var loaded = ScopeConfigLoader.Load(tmp);
+            loaded.Scopes.Should().BeEmpty();
+        }
+        finally
+        {
+            Directory.Delete(tmp, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ScopeConfigLoader_emptyScopes_addScopeThenRoundTrip_persistsOnlyTheNewScope()
+    {
+        // End-to-end recovery: load empty -> add -> save -> reload should show exactly one
+        // scope (the new one), no synth-default sneaking in.
+        var tmp = Path.Combine(Path.GetTempPath(), "scope-tests-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tmp);
+        try
+        {
+            File.WriteAllText(Path.Combine(tmp, ".sourcegraph.json"), """{ "scopes": [] }""");
+            File.WriteAllText(Path.Combine(tmp, "x.slnx"), "<Solution />");
+            var emptyConfig = ScopeConfigLoader.Load(tmp);
+            var result = Server.Cli.ScopesCli.AddScopeToConfig(tmp, emptyConfig, "fresh", "x.slnx", isolated: false);
+            result.Ok.Should().BeTrue();
+            var reloaded = ScopeConfigLoader.Load(tmp);
+            reloaded.Scopes.Should().HaveCount(1);
+            reloaded.Scopes[0].Name.Should().Be("fresh");
+        }
+        finally
+        {
+            Directory.Delete(tmp, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ScopeConfigLoader_emptyScopesArray_preservesPluginsAndNullsDefaultScope()
+    {
+        // Recovery path invariants: plugins[] survives (no silent data loss), and
+        // default_scope is null'd out so callers don't follow a stale id into a deleted scope.
+        var tmp = Path.Combine(Path.GetTempPath(), "scope-tests-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tmp);
+        try
+        {
+            File.WriteAllText(Path.Combine(tmp, ".sourcegraph.json"), """
+                {
+                  "scopes": [],
+                  "default_scope": "removed-scope",
+                  "plugins": [
+                    { "package": "MyOrg.MyPlugin", "version": "1.2.3" }
+                  ]
+                }
+                """);
+            var loaded = ScopeConfigLoader.Load(tmp);
+            loaded.Scopes.Should().BeEmpty();
+            loaded.DefaultScope.Should().BeNull("a default_scope pointing at a deleted scope is more dangerous than silently dropping it during recovery");
+            loaded.Plugins.Should().HaveCount(1);
+            loaded.Plugins![0].Package.Should().Be("MyOrg.MyPlugin");
+            loaded.Plugins![0].Version.Should().Be("1.2.3");
+        }
+        finally
+        {
+            Directory.Delete(tmp, recursive: true);
+        }
+    }
+
+    [Fact]
     public void ScopeConfigLoader_rejectsMalformedJson()
     {
         var tmp = Path.Combine(Path.GetTempPath(), "scope-tests-" + Guid.NewGuid().ToString("N"));

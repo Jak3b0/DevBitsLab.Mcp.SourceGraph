@@ -5,10 +5,10 @@ profile-aware parser, and TypeScript / JavaScript / TSX / JSX via tree-sitter
 into SQLite + FTS5 and exposes graph queries to MCP clients (Claude Code,
 Cursor) over stdio.
 
-## Onboarding CLI: `init`, `doctor`, `demo`
+## Onboarding CLI: `init`, `doctor`, `demo`, `status`
 
-Three subcommands handle first-run setup. `sourcegraph-mcp init` is interactive
-by default; flag-driven (`--yes`) for CI. It detects environment, picks MCP
+Four subcommands handle first-run setup and runtime observation. `sourcegraph-mcp init`
+is interactive by default; flag-driven (`--yes`) for CI. It detects environment, picks MCP
 clients (project-scope by default, user-scope opt-in via `--user-<client>`),
 and writes per-client config files with merge-by-name semantics — first-class
 support for Claude Code, **GitHub Copilot** (distinct `servers`/`type` schema in
@@ -16,7 +16,25 @@ support for Claude Code, **GitHub Copilot** (distinct `servers`/`type` schema in
 read-only environment diagnostic with `pass | warn | fail` exit-code semantics.
 `demo` runs four canned operations (`ping`, `graph_stats`, `search_symbols`,
 `find_definition`) against the active scope and prints leaf-stamped markdown —
-the same shape an agent sees, available without an agent loop.
+the same shape an agent sees, available without an agent loop. `status` is the
+first stop for "what's the system doing?" questions: aggregates Environment,
+Scopes, Clients, Embeddings, and Recent activity into a single phase-headed
+snapshot, with the same exit-code semantics as `doctor` and a stable
+snake_case `--json` shape for scripts and the live dashboard.
+
+## Operator dashboard: bare `sourcegraph-mcp`
+
+Bare `sourcegraph-mcp` (no positional args, no `--help`) drops into the
+Spectre.Console-backed live operator dashboard under a tty, and falls back to
+the static `status` snapshot when stdin is redirected. The dashboard is the
+human-facing console — distinct from the agent-facing MCP server you launch
+with `serve`. Three action depths: read-only navigation, in-place mutations
+(reindex / rebuild / wire / unwire / embeddings pull / verify) that delegate
+to the same code paths the headless subcommands use, and guided actions that
+suspend the Live region to run `init` / `demo` / `$PAGER` / `$EDITOR` as
+subprocesses with inherited streams. Destructive in-place actions (`R`
+rebuild, `u` unwire) gate behind a Spectre `[y/N]` modal. See README's
+"Dashboard" subsection for the key reference.
 
 ## Tool-usage guidance ships with the server
 
@@ -37,6 +55,18 @@ prose response. Suppress all three (per-call response, `ServerInstructions`
 head, and per-tool `Title`/`Description`) with `--no-leaf` or
 `SOURCEGRAPH_NO_LEAF=1` if your terminal doesn't render emoji well or you
 prefer unbranded output.
+
+The leaf is strictly a brand mark — it appears on the banner / title bar
+and as the prefix on MCP tool responses (controlled by `LeafFormatter`).
+Per-row state across `init`, `status`, and the `dashboard` uses a
+**colored-dot vocabulary** instead: `●` = on / passed / wrote /
+unchanged / indexed, `○` = off / not selected, `◐` = soft warning,
+`✗` = hard skip / conflict / failed, `−` = unsupported / N/A. The
+dashboard adds one more glyph in the leading column of selectable rows:
+`◉` (brand-green, filled + outline) marks the selected row; `○` marks
+non-selected rows. Under `--no-leaf` or `SOURCEGRAPH_NO_LEAF=1` the
+substitutions are `[x] / [ ] / [!] / [X] / [-]` for status and `[>] / [ ]`
+for selection, preserving column alignment.
 
 Built-in `find_*` / `list_*` / `search_*` tools ship typed `structuredContent`
 (snake-case fields, `outputSchema` declared on `tools/list`) alongside the

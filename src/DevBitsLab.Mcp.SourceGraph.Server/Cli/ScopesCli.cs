@@ -111,42 +111,23 @@ internal static class ScopesCli
             return 2;
         }
         var name = cli.Positional[1];
-        if (!ScopeIdValidator.IsValid(name))
-        {
-            await Console.Error.WriteLineAsync($"Invalid scope id '{name}'. Must match ^[a-z0-9][a-z0-9-]{{0,63}}$").ConfigureAwait(false);
-            return 2;
-        }
-        if (config.Scopes.Any(s => s.Id == name))
-        {
-            await Console.Error.WriteLineAsync($"Scope '{name}' already exists.").ConfigureAwait(false);
-            return 1;
-        }
         if (string.IsNullOrEmpty(cli.SolutionPath))
         {
             await Console.Error.WriteLineAsync("`scopes add` requires --solution <path>.").ConfigureAwait(false);
             return 2;
         }
-        var solutionPath = cli.SolutionPath;
-        if (Path.IsPathRooted(solutionPath))
+        var result = AddScopeToConfig(
+            root,
+            config,
+            name,
+            cli.SolutionPath,
+            isolated: cli.Positional.Contains("--isolated"));
+        if (!result.Ok)
         {
-            // Store the path relative to root when possible so the JSON file is portable.
-            var rooted = Path.GetFullPath(solutionPath);
-            var rel = Path.GetRelativePath(root, rooted);
-            if (!rel.StartsWith("..", StringComparison.Ordinal)) solutionPath = rel;
-            else solutionPath = rooted;
+            await Console.Error.WriteLineAsync(result.Message).ConfigureAwait(false);
+            return result.ExitCode;
         }
-        var newScope = new Scope(
-            Id: name,
-            Name: name,
-            Root: root,
-            ProjectSet: new ScopeProjectSet.Solutions(new[] { solutionPath }, Array.Empty<string>()),
-            Isolated: cli.Positional.Contains("--isolated"),
-            LastIndexedAt: DateTimeOffset.MinValue);
-        var newScopes = config.Scopes.ToList();
-        newScopes.Add(newScope);
-        var updated = new ScopeConfig(newScopes, config.DefaultScope);
-        ScopeConfigLoader.Save(root, updated);
-        Console.WriteLine($"Added scope '{name}' -> {solutionPath}");
+        Console.WriteLine(result.Message);
         Console.WriteLine("A running sourcegraph-mcp server will pick up the change automatically.");
         return 0;
     }
@@ -159,24 +140,132 @@ internal static class ScopesCli
             return 2;
         }
         var name = cli.Positional[1];
+        var result = RemoveScopeFromConfig(root, config, name);
+        if (!result.Ok)
+        {
+            await Console.Error.WriteLineAsync(result.Message).ConfigureAwait(false);
+            return result.ExitCode;
+        }
+        Console.WriteLine(result.Message);
+        Console.WriteLine("A running sourcegraph-mcp server will pick up the change automatically.");
+        return 0;
+    }
+
+    /// <summary>
+    /// Outcome of an in-process scope-config mutation. Lets non-CLI callers (the dashboard's
+    /// inline add/remove form) read the validation result without having to capture stdout/stderr
+    /// from <see cref="RunAddAsync"/> / <see cref="RunRemoveAsync"/>.
+    /// </summary>
+    /// <param name="Ok">True iff the mutation succeeded and the config was rewritten.</param>
+    /// <param name="ExitCode">CLI-equivalent exit code: 0 on success, 1 for "not found" / "already exists", 2 for validation errors.</param>
+    /// <param name="Message">Human-readable summary suitable for either stdout (on success) or stderr (on failure).</param>
+    internal sealed record ScopeMutationResult(bool Ok, int ExitCode, string Message);
+
+    /// <summary>
+    /// Add a new scope to <paramref name="config"/> and persist the result to
+    /// <c>&lt;root&gt;/.sourcegraph.json</c>. Shared by the CLI <c>scopes add</c> subcommand and
+    /// the dashboard's inline add-scope form.
+    ///
+    /// <para>
+    /// Validation mirrors the CLI path: rejects invalid kebab-case ids, refuses duplicates,
+    /// rebases absolute solution paths relative to <paramref name="root"/> when possible so the
+    /// resulting JSON stays portable across machines. On success the per-scope DB at
+    /// <c>.sourcegraph/scopes/&lt;name&gt;.db</c> is NOT pre-created — the live server (or the
+    /// next <c>serve</c>) materialises it.
+    /// </para>
+    /// </summary>
+    internal static ScopeMutationResult AddScopeToConfig(
+        string root,
+        ScopeConfig config,
+        string name,
+        string solutionPath,
+        bool isolated)
+    {
+        if (!ScopeIdValidator.IsValid(name))
+        {
+            return new ScopeMutationResult(false, 2,
+                $"Invalid scope id '{name}'. Must match ^[a-z0-9][a-z0-9-]{{0,63}}$");
+        }
+        if (config.Scopes.Any(s => s.Id == name))
+        {
+            return new ScopeMutationResult(false, 1, $"Scope '{name}' already exists.");
+        }
+        if (string.IsNullOrWhiteSpace(solutionPath))
+        {
+            return new ScopeMutationResult(false, 2, "Solution path is required.");
+        }
+        var storedPath = solutionPath;
+        if (Path.IsPathRooted(storedPath))
+        {
+            // Store the path relative to root when possible so the JSON file is portable.
+            var rooted = Path.GetFullPath(storedPath);
+            var rel = Path.GetRelativePath(root, rooted);
+            if (!rel.StartsWith("..", StringComparison.Ordinal)) storedPath = rel;
+            else storedPath = rooted;
+        }
+        var newScope = new Scope(
+            Id: name,
+            Name: name,
+            Root: root,
+            ProjectSet: new ScopeProjectSet.Solutions(new[] { storedPath }, Array.Empty<string>()),
+            Isolated: isolated,
+            LastIndexedAt: DateTimeOffset.MinValue);
+        var newScopes = config.Scopes.ToList();
+        newScopes.Add(newScope);
+        var updated = new ScopeConfig(newScopes, config.DefaultScope);
+        try
+        {
+            ScopeConfigLoader.Save(root, updated);
+        }
+        catch (IOException ex)
+        {
+            return new ScopeMutationResult(false, 1, $"failed to write .sourcegraph.json: {ex.Message}");
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return new ScopeMutationResult(false, 1, $"failed to write .sourcegraph.json: {ex.Message}");
+        }
+        return new ScopeMutationResult(true, 0, $"Added scope '{name}' -> {storedPath}");
+    }
+
+    /// <summary>
+    /// Remove the named scope from <paramref name="config"/> and persist the result. Shared by
+    /// the CLI <c>scopes remove</c> subcommand and the dashboard's remove-scope action.
+    ///
+    /// <para>
+    /// The per-scope DB at <c>.sourcegraph/scopes/&lt;name&gt;.db</c> is intentionally NOT
+    /// deleted — a live server may still hold an open SQLite connection to it during the
+    /// live-remove grace window, and re-adding the same scope id reuses the existing DB
+    /// without a cold reindex. Stale on-disk DBs can be reaped later via a separate
+    /// <c>scopes prune</c> pass.
+    /// </para>
+    /// </summary>
+    internal static ScopeMutationResult RemoveScopeFromConfig(
+        string root,
+        ScopeConfig config,
+        string name)
+    {
         var existing = config.Scopes.FirstOrDefault(s => s.Id == name);
         if (existing is null)
         {
-            await Console.Error.WriteLineAsync($"Scope '{name}' not found.").ConfigureAwait(false);
-            return 1;
+            return new ScopeMutationResult(false, 1, $"Scope '{name}' not found.");
         }
         var newScopes = config.Scopes.Where(s => s.Id != name).ToList();
         var newDefault = config.DefaultScope == name ? null : config.DefaultScope;
         var updated = new ScopeConfig(newScopes, newDefault);
-        ScopeConfigLoader.Save(root, updated);
-        // The per-scope DB on disk is preserved. A live server may still hold an open SQLite
-        // connection to it during the live-remove grace window; deleting from underneath would
-        // corrupt the running query. The DB is a rebuildable cache, so leaving it costs only
-        // disk space (recoverable later via a `scopes prune` command) and re-adding the same
-        // scope id reuses the existing DB without a cold reindex.
-        Console.WriteLine($"Removed scope '{name}'");
-        Console.WriteLine("A running sourcegraph-mcp server will pick up the change automatically.");
-        return 0;
+        try
+        {
+            ScopeConfigLoader.Save(root, updated);
+        }
+        catch (IOException ex)
+        {
+            return new ScopeMutationResult(false, 1, $"failed to write .sourcegraph.json: {ex.Message}");
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return new ScopeMutationResult(false, 1, $"failed to write .sourcegraph.json: {ex.Message}");
+        }
+        return new ScopeMutationResult(true, 0, $"Removed scope '{name}'");
     }
 
     private static async Task<int> RunInfoAsync(CommandLine cli, ScopeConfig config, string root)

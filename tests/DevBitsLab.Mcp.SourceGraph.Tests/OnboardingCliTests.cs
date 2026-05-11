@@ -149,14 +149,29 @@ public sealed class OnboardingCliTests : IDisposable
     }
 
     [Fact]
-    public async Task Init_claudeDesktopOptIn_isRequired()
+    public async Task Init_claudeDesktop_isExplicitlyOptedOutByDefault()
     {
-        var cli = ParseInit("--print-only");
+        // Under the polished init, Claude Desktop is detection-driven: default-on iff its
+        // platform-specific config exists. To make this test independent of the dev's actual
+        // home directory, we explicitly opt out with --no-claude-desktop.
+        var cli = ParseInit("--print-only", "--no-claude-desktop");
         await InitCli.RunAsync(cli);
         var output = _stdout.ToString();
-        // Claude Desktop's user-scope path is platform specific but always contains "Claude".
-        // Without --claude-desktop, it should be absent.
         output.Should().NotContain("claude_desktop_config.json");
+    }
+
+    [Fact]
+    public async Task Init_claudeDesktop_forcedOnByFlag()
+    {
+        // --claude-desktop forces the picker default-on regardless of detection. The
+        // --print-only path means the would-write snippet is emitted but no user-tree file is
+        // touched.
+        var cli = ParseInit("--print-only", "--claude-desktop");
+        await InitCli.RunAsync(cli);
+        var output = _stdout.ToString();
+        // The Claude Desktop user-scope path always contains "Claude" (case-sensitive per the
+        // platform-specific layout).
+        output.Should().Contain("claude_desktop_config.json");
     }
 
     [Fact]
@@ -187,7 +202,9 @@ public sealed class OnboardingCliTests : IDisposable
         var rc = await InitCli.RunAsync(cli);
         rc.Should().Be(0);
         _stderr.ToString().Should().Contain("user-scope Copilot");
-        _stdout.ToString().Should().Contain("skipped (unsupported)");
+        // The polished renderer emits "skipped — unsupported" with an em-dash for the skip-row
+        // verb; the substring "unsupported" identifies the kind regardless of separator style.
+        _stdout.ToString().Should().Contain("unsupported");
     }
 
     [Fact]
@@ -218,6 +235,58 @@ public sealed class OnboardingCliTests : IDisposable
         var rc = await InitCli.RunAsync(cli);
         rc.Should().Be(1);
         _stderr.ToString().Should().Contain("malformed");
+    }
+
+    [Fact]
+    public async Task Init_diff_rendersUnifiedDiff_onSkipExistingDiffers()
+    {
+        // Pre-populate a config whose sourcegraph entry differs from what init would write,
+        // then invoke init --diff. We expect the diff headers, a non-zero exit, and the file
+        // left unchanged.
+        var path = Path.Join(_tempRoot, ".mcp.json");
+        File.WriteAllText(path,
+            "{ \"mcpServers\": { \"sourcegraph\": { \"command\": \"old-command\", \"args\": [] } } }");
+
+        var cli = ParseInit("--client", "claude-code", "--diff");
+        var rc = await InitCli.RunAsync(cli);
+        rc.Should().Be(2);
+        var output = _stdout.ToString();
+        output.Should().Contain("---");
+        output.Should().Contain("+++");
+        output.Should().Contain(".proposed");
+        // File unchanged.
+        var json = JsonNode.Parse(File.ReadAllText(path))!.AsObject();
+        json["mcpServers"]!["sourcegraph"]!["command"]!.GetValue<string>().Should().Be("old-command");
+    }
+
+    [Fact]
+    public async Task Init_diff_force_rendersThenWrites()
+    {
+        var path = Path.Join(_tempRoot, ".mcp.json");
+        File.WriteAllText(path,
+            "{ \"mcpServers\": { \"sourcegraph\": { \"command\": \"old-command\", \"args\": [] } } }");
+
+        var cli = ParseInit("--client", "claude-code", "--diff", "--force");
+        var rc = await InitCli.RunAsync(cli);
+        rc.Should().Be(0);
+        var output = _stdout.ToString();
+        output.Should().Contain("---");
+        output.Should().Contain("+++");
+        // File rewritten with the proposed content.
+        var json = JsonNode.Parse(File.ReadAllText(path))!.AsObject();
+        json["mcpServers"]!["sourcegraph"]!["command"]!.GetValue<string>().Should().Be("sourcegraph-mcp");
+    }
+
+    [Fact]
+    public async Task Init_diff_onInsert_isNoOp()
+    {
+        // No existing file → Insert plan. --diff is supposed to be a no-op for non-conflict
+        // plans; no diff headers should appear.
+        var cli = ParseInit("--client", "claude-code", "--diff");
+        var rc = await InitCli.RunAsync(cli);
+        rc.Should().Be(0);
+        var output = _stdout.ToString();
+        output.Should().NotContain(".proposed");
     }
 }
 

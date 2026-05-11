@@ -1,5 +1,8 @@
 using System.Diagnostics;
+using System.Reflection;
 using DevBitsLab.Mcp.SourceGraph.Server.Cli.ClientConfigWriters;
+using DevBitsLab.Mcp.SourceGraph.Server.Cli.Rendering;
+using DevBitsLab.Mcp.SourceGraph.Server.Dashboard;
 using DevBitsLab.Mcp.SourceGraph.Storage;
 
 namespace DevBitsLab.Mcp.SourceGraph.Server.Cli;
@@ -9,25 +12,27 @@ namespace DevBitsLab.Mcp.SourceGraph.Server.Cli;
 /// MCP clients (interactive or flag-driven), runs each client's writer, optionally pre-warms
 /// the index, and prints a closing report. Project-scoped writes are the default; user-scope
 /// writes require an explicit per-client flag.
+///
+/// The rendering layer lives in <see cref="InitRenderer"/>; this method composes the phase
+/// transitions and threads the right inputs into each renderer call. The split keeps the policy
+/// (what fires when, what's selected) here and the presentation (column widths, glyphs, two-
+/// space indentation) in the renderer module so future operator-console work can reuse the same
+/// row primitives.
 /// </summary>
 internal static class InitCli
 {
-    /// <summary>Banner printed at the top of an interactive <c>init</c> session, immediately
-    /// before the detection summary.</summary>
-    private const string Heading = "🌿 SourceGraph init";
-
     public static async Task<int> RunAsync(CommandLine cli)
     {
         var root = cli.ResolvedRepoRoot();
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile,
+            Environment.SpecialFolderOption.DoNotVerify);
         var detection = await OnboardingDetector.DetectAsync(root).ConfigureAwait(false);
         var interactive = !cli.Yes && !cli.PrintOnly && IsStdinInteractive();
 
         if (!cli.PrintOnly)
         {
-            Console.WriteLine(Heading);
-            Console.WriteLine();
-            PrintDetectionSummary(detection);
-            Console.WriteLine();
+            InitRenderer.RenderBanner(Console.Out);
+            InitRenderer.RenderEnvironment(Console.Out, detection, root, home);
         }
 
         if (detection.SourceGraphConfigStatus == SourceGraphConfigStatus.Malformed)
@@ -61,6 +66,13 @@ internal static class InitCli
 
         var installMode = ParseInstallMode(cli.InstallMode);
 
+        // Apply phase heading — emitted once, before the writer loop, so progress rows can stream
+        // under it as each writer runs.
+        if (!cli.PrintOnly)
+        {
+            InitRenderer.RenderApplyHeading(Console.Out);
+        }
+
         // Run each writer. Collect results for the closing report.
         var results = new List<WriterRunResult>();
         foreach (var (clientId, useUserScope) in enabledClients)
@@ -82,6 +94,11 @@ internal static class InitCli
                     _ => $"client `{clientId.ToSlug()}` has no {(useUserScope ? "user" : "project")}-scope target path",
                 };
                 Console.Error.WriteLine($"warn: skipping {clientId.ToSlug()} ({(useUserScope ? "user" : "project")}): {msg}");
+                if (!cli.PrintOnly)
+                {
+                    InitRenderer.RenderApplyRow(Console.Out, WriterAction.SkipUnsupported,
+                        clientId.ToSlug(), targetPath ?? "(no target path)", msg, root, home);
+                }
                 results.Add(new WriterRunResult(clientId, useUserScope, "(no target path)",
                     WriterAction.SkipUnsupported, msg));
                 continue;
@@ -93,8 +110,14 @@ internal static class InitCli
             }
             catch (IOException ex)
             {
+                var msg = $"could not read existing file: {ex.Message}";
+                if (!cli.PrintOnly)
+                {
+                    InitRenderer.RenderApplyRow(Console.Out, WriterAction.SkipExistingDiffers,
+                        clientId.ToSlug(), targetPath, msg, root, home);
+                }
                 results.Add(new WriterRunResult(clientId, useUserScope, targetPath,
-                    WriterAction.SkipExistingDiffers, $"could not read existing file: {ex.Message}"));
+                    WriterAction.SkipExistingDiffers, msg));
                 continue;
             }
             // Force `--no-history` into the emitted args when git isn't on PATH. Without git the
@@ -123,22 +146,50 @@ internal static class InitCli
                 continue;
             }
 
+            // --diff: when the plan would skip-on-conflict (or under --force, would overwrite a
+            // differing entry), render a unified diff of existing-vs-proposed bytes so the user
+            // can see what changes. --force composes: print the diff first, then proceed with
+            // the write. The diff is a no-op for Insert / NoOpAlreadyMatches / SkipHasComments /
+            // SkipUnsupported plans — those carry no useful "what changed" comparison.
+            var diffApplies = cli.Diff && existing is not null && (
+                plan.Action == WriterAction.SkipExistingDiffers ||
+                plan.Action == WriterAction.ReplaceOurs);
+            if (diffApplies)
+            {
+                Rendering.UnifiedDiffRenderer.Render(
+                    existing!,
+                    plan.ContentBytes,
+                    fromLabel: plan.TargetPath,
+                    toLabel: plan.TargetPath + ".proposed",
+                    writer: Console.Out);
+            }
+
             try
             {
                 writer.Apply(plan);
             }
             catch (IOException ex)
             {
+                var msg = $"apply failed: {ex.Message}";
+                InitRenderer.RenderApplyRow(Console.Out, WriterAction.SkipExistingDiffers,
+                    clientId.ToSlug(), plan.TargetPath, msg, root, home);
                 results.Add(new WriterRunResult(clientId, useUserScope, plan.TargetPath,
-                    WriterAction.SkipExistingDiffers, $"apply failed: {ex.Message}"));
+                    WriterAction.SkipExistingDiffers, msg));
                 continue;
             }
             catch (UnauthorizedAccessException ex)
             {
+                var msg = $"apply failed: {ex.Message}";
+                InitRenderer.RenderApplyRow(Console.Out, WriterAction.SkipExistingDiffers,
+                    clientId.ToSlug(), plan.TargetPath, msg, root, home);
                 results.Add(new WriterRunResult(clientId, useUserScope, plan.TargetPath,
-                    WriterAction.SkipExistingDiffers, $"apply failed: {ex.Message}"));
+                    WriterAction.SkipExistingDiffers, msg));
                 continue;
             }
+
+            // Render the Apply row for the outcome.
+            InitRenderer.RenderApplyRow(Console.Out, plan.Action,
+                clientId.ToSlug(), plan.TargetPath, plan.Description, root, home);
 
             // Comment-aware degraded path: even when not --print-only, a SkipHasComments outcome
             // emits the snippet to stdout so the user can paste manually.
@@ -161,8 +212,11 @@ internal static class InitCli
 
         if (!cli.PrintOnly)
         {
-            Console.WriteLine();
-            PrintClosingReport(results);
+            InitRenderer.RenderNext(Console.Out, new[]
+            {
+                "Open this repo in your MCP client.",
+                "Verify with `sourcegraph-mcp demo`.",
+            });
         }
 
         // Exit code: 0 unless any writer skipped because of a conflict; 2 in that case (matches
@@ -179,22 +233,6 @@ internal static class InitCli
     {
         try { return !Console.IsInputRedirected; }
         catch (IOException) { return false; }
-    }
-
-    private static void PrintDetectionSummary(OnboardingDetectionResult d)
-    {
-        Console.WriteLine($"  ✓ .NET SDK            : {d.DotnetSdkVersion ?? "(not detected)"}");
-        Console.WriteLine($"  {(d.GitOnPath ? "✓" : "⚠")} git on PATH         : {(d.GitOnPath ? "yes" : "no (--no-history will be implied)")}");
-        Console.WriteLine($"  ✓ repo root           : {d.RepoRootPath}");
-        Console.WriteLine($"  ✓ solutions detected  : {(d.SolutionFiles.Count == 0 ? "(none)" : string.Join(", ", d.SolutionFiles.Select(Path.GetFileName)))}");
-        var sgState = d.SourceGraphConfigStatus switch
-        {
-            SourceGraphConfigStatus.Valid => "valid",
-            SourceGraphConfigStatus.Missing => "missing (single-scope synth path)",
-            SourceGraphConfigStatus.Malformed => $"MALFORMED — {d.SourceGraphConfigError}",
-            _ => "?",
-        };
-        Console.WriteLine($"  ✓ .sourcegraph.json   : {sgState}");
     }
 
     /// <summary>
@@ -277,15 +315,13 @@ internal static class InitCli
         }
         else
         {
-            // Default candidates: the four project-scoped clients. Claude Desktop is opt-in only.
-            candidates = new HashSet<ClientId>
-            {
-                ClientId.ClaudeCode,
-                ClientId.Copilot,
-                ClientId.Cursor,
-                ClientId.Continue,
-            };
+            // Default candidates come from detection-driven signals. claude-code and copilot are
+            // always on; cursor / continue / claude-desktop flip based on what's installed on this
+            // machine (matches the `init batched client picker` requirement).
+            var defaults = OnboardingDetector.ComputePickerDefaults(d.RepoRootPath);
+            candidates = new HashSet<ClientId>(defaults.Where(kv => kv.Value).Select(kv => kv.Key));
         }
+        // --claude-desktop forces default-on regardless of detection (documented escape hatch).
         if (cli.ClaudeDesktop) candidates.Add(ClientId.ClaudeDesktop);
 
         // Apply --no-<client> drops. Slugs that don't parse to a known ClientId are silently
@@ -298,7 +334,7 @@ internal static class InitCli
         // Interactive picker (only when no explicit --client was given).
         if (interactive && cli.Clients.Count == 0)
         {
-            candidates = InteractiveClientPicker(candidates, d, cli.ClaudeDesktop);
+            candidates = InteractiveClientPicker(candidates, d);
         }
 
         // Map to (id, useUserScope). User-scope is requested via --user-<client>.
@@ -314,20 +350,50 @@ internal static class InitCli
     }
 
     private static HashSet<ClientId> InteractiveClientPicker(
-        HashSet<ClientId> autoSelected, OnboardingDetectionResult d, bool claudeDesktopOptedIn)
+        HashSet<ClientId> autoSelected, OnboardingDetectionResult d)
     {
-        Console.WriteLine("Which clients should I wire up? (Enter to accept, type 'n' to skip a client)");
+        // Section-6 wiring will replace this method with the batched-grammar picker. Today's body
+        // is the per-row [Y/n] flow with every client (including claude-desktop) always visible.
+        Console.WriteLine("Which clients should I wire up? Type '+slug -slug' to edit, Enter to accept, 'n' to skip all.");
+        var defaults = OnboardingDetector.ComputePickerDefaults(d.RepoRootPath);
         var picked = new HashSet<ClientId>();
-        var visible = Enum.GetValues<ClientId>()
-            .Where(id => id != ClientId.ClaudeDesktop || claudeDesktopOptedIn);
-        foreach (var id in visible)
+        var slugs = new List<string>();
+        foreach (var id in Enum.GetValues<ClientId>())
         {
-            var defaultYes = autoSelected.Contains(id);
-            var marker = defaultYes ? "[Y/n]" : "[y/N]";
-            Console.Write($"  {id.ToSlug(),-15} {marker} ");
-            var line = Console.ReadLine();
-            var answer = NormaliseYesNo(line, defaultYes);
-            if (answer) picked.Add(id);
+            var defaultYes = autoSelected.Contains(id) || defaults[id];
+            var glyph = DashboardTheme.DotPlain(defaultYes ? StatusKind.Ok : StatusKind.Off);
+            Console.WriteLine($"  {glyph}{id.ToSlug(),-15}");
+            if (defaultYes) slugs.Add(id.ToSlug());
+        }
+        var knownSlugs = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "claude-code", "copilot", "cursor", "continue", "claude-desktop",
+        };
+        Console.Write("  Accept defaults? [Y/n]  or edit (e.g. \"+cursor -copilot\"): ");
+        var raw = Console.ReadLine();
+        var defaultsSet = new HashSet<string>(slugs, StringComparer.Ordinal);
+        var result = BatchedPickerInput.Parse(raw ?? string.Empty, defaultsSet, knownSlugs);
+        if (result.NeedsReprompt)
+        {
+            Console.Write("  Invalid input. Accept defaults? [Y/n]  or edit (e.g. \"+cursor -copilot\"): ");
+            raw = Console.ReadLine();
+            result = BatchedPickerInput.Parse(raw ?? string.Empty, defaultsSet, knownSlugs);
+            if (result.NeedsReprompt)
+            {
+                // Second invalid input: treat as 'n' (deselect all) and proceed.
+                result = BatchedPickerInput.AllOff();
+            }
+        }
+        foreach (var slug in result.UnknownSlugs)
+        {
+            Console.Error.WriteLine($"warn: unknown picker slug ignored: {slug}");
+        }
+        foreach (var slug in result.Selection)
+        {
+            if (ClientIdExtensions.TryParseSlug(slug, out var id))
+            {
+                picked.Add(id);
+            }
         }
         return picked;
     }
@@ -402,34 +468,6 @@ internal static class InitCli
         Console.WriteLine();
     }
 
-    private static void PrintClosingReport(List<WriterRunResult> results)
-    {
-        Console.WriteLine("Summary:");
-        foreach (var r in results)
-        {
-            var glyph = r.Action switch
-            {
-                WriterAction.Insert => "✓ wrote",
-                WriterAction.ReplaceOurs => "✓ replaced",
-                WriterAction.NoOpAlreadyMatches => "= no change",
-                WriterAction.SkipExistingDiffers => "⚠ skipped (conflict)",
-                WriterAction.SkipHasComments => "⚠ skipped (comments)",
-                WriterAction.SkipUnsupported => "ⓘ skipped (unsupported)",
-                _ => "? ",
-            };
-            var scope = r.UserScope ? "user" : "project";
-            Console.WriteLine($"  {glyph,-22} {r.ClientId.ToSlug(),-15} ({scope}) → {r.TargetPath}");
-            if (r.Action is WriterAction.SkipExistingDiffers or WriterAction.SkipUnsupported)
-            {
-                Console.WriteLine($"      {r.Description}");
-            }
-        }
-        Console.WriteLine();
-        Console.WriteLine("Next:");
-        Console.WriteLine("  • Open this repo in your MCP client.");
-        Console.WriteLine("  • Verify with `sourcegraph-mcp demo`.");
-    }
-
     private static async Task PrewarmAsync(string solutionPath, string root)
     {
         // Resolve to an absolute path. ${workspaceFolder} expansion handled by ExpandTokens.
@@ -441,51 +479,58 @@ internal static class InitCli
             Console.Error.WriteLine($"warn: --prewarm requested but solution not found at {abs}");
             return;
         }
-        Console.WriteLine();
-        Console.WriteLine($"Pre-warming index against {Path.GetFileName(abs)}…");
+        var solutionName = Path.GetFileName(abs);
+        InitRenderer.RenderPreWarmHeading(Console.Out, solutionName);
         var sw = Stopwatch.StartNew();
         // Shell out for the pre-warm so we don't re-create the indexer construction graph that
-        // lives in Program.cs. Three invocation strategies, tried in order — the first one that
-        // starts wins. The order is chosen so the path that actually works in each install
-        // mode is hit first:
-        //   1. `dotnet sourcegraph-mcp index <abs>` — works for global tool install AND for the
-        //      .NET local-tool manifest pattern. Most common in practice.
-        //   2. `<entry-apphost> index <abs>` — works when the current process is launched via a
-        //      native apphost (e.g. running in-tree via `dotnet run` produces an apphost binary
-        //      whose Environment.ProcessPath is the apphost itself, not "dotnet").
-        //   3. `dotnet <entry-dll> index <abs>` — last-resort fallback when neither of the
-        //      above starts: re-invokes the same .dll under `dotnet exec`-style launch.
-        var attempts = new List<(string FileName, string[] Args)>
+        // lives in Program.cs. The strategy is "re-invoke the same binary we are now," because
+        // it's guaranteed to know the `index` subcommand and live with no install dependency.
+        //
+        // The entry binary is discovered in two ways with different reliability:
+        //
+        //   1. `Assembly.GetEntryAssembly()?.Location` — the entry .dll path. Reliable in
+        //      every run mode (dev `dotnet <dll>`, global tool, `dotnet publish` apphost,
+        //      local-tool manifest); empty only under single-file deployment.
+        //
+        //   2. `Environment.ProcessPath` — the executable that started the process. In dev
+        //      mode this is the dotnet host (e.g. `/usr/local/share/dotnet/dotnet`), which is
+        //      NOT a sourcegraph binary — so we only use it when it looks like an apphost
+        //      (path ends with `sourcegraph-mcp` / `sourcegraph-mcp.exe`).
+        //
+        // Strategies are tried in order; the first one that starts AND exits 0 wins. We try
+        // the entry-self forms first because they always work in dev mode (the most common
+        // local-test context). The `dotnet sourcegraph-mcp` global-tool form is the fallback
+        // for the single-file edge case where neither entry hint is available.
+        var attempts = new List<(string FileName, string[] Args)>();
+        var entryDll = Assembly.GetEntryAssembly()?.Location;
+        if (!string.IsNullOrEmpty(entryDll) && entryDll.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
         {
-            ("dotnet", new[] { "sourcegraph-mcp", "index", abs }),
-        };
-        var processPath = Environment.ProcessPath;
-        if (!string.IsNullOrEmpty(processPath))
-        {
-            // Heuristic: a `.dll` at ProcessPath means we're being run as `dotnet <dll>`; any
-            // other extension (none on Unix, `.exe` on Windows) means an apphost.
-            if (processPath.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
-            {
-                attempts.Add(("dotnet", new[] { processPath, "index", abs }));
-            }
-            else
-            {
-                attempts.Add((processPath, new[] { "index", abs }));
-            }
+            attempts.Add(("dotnet", new[] { entryDll, "index", abs }));
         }
+        var processPath = Environment.ProcessPath;
+        if (!string.IsNullOrEmpty(processPath) && IsSourceGraphApphost(processPath))
+        {
+            attempts.Add((processPath, new[] { "index", abs }));
+        }
+        // Global-tool fallback. Only reachable when neither entry hint resolved (single-file
+        // publish without an embedded dll path). Carries the original implementation's
+        // assumption that `sourcegraph-mcp` is installed on PATH via `dotnet tool install -g`.
+        attempts.Add(("dotnet", new[] { "sourcegraph-mcp", "index", abs }));
 
+        // Capture stderr from each attempt rather than inheriting it; we only surface output
+        // from the attempt we accept (exit 0) so a transient first-strategy failure doesn't
+        // leak a confusing "Could not execute…" message before the (successful) fallback.
+        // stdout we still inherit because successful indexer runs print progress that's worth
+        // seeing live; an interleave with our own rendering is acceptable since the indexer is
+        // the only live writer at this point.
+        string? lastStderr = null;
+        int? lastExit = null;
         foreach (var (fileName, args) in attempts)
         {
-            // Inherit stdout/stderr instead of redirecting. The original implementation
-            // redirected both pipes but never drained them, which would deadlock the child
-            // once a buffer filled (a real `index` pass on a sizeable solution easily
-            // produces enough output to hit that). Inheriting lets the user see indexer
-            // progress live AND avoids the deadlock entirely; we only need to know the
-            // child's exit code, which comes from WaitForExitAsync.
             var psi = new ProcessStartInfo(fileName)
             {
                 RedirectStandardOutput = false,
-                RedirectStandardError = false,
+                RedirectStandardError = true,
                 UseShellExecute = false,
             };
             foreach (var a in args) psi.ArgumentList.Add(a);
@@ -493,10 +538,24 @@ internal static class InitCli
             {
                 using var p = Process.Start(psi);
                 if (p is null) continue;
+                // Drain stderr concurrently with the wait so a chatty stderr can't deadlock
+                // the child. We re-emit it only if this attempt wins.
+                var stderrTask = p.StandardError.ReadToEndAsync();
                 await p.WaitForExitAsync().ConfigureAwait(false);
-                sw.Stop();
-                Console.WriteLine($"  pre-warm: exit {p.ExitCode} in {sw.Elapsed.TotalSeconds:F1}s");
-                return;
+                var stderr = await stderrTask.ConfigureAwait(false);
+                if (p.ExitCode == 0)
+                {
+                    if (!string.IsNullOrEmpty(stderr)) Console.Error.Write(stderr);
+                    sw.Stop();
+                    InitRenderer.RenderPreWarmSummary(Console.Out, p.ExitCode, sw.Elapsed, solutionName);
+                    return;
+                }
+                // Non-zero exit. Could be "tool not installed" (try next) OR "indexer failed"
+                // (would surface as the final result if no later attempt wins). Remember and
+                // continue.
+                lastStderr = stderr;
+                lastExit = p.ExitCode;
+                continue;
             }
             catch (System.ComponentModel.Win32Exception)
             {
@@ -514,7 +573,30 @@ internal static class InitCli
                 return;
             }
         }
-        Console.Error.WriteLine("warn: pre-warm could not start any subprocess (tried `dotnet sourcegraph-mcp` + the current entry binary). Run `sourcegraph-mcp index <solution>` manually if needed.");
+        // No strategy succeeded. Re-emit the most recent stderr (closest to what the user
+        // would have wanted to see) and a single summary line for the closing report.
+        sw.Stop();
+        if (!string.IsNullOrEmpty(lastStderr)) Console.Error.Write(lastStderr);
+        if (lastExit.HasValue)
+        {
+            InitRenderer.RenderPreWarmSummary(Console.Out, lastExit.Value, sw.Elapsed, solutionName);
+        }
+        else
+        {
+            Console.Error.WriteLine("warn: pre-warm could not start any subprocess. Run `sourcegraph-mcp index <solution>` manually if needed.");
+        }
+    }
+
+    /// <summary>
+    /// Heuristic: is <paramref name="processPath"/> a sourcegraph-mcp apphost (vs. the dotnet
+    /// host or some unrelated launcher)? Apphosts produced by <c>dotnet publish</c> and
+    /// <c>dotnet tool install -g</c> name themselves after the assembly entry-point; we accept
+    /// any file whose base name (without `.exe`) is exactly <c>sourcegraph-mcp</c>.
+    /// </summary>
+    private static bool IsSourceGraphApphost(string processPath)
+    {
+        var name = Path.GetFileNameWithoutExtension(processPath);
+        return string.Equals(name, "sourcegraph-mcp", StringComparison.OrdinalIgnoreCase);
     }
 
     private sealed record WriterRunResult(

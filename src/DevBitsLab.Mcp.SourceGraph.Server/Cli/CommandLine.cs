@@ -341,14 +341,26 @@ internal sealed class CommandLine
               through to the dispatched subcommand.
 
           sourcegraph-mcp dashboard [--root <path>] [--no-color] [--no-leaf] [--activity-bytes <N>]
-              Full-screen Spectre.Console-backed live operator console. Five sections — Environment,
-              Scopes, Clients, Embeddings, Recent activity — re-render on a 1-second poll + filesystem
-              watcher on the JSONL logs. Keys: [q] quit, [?] help, [↑↓/jk] navigate row,
-              [Tab/Shift+Tab] section, [Enter] details, [s] force-refresh, [r] reindex scope,
-              [R] rebuild scope (confirm), [w] wire client, [u] unwire client (confirm),
-              [p] embeddings pull, [v] embeddings verify, [i] init (guided), [d] demo (guided),
-              [l] open log in $PAGER, [e] open .sourcegraph.json in $EDITOR. Requires ≥80×24
-              terminal; smaller terminals exit with code 2.
+              Full-screen Spectre.Console-backed live operator console. Home view shows a
+              5-row at-a-glance summary plus a 1-5 numbered menu; selecting a row opens that
+              section's detail view, which re-renders on a 1-second poll + filesystem watcher on
+              the JSONL logs.
+
+              Keys (home): [↑↓/jk] select menu row, [Enter] open, [1-5] jump to view,
+              [?] help, [q]/[Ctrl+C] quit, [s] force-refresh snapshot.
+
+              Keys (detail): [↑↓/jk] navigate row, [Enter] primary action (reindex on Scopes,
+              toggle wire on Clients, pull on Embeddings), [Esc] or [h] back to home,
+              [r] reindex / [R] rebuild scope (confirm) / [N] new scope / [D] delete scope
+              (confirm) / [d] demo on Scopes; [w] wire / [u] unwire client (confirm) on Clients;
+              [p] pull / [v] verify on Embeddings; [l] open log in $PAGER / [e] open
+              .sourcegraph.json in $EDITOR; [i] guided init from any view; [q]/[Ctrl+C] quit.
+
+              Selection indicator: ◉ in brand-green for the focused row, ○ otherwise. Status
+              for each row is colour-coded inline (ok/wired = green, partial/indexing = amber,
+              degraded/failed = red, off = grey).
+
+              Requires ≥80×24 terminal; smaller terminals exit with code 2.
 
           sourcegraph-mcp serve [--solution <path>] [--db <path>] [--root <repo>] [--model <id>] [--no-embeddings] [--no-model-download] [--no-history]
               Run the MCP stdio server. With --solution given, registers an implicit single-scope

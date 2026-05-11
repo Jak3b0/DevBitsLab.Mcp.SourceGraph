@@ -491,18 +491,18 @@ internal static class DashboardActions
         DashboardActionContext ctx, CancellationToken outer)
     {
         var policy = ctx.Policy;
-        using var watchdog = new CancellationTokenSource(policy.InPlaceWatchdog);
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(outer, watchdog.Token);
+        // The body delegate is parameterless by design — every in-place action it wraps reaches
+        // outside our process (writer file IO, SQLite, EmbeddingsManager subprocess) and there's
+        // no reliable cancellation handle inside those code paths. The watchdog race below
+        // therefore only times out the WAIT; the inner task itself is left to drain on its own
+        // after we report the timeout. Don't allocate a linked CTS here just to throw it away.
         try
         {
             var inner = body();
-            // Race the watchdog against the body.
             var done = await Task.WhenAny(inner, Task.Delay(policy.InPlaceWatchdog, outer)).ConfigureAwait(false);
             if (done == inner) return await inner.ConfigureAwait(false);
-            // Watchdog tripped. The inner task is left to drain on its own — we don't have a
-            // reliable cancellation handle once we've handed control off into the writer/
-            // subprocess code path. The dashboard reports the timeout and lets the next snapshot
-            // tick redraw state.
+            // Watchdog tripped — the dashboard reports the timeout and the next snapshot tick
+            // redraws whatever state the still-running body eventually produces.
             return DashboardActionResult.Failure($"action exceeded {policy.InPlaceWatchdog.TotalSeconds:F0}s watchdog");
         }
         catch (OperationCanceledException)

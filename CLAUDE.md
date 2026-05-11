@@ -56,12 +56,17 @@ head, and per-tool `Title`/`Description`) with `--no-leaf` or
 `SOURCEGRAPH_NO_LEAF=1` if your terminal doesn't render emoji well or you
 prefer unbranded output.
 
-The same leaf rides through every `sourcegraph-mcp init` phase as the
-positive-state marker in a five-glyph vocabulary: `🌿` = positive
-(on / passed / wrote / unchanged / indexed), `·` = off / not selected,
-`⚠` = soft warning, `✗` = hard skip / conflict, `—` = unsupported / N/A.
-Under `--no-leaf` the substitutions are `[x] / [ ] / [!] / [X] / [-]`,
-preserving column alignment at three display cells per token.
+The leaf is strictly a brand mark — it appears on the banner / title bar
+and as the prefix on MCP tool responses (controlled by `LeafFormatter`).
+Per-row state across `init`, `status`, and the `dashboard` uses a
+**colored-dot vocabulary** instead: `●` = on / passed / wrote /
+unchanged / indexed, `○` = off / not selected, `◐` = soft warning,
+`✗` = hard skip / conflict / failed, `−` = unsupported / N/A. The
+dashboard adds one more glyph in the leading column of selectable rows:
+`◉` (brand-green, filled + outline) marks the selected row; `○` marks
+non-selected rows. Under `--no-leaf` or `SOURCEGRAPH_NO_LEAF=1` the
+substitutions are `[x] / [ ] / [!] / [X] / [-]` for status and `[>] / [ ]`
+for selection, preserving column alignment.
 
 Built-in `find_*` / `list_*` / `search_*` tools ship typed `structuredContent`
 (snake-case fields, `outputSchema` declared on `tools/list`) alongside the

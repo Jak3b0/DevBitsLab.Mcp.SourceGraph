@@ -158,25 +158,27 @@ leaf-state vocabulary in the leftmost column:
 ```
 🌿 SourceGraph init
 
-Environment
-  🌿 .NET SDK           10.0.201
-  🌿 git on PATH        yes
-  🌿 repo root          .
-  🌿 solutions          MySolution.slnx
-  🌿 .sourcegraph.json  missing (single-scope synth path)
+◆ Environment
+    ● .NET SDK           10.0.201
+    ● git on PATH        yes
+    ● repo root          .
+    ● solutions          MySolution.slnx
+    ● .sourcegraph.json  missing (single-scope synth path)
 
-Apply
-  🌿 wrote              claude-code     .mcp.json
-  🌿 wrote              copilot         .vscode/mcp.json
+◆ Apply
+    ● wrote              claude-code     .mcp.json
+    ● wrote              copilot         .vscode/mcp.json
 
-Next
-  Open this repo in your MCP client.
-  Verify with `sourcegraph-mcp demo`.
+◆ Next
+    Open this repo in your MCP client.
+    Verify with `sourcegraph-mcp demo`.
 ```
 
-`🌿` = positive (on / passed / wrote), `·` = off, `⚠` = warn, `✗` = hard skip,
-`—` = unsupported. Under `--no-leaf` or `SOURCEGRAPH_NO_LEAF=1` the tokens
-become `[x] / [ ] / [!] / [X] / [-]`, preserving column alignment.
+Per-row state vocabulary: `●` = on / passed / wrote, `○` = off, `◐` = warn,
+`✗` = hard skip, `−` = unsupported. The brand leaf `🌿` is reserved for the
+banner / title bar and MCP tool responses — never appears in a row position.
+Under `--no-leaf` or `SOURCEGRAPH_NO_LEAF=1` the tokens become
+`[x] / [ ] / [!] / [X] / [-]`, preserving column alignment.
 
 Other useful first-run commands:
 
@@ -731,25 +733,48 @@ sourcegraph-mcp stats --db ./.sourcegraph/scopes/default.db
 ### Dashboard
 
 `sourcegraph-mcp dashboard` (or bare `sourcegraph-mcp` under a tty) opens the
-live operator console — the five `status` sections rendered through
-Spectre.Console with keyboard navigation and the existing actions as
-key-accelerated commands. Three action depths:
+live operator console. It uses a **home / detail-view** model: the home view
+shows a 5-row summary block plus a numbered menu; selecting a menu item opens
+that section's detail view, which re-renders on a 1-second poll + filesystem
+watcher on the JSONL logs.
 
-- **Read-only.** Arrow keys or `j`/`k` move the cursor within the focused
-  section; `Tab`/`Shift+Tab` cycle sections; `Enter` opens a detail pane;
-  `Esc` closes; `?` toggles the inline key reference; `s` forces a snapshot
-  rebuild; `q` (or `Ctrl+C`) exits with code `0`.
-- **In-place.** `r` reindexes the selected scope; `R` rebuilds it (confirm
-  prompt); `w` wires the selected missing client; `u` unwires it (confirm
-  prompt); `p` runs `embeddings pull`; `v` runs `embeddings verify`. The
-  destructive set (`R` rebuild, `u` unwire) gates behind a Spectre
-  `<verb> <target>? [y/N]` modal; the idempotent set runs immediately. Any
-  in-place action exceeding 30 seconds is cancelled by the watchdog and the
-  failure surfaces in the status bar.
-- **Guided.** `i` suspends the Live region and runs `sourcegraph-mcp init`
-  visibly; `d` runs `sourcegraph-mcp demo` for the selected scope; `l` opens
-  `usage.jsonl` in `$PAGER` (default `less -R`); `e` opens `.sourcegraph.json`
-  in `$EDITOR` (default `vi`). On subprocess exit, the dashboard redraws.
+**Home keys:** `↑↓` / `j k` select a menu row, `Enter` opens the detail view,
+`1`-`5` jump directly to Scopes / Clients / Embeddings / Recent activity /
+Environment, `?` toggles the inline key reference, `q` (or `Ctrl+C`) quits.
+
+**Detail-view keys (universal):** `↑↓` / `j k` navigate the row cursor,
+`Enter` triggers the section's primary action, `Esc` or `h` returns to home,
+`s` forces a snapshot rebuild, `q` quits.
+
+**Section-specific actions** (only resolve in their owning view):
+
+- **Scopes.** `Enter` or `r` reindexes the selected scope; `R` rebuilds it
+  (confirm prompt); `N` opens an inline "add scope" form (name + solution
+  path + isolated flag, validated against `ScopeIdValidator`); `D` removes
+  the scope from `.sourcegraph.json` (confirm prompt; the on-disk DB at
+  `.sourcegraph/scopes/<id>.db` is preserved as a re-add cache); `d` runs
+  `sourcegraph-mcp demo` for the selected scope (guided).
+- **Clients.** `Enter` toggles wire/unwire on the selected client; `w` wires
+  a missing client; `u` unwires (confirm prompt).
+- **Embeddings.** `Enter` or `p` runs `embeddings pull`; `v` runs
+  `embeddings verify`.
+- **Recent activity.** `Enter` opens row detail (placeholder for now); `l`
+  opens `usage.jsonl` in `$PAGER` (default `less -R`).
+- **Environment.** Read-only; only navigation + back-to-home keys resolve.
+
+Destructive actions (`R` rebuild, `u` unwire, `D` remove scope) gate behind a
+Spectre `<verb> <target>? [y/N]` modal; idempotent actions (wire, reindex,
+pull, verify) run immediately. Any in-place action exceeding 30 seconds is
+cancelled by the watchdog and the failure surfaces in the toast.
+
+Guided actions suspend the Live region while a subprocess runs with inherited
+stdio, then resume on exit: `i` runs `sourcegraph-mcp init` from any view;
+`d` runs `sourcegraph-mcp demo` from Scopes detail; `l` / `e` open
+`$PAGER` / `$EDITOR`.
+
+**Selection cue.** Selected row: brand-green `◉` in the leading column.
+Non-selected: muted `○`. Row status is colour-coded inline (ok / wired in
+green, partial / indexing in amber, degraded / failed in red, off in grey).
 
 Refresh model: the snapshot rebuilds on a 1-second timer plus a 100 ms
 debounced filesystem watcher on `usage.jsonl` / `heals.jsonl`. Bursts of tool

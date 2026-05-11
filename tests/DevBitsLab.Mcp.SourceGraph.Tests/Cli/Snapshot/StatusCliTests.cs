@@ -212,7 +212,10 @@ public sealed class StatusCliTests : IDisposable
             DotnetSdkVersion: "10.0.100",
             GitOnPath: true,
             RepoRootPath: _tempRoot,
-            SolutionFiles: Array.Empty<string>(),
+            // Include one synthetic solution path so the "healthy environment" baseline matches
+            // EvaluateExit's warning rule: a repo with no detectable .slnx / .sln warns
+            // (consistent with doctor + StatusRenderer + DashboardRenderer).
+            SolutionFiles: new[] { Path.Join(_tempRoot, "Test.slnx") },
             SourceGraphConfigStatus: "missing",
             SourceGraphConfigError: null),
         Scopes: Array.Empty<ScopeRow>(),

@@ -161,6 +161,11 @@ internal static class StatusCli
         if (string.IsNullOrEmpty(snapshot.Environment.DotnetSdkVersion)) hardFail = true;
         if (!Directory.Exists(snapshot.Environment.RepoRootPath)) hardFail = true;
         if (!snapshot.Environment.GitOnPath) warn = true;
+        // A repo with no detectable .slnx / .sln warns. Matches what StatusRenderer and
+        // DashboardRenderer.ComputeEnvironmentSummary surface as a warning dot, and what
+        // doctor reports as a warn check. Without this the exit code and the rendered
+        // surface disagree on "is this repo healthy?".
+        if (snapshot.Environment.SolutionFiles.Count == 0) warn = true;
 
         // Scopes.
         foreach (var s in snapshot.Scopes)

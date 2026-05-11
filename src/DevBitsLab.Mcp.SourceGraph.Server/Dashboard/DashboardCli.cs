@@ -160,7 +160,7 @@ internal static class DashboardCli
             _freshness = freshness;
             var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile,
                 Environment.SpecialFolderOption.DoNotVerify);
-            _renderOptions = new DashboardRenderOptions(Root: root, Home: home, NoColor: false, Version: version);
+            _renderOptions = new DashboardRenderOptions(Root: root, Home: home, Version: version);
         }
 
         public int ExitCode { get; private set; }

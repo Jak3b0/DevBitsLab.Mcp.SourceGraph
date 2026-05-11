@@ -107,11 +107,16 @@ public static class ScopeConfigLoader
         // only one.
         if (dto.Scopes is null || dto.Scopes.Count == 0)
         {
-            // We deliberately don't carry `dto.Plugins` through here — the DTO type is the
-            // JSON shape (`PluginRefJson`), not the projected `PluginRef`. The recovery path
-            // doesn't need plugin info to be useful (the caller is about to add a scope and
-            // re-save), and leaving Plugins null lets the ScopeConfig record use its default.
-            return new ScopeConfig(Array.Empty<Scope>(), dto.DefaultScope);
+            // Project plugins through ParsePlugins so plugin configuration survives the
+            // remove-last-scope round-trip (no silent data loss if the user had plugins
+            // configured alongside scopes). DefaultScope is null'd out — carrying through a
+            // value that points at a scope id which no longer exists would set up callers
+            // (demo, scope resolution) to fail downstream even though the loader is
+            // explicitly in recovery mode.
+            return new ScopeConfig(
+                Array.Empty<Scope>(),
+                DefaultScope: null,
+                Plugins: ParsePlugins(dto.Plugins));
         }
 
         var seen = new HashSet<string>(StringComparer.Ordinal);

@@ -7,15 +7,16 @@ using Spectre.Console.Rendering;
 namespace DevBitsLab.Mcp.SourceGraph.Server.Dashboard;
 
 /// <summary>
-/// Display options for the dashboard renderer. Mirrors the static-renderer's
-/// <c>StatusRenderOptions</c> shape so the same path-rendering rule and the same colour
-/// suppression apply in both surfaces.
+/// Display options for the dashboard renderer. Colour suppression is NOT a field here —
+/// <c>--no-color</c> is handled one layer up in <c>DashboardCli.RunAsync</c> by constructing an
+/// <see cref="Spectre.Console.IAnsiConsole"/> with <c>ColorSystemSupport.NoColors</c>, which
+/// makes every Markup tag in this renderer render without ANSI. There's no second knob needed
+/// inside the renderer itself.
 /// </summary>
 /// <param name="Root">Repository root; used for path display in the header bar and per-row paths.</param>
 /// <param name="Home">User home directory; used for <c>~/</c> substitution.</param>
-/// <param name="NoColor">Suppress ANSI colour codes — composes with Spectre's native <c>NO_COLOR</c> handling.</param>
 /// <param name="Version">Server version string shown in the header.</param>
-internal sealed record DashboardRenderOptions(string Root, string? Home, bool NoColor, string Version);
+internal sealed record DashboardRenderOptions(string Root, string? Home, string Version);
 
 /// <summary>
 /// Per-view <see cref="IRenderable"/> builders for the dashboard. Built around the

@@ -371,7 +371,7 @@ public sealed class DashboardRendererTests : IDisposable
     }
 
     private static DashboardRenderOptions DefaultOptions() =>
-        new(Root: "/r", Home: "/h", NoColor: false, Version: "0.8.0");
+        new(Root: "/r", Home: "/h", Version: "0.8.0");
 
     private static DashboardSnapshot Healthy() => new(
         Environment: new EnvironmentSurface(

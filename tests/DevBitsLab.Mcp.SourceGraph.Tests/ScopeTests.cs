@@ -136,6 +136,37 @@ public sealed class ScopeTests
     }
 
     [Fact]
+    public void ScopeConfigLoader_emptyScopesArray_preservesPluginsAndNullsDefaultScope()
+    {
+        // Recovery path invariants: plugins[] survives (no silent data loss), and
+        // default_scope is null'd out so callers don't follow a stale id into a deleted scope.
+        var tmp = Path.Combine(Path.GetTempPath(), "scope-tests-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tmp);
+        try
+        {
+            File.WriteAllText(Path.Combine(tmp, ".sourcegraph.json"), """
+                {
+                  "scopes": [],
+                  "default_scope": "removed-scope",
+                  "plugins": [
+                    { "package": "MyOrg.MyPlugin", "version": "1.2.3" }
+                  ]
+                }
+                """);
+            var loaded = ScopeConfigLoader.Load(tmp);
+            loaded.Scopes.Should().BeEmpty();
+            loaded.DefaultScope.Should().BeNull("a default_scope pointing at a deleted scope is more dangerous than silently dropping it during recovery");
+            loaded.Plugins.Should().HaveCount(1);
+            loaded.Plugins![0].Package.Should().Be("MyOrg.MyPlugin");
+            loaded.Plugins![0].Version.Should().Be("1.2.3");
+        }
+        finally
+        {
+            Directory.Delete(tmp, recursive: true);
+        }
+    }
+
+    [Fact]
     public void ScopeConfigLoader_rejectsMalformedJson()
     {
         var tmp = Path.Combine(Path.GetTempPath(), "scope-tests-" + Guid.NewGuid().ToString("N"));

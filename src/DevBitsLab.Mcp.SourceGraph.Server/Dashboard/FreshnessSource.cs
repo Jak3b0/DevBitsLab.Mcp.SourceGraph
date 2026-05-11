@@ -86,6 +86,14 @@ internal sealed class FreshnessSource : IDisposable
                 dueTime: Timeout.Infinite, period: Timeout.Infinite);
 
             var dotDir = Path.Join(_root, ScopeLayout.DotDir);
+            // Create the .sourcegraph dotdir if it doesn't exist yet so the FileSystemWatchers
+            // attach reliably from a cold start. Without this, launching the dashboard before
+            // `serve` (or before any process has created `.sourcegraph/`) leaves the watchers
+            // un-attached — `usage.jsonl` / `heals.jsonl` writes wouldn't trigger sub-second
+            // refresh; recent activity would only surface on the 1-second poll.
+            try { Directory.CreateDirectory(dotDir); }
+            catch (IOException) { /* best-effort; the poll loop still gives 1s freshness */ }
+            catch (UnauthorizedAccessException) { /* best-effort */ }
             if (Directory.Exists(dotDir))
             {
                 _usageWatcher = TryStartWatcher(dotDir, "usage.jsonl");

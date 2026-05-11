@@ -14,8 +14,10 @@ namespace DevBitsLab.Mcp.SourceGraph.Server.Dashboard;
 /// <para>
 /// The form is rendered outside the dashboard's <c>Live</c> region (the caller drops out of
 /// Live before invoking <see cref="Prompt"/>). Validation errors re-prompt for the offending
-/// field rather than dismissing the form; <c>Esc</c> at the name prompt cancels the action
-/// (returns <see cref="Result.Cancelled"/>).
+/// field rather than dismissing the form. Cancellation is by EMPTY input at the name or
+/// solution prompt (the prompts use <c>.AllowEmpty()</c> + a trim check) — returning empty
+/// produces <see cref="Result.Cancelled"/>. Spectre's <c>TextPrompt</c> doesn't have a
+/// first-class "Esc cancels" hook; this is the idiomatic dismissal path.
 /// </para>
 /// </summary>
 internal static class AddScopeForm

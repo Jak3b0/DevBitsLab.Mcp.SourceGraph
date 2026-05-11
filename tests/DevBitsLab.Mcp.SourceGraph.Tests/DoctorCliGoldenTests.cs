@@ -188,6 +188,9 @@ public sealed class DoctorCliGoldenTests : IDisposable
     /// - Fluent Assertions' license preamble (it's written to <see cref="Console.Out"/> on
     ///   first use and leaks into our capture; pre-stripped so the golden stays focused on
     ///   the actual doctor output).
+    /// - Windows backslash separators collapsed to forward slashes so the same goldens work
+    ///   on Linux / macOS / Windows runners (path separators aren't part of doctor's
+    ///   observable contract).
     /// </summary>
     private static string Normalise(string s, string tempRoot)
     {
@@ -203,11 +206,29 @@ public sealed class DoctorCliGoldenTests : IDisposable
             s = s.TrimEnd() + "\n";
         }
 
+        // Path-separator normalisation. The two output forms (JSON vs human-readable) need
+        // different handling and are mutually exclusive in a single call, so we branch on the
+        // first non-whitespace character:
+        //
+        // - JSON: a lone `\` is part of an escape sequence (`—`, `'`, `\n`, …) and
+        //   MUST NOT be touched. A Windows path separator appears as the escaped form `\\`
+        //   (two chars). We collapse only `\\` → `/`.
+        //
+        // - Human-readable: backslashes only appear as Windows path separators (the doctor
+        //   surface emits no other backslash use), so a blanket single `\` → `/` is safe.
+        //
+        // After the in-string normalisation, the local `tempRoot` / `home` variables we replace
+        // below are also normalised to `/` so they match the post-normalisation form of `s`.
+        var isJson = s.TrimStart().StartsWith('{');
+        s = isJson ? s.Replace(@"\\", "/") : s.Replace('\\', '/');
+        tempRoot = tempRoot.Replace('\\', '/');
+
         s = s.Replace(tempRoot, "__ROOT__");
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile,
             Environment.SpecialFolderOption.DoNotVerify);
         if (!string.IsNullOrEmpty(home))
         {
+            home = home.Replace('\\', '/');
             s = s.Replace(home, "__HOME__");
         }
         // Normalise common machine-specific fields.

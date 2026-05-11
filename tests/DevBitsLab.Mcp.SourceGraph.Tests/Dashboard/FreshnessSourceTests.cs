@@ -115,6 +115,11 @@ public sealed class FreshnessSourceTests : IDisposable
             if (predicate()) return;
             await Task.Delay(25);
         }
+        // Returning silently here would let a broken FreshnessSource appear "fine" — the test
+        // would assert against an unchanged baseline and pass spuriously. Fail loudly with the
+        // elapsed time so a timeout is clearly distinguishable from a real assertion failure.
+        throw new Xunit.Sdk.XunitException(
+            $"WaitForAsync timed out after {sw.Elapsed.TotalMilliseconds:F0}ms (timeout: {timeout.TotalMilliseconds:F0}ms); predicate never returned true.");
     }
 
     private sealed class CountingSnapshotSource : FreshnessSource.ISnapshotSource

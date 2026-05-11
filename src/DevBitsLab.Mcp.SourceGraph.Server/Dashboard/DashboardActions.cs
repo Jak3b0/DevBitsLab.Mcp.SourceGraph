@@ -305,11 +305,11 @@ internal static class DashboardActions
     // ────────────────────────────────────────────────────────────────────────────────
 
     private static Task<DashboardActionResult> InitGuidedAsync(DashboardActionContext ctx, CancellationToken token)
-        => RunGuidedAsync(ctx, new[] { "init" }, "init", token);
+        => RunGuidedAsync(ctx, new[] { "init", "--root", ctx.Root }, "init", token);
 
     private static Task<DashboardActionResult> DemoGuidedAsync(DashboardActionContext ctx, CancellationToken token)
     {
-        var args = new List<string> { "demo" };
+        var args = new List<string> { "demo", "--root", ctx.Root };
         if (ctx.Selection.FocusedSection == DashboardSection.Scopes
             && ctx.Selection.RowIndex >= 0 && ctx.Selection.RowIndex < ctx.Snapshot.Scopes.Count)
         {
@@ -350,12 +350,16 @@ internal static class DashboardActions
     {
         try
         {
+            // Pin the subprocess CWD to the dashboard's --root so editors, pagers, and any
+            // implicit-CWD-aware tool operate against the same repo the snapshot describes —
+            // not the dashboard process's launch directory, which may be elsewhere.
             var psi = new ProcessStartInfo(file)
             {
                 UseShellExecute = false,
                 RedirectStandardOutput = false,
                 RedirectStandardError = false,
                 RedirectStandardInput = false,
+                WorkingDirectory = ctx.Root,
             };
             foreach (var a in args) psi.ArgumentList.Add(a);
             using var p = Process.Start(psi);

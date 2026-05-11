@@ -73,7 +73,8 @@ internal static class DashboardCli
 
         var options = new SnapshotOptions(
             ActivityBytes: cli.ActivityBytes ?? 524288,
-            RecentActivityCap: 50);
+            RecentActivityCap: 50,
+            ModelId: cli.Model);
         using var freshness = new FreshnessSource(root, options);
 
         var loop = new LoopState(console, freshness, root, GetVersion());
@@ -162,46 +163,70 @@ internal static class DashboardCli
 
         public async Task RunAsync(CancellationToken token)
         {
-            var layout = DashboardLayout.Build(Console.WindowWidth, Console.WindowHeight);
-            await _console.Live(layout).StartAsync(async ctx =>
+            // The Live block owns the terminal's alternate region while it's active. Guided
+            // actions (`init`, `demo`, `$PAGER`, `$EDITOR`) inherit stdio and write directly to
+            // the same terminal — running them inside the Live callback interleaves their
+            // output with Spectre's cursor-positioning escapes and leaves the terminal in a
+            // broken state.
+            //
+            // The outer loop here handles that explicitly: each Live session runs until the
+            // user quits, a guided action is picked, or the token cancels. On a guided action
+            // we exit the Live callback, run the subprocess against a "clean" terminal, then
+            // re-enter Live for the next session.
+            while (!token.IsCancellationRequested)
             {
-                // Tight loop: poll for keys with a short timeout, redraw on every snapshot
-                // change or selection change, exit on Quit.
-                while (!token.IsCancellationRequested)
+                var layout = DashboardLayout.Build(Console.WindowWidth, Console.WindowHeight);
+                DashboardAction? pendingGuided = null;
+                var quit = false;
+
+                await _console.Live(layout).StartAsync(async ctx =>
                 {
-                    if (Console.KeyAvailable)
+                    // Tight loop: poll for keys with a short timeout, redraw on every snapshot
+                    // change or selection change, exit on Quit or a guided action.
+                    while (!token.IsCancellationRequested)
                     {
-                        var key = Console.ReadKey(intercept: true);
-                        if (!DashboardKeyMap.TryResolve(key, out var action))
-                            continue;
-                        var stayInLive = HandleNavigation(action);
-                        if (action == DashboardAction.Quit)
+                        if (Console.KeyAvailable)
                         {
-                            ExitCode = 0;
-                            break;
-                        }
-                        if (!stayInLive)
-                        {
-                            // Guided action: drop out of Live, run subprocess, re-enter on the
-                            // next outer iteration. Spectre re-enters Live transparently when
-                            // we redraw.
+                            var key = Console.ReadKey(intercept: true);
+                            if (!DashboardKeyMap.TryResolve(key, out var action))
+                                continue;
+                            if (action == DashboardAction.Quit)
+                            {
+                                ExitCode = 0;
+                                quit = true;
+                                return;
+                            }
+                            var stayInLive = HandleNavigation(action);
+                            if (!stayInLive)
+                            {
+                                // Guided action: leave Live so the subprocess has the terminal
+                                // to itself. The outer loop runs it and re-enters Live afterwards.
+                                pendingGuided = action;
+                                return;
+                            }
                             await DispatchActionAsync(action, token).ConfigureAwait(false);
                             MarkDirty();
                         }
-                        else
+                        if (IsDirty())
                         {
-                            await DispatchActionAsync(action, token).ConfigureAwait(false);
-                            MarkDirty();
+                            Redraw(layout);
+                            ctx.Refresh();
                         }
+                        await Task.Delay(50, token).ConfigureAwait(false);
                     }
-                    if (IsDirty())
-                    {
-                        Redraw(layout);
-                        ctx.Refresh();
-                    }
-                    await Task.Delay(50, token).ConfigureAwait(false);
+                }).ConfigureAwait(false);
+
+                if (quit || token.IsCancellationRequested) break;
+
+                if (pendingGuided.HasValue)
+                {
+                    // Live is now stopped; the subprocess sees a normal terminal. After it
+                    // returns we mark the snapshot dirty so the next Live iteration redraws
+                    // immediately rather than showing the stale frame.
+                    await DispatchActionAsync(pendingGuided.Value, token).ConfigureAwait(false);
+                    MarkDirty();
                 }
-            }).ConfigureAwait(false);
+            }
         }
 
         /// <summary>

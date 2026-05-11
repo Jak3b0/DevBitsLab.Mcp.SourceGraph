@@ -33,9 +33,22 @@ internal static class StatusCli
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile,
             Environment.SpecialFolderOption.DoNotVerify);
 
+        // `--watch` + `--json` is rejected: the watch loop emits ANSI cursor-positioning codes
+        // before each re-render, which would interleave with the JSON document and break any
+        // downstream parser. A user wanting "live JSON" should either use the dashboard or wrap
+        // `status --json` in their own poller (which is what `--watch` is shorthand for in the
+        // human-readable case).
+        if (cli.Watch && cli.Json)
+        {
+            await Console.Error.WriteLineAsync(
+                "status: --watch and --json are mutually exclusive (the watch loop interleaves ANSI redraw codes with stdout, which would corrupt the JSON document).").ConfigureAwait(false);
+            return 2;
+        }
+
         var options = new SnapshotOptions(
             ActivityBytes: cli.ActivityBytes ?? 524288,
-            RecentActivityCap: 50);
+            RecentActivityCap: 50,
+            ModelId: cli.Model);
 
         if (cli.Watch && !Console.IsInputRedirected)
         {
@@ -54,12 +67,21 @@ internal static class StatusCli
     /// <see cref="Console.CancelKeyPress"/> fires. Uses ANSI cursor-home + clear-to-end (no
     /// external Spectre dependency); guarantees clean shutdown on Ctrl+C.
     /// </summary>
+    /// <remarks>
+    /// On Ctrl+C the watch loop returns <c>0</c> regardless of the most recent snapshot's exit
+    /// code. The spec scenario "--watch refreshes in place under a tty" explicitly requires
+    /// clean SIGINT exit semantics, and propagating a non-zero snapshot status (e.g. an
+    /// embedding-cache warning) would surprise an operator who hits Ctrl+C to exit a healthy
+    /// tail. The exit-code semantics on the one-shot path are unchanged.
+    /// </remarks>
     private static async Task<int> RunWatchAsync(CommandLine cli, string root, string? home, SnapshotOptions options)
     {
         using var cts = new CancellationTokenSource();
+        var cancelledViaCtrlC = false;
         ConsoleCancelEventHandler handler = (_, e) =>
         {
             e.Cancel = true;
+            cancelledViaCtrlC = true;
             cts.Cancel();
         };
         Console.CancelKeyPress += handler;
@@ -91,7 +113,7 @@ internal static class StatusCli
         {
             Console.CancelKeyPress -= handler;
         }
-        return lastExit;
+        return cancelledViaCtrlC ? 0 : lastExit;
     }
 
     /// <summary>

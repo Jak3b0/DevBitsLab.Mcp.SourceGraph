@@ -50,6 +50,30 @@ public sealed class StatusCliWatchTests : IDisposable
     }
 
     [Fact]
+    public async Task Status_watchAndJson_areMutuallyExclusive()
+    {
+        // The watch loop emits ANSI cursor codes (`\x1b[H\x1b[J`) before each redraw; combining
+        // those with `--json` would corrupt the JSON document on stdout. The subcommand rejects
+        // the combination with exit 2 and an error message on stderr.
+        var stderrCapture = new StringWriter();
+        var savedStderr = Console.Error;
+        Console.SetError(stderrCapture);
+        try
+        {
+            var cli = CommandLine.Parse(new[] { "status", "--root", _tempRoot, "--watch", "--json" });
+            var rc = await StatusCli.RunAsync(cli);
+            rc.Should().Be(2);
+            stderrCapture.ToString().Should().Contain("--watch and --json are mutually exclusive");
+            // No JSON document was written to stdout.
+            _stdout.ToString().Should().BeEmpty();
+        }
+        finally
+        {
+            Console.SetError(savedStderr);
+        }
+    }
+
+    [Fact]
     public async Task Status_buildAsync_repeatedCalls_doNotLeakSqliteHandles()
     {
         // Approximate FD-leak guard: build the snapshot 30 times in tight succession and assert

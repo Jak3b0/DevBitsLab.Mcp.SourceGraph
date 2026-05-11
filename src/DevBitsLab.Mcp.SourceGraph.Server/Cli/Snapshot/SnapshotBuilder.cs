@@ -11,7 +11,10 @@ namespace DevBitsLab.Mcp.SourceGraph.Server.Cli.Snapshot;
 /// </summary>
 /// <param name="ActivityBytes">Tail size (bytes from end) for both JSONL logs.</param>
 /// <param name="RecentActivityCap">Maximum entries kept in <c>recent_activity</c> after merge.</param>
-internal sealed record SnapshotOptions(int ActivityBytes = 524288, int RecentActivityCap = 50);
+/// <param name="ModelId">Embedding model identifier to report. <c>null</c> falls back to
+/// <see cref="DefaultEmbeddingModel.ModelId"/>; the value should mirror what <c>--model</c>
+/// resolved to so <c>status</c> / dashboard reflect the effective model rather than the SDK default.</param>
+internal sealed record SnapshotOptions(int ActivityBytes = 524288, int RecentActivityCap = 50, string? ModelId = null);
 
 /// <summary>
 /// Aggregates the five state surfaces under <c>--root</c> into a single immutable
@@ -60,7 +63,7 @@ internal static class SnapshotBuilder
         var clients = BuildClients(detection.ClientConfigsDetected);
 
         // 4. Embeddings surface — cache dir presence + size + active model id.
-        var embeddings = BuildEmbeddings();
+        var embeddings = BuildEmbeddings(options.ModelId);
 
         // 5. Recent activity — tails both JSONL logs, merges, sorts, caps.
         var usagePath = Path.Join(rooted, ScopeLayout.DotDir, "usage.jsonl");
@@ -245,13 +248,15 @@ internal static class SnapshotBuilder
         return rows;
     }
 
-    private static EmbeddingsSurface BuildEmbeddings()
+    private static EmbeddingsSurface BuildEmbeddings(string? modelIdOverride)
     {
         // Use the root cache dir (the parent of per-model directories) to preserve doctor's
         // pre-refactor wording — `embedding model cache present at <root-dir> (N MB)` — and to
         // keep the snapshot's total_bytes summing every cached model rather than only the
         // active one. The active model id stays available via <see cref="EmbeddingsSurface.ModelId"/>.
-        var modelId = DefaultEmbeddingModel.ModelId;
+        // When the caller (CLI flag `--model`) overrode the model identity, surface that here so
+        // `status` / dashboard report the effective model rather than the SDK default.
+        var modelId = string.IsNullOrEmpty(modelIdOverride) ? DefaultEmbeddingModel.ModelId : modelIdOverride;
         var cacheRoot = ModelStore.DefaultCacheDir();
 
         if (!Directory.Exists(cacheRoot))

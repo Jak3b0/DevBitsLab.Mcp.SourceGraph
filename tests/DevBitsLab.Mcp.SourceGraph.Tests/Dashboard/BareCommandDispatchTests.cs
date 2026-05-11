@@ -101,4 +101,43 @@ public sealed class BareCommandDispatchTests
         BareCommandDispatch.IsBare(new[] { "--root", "/x" }).Should().BeTrue();
         BareCommandDispatch.IsBare(new[] { "--no-color" }).Should().BeTrue();
     }
+
+    [Fact]
+    public void IsBare_valueBearingFlagThenSubcommand_returnsFalse()
+    {
+        // `sourcegraph-mcp --root /repo serve` carries a subcommand AFTER a value-bearing flag.
+        // Treating it as bare would rewrite to `["dashboard", "--root", "/repo", "serve"]` and
+        // confuse CommandLine.Parse. The walker must skip `--root`'s value (`/repo`) and detect
+        // `serve` as a positional → not bare.
+        BareCommandDispatch.IsBare(new[] { "--root", "/repo", "serve" }).Should().BeFalse();
+        BareCommandDispatch.IsBare(new[] { "--scope", "frontend", "status" }).Should().BeFalse();
+        BareCommandDispatch.IsBare(new[] { "--solution", "/x.slnx", "index" }).Should().BeFalse();
+    }
+
+    [Fact]
+    public void IsBare_booleanFlagsThenSubcommand_returnsFalse()
+    {
+        // Boolean flags don't consume a following token — a positional that follows is still
+        // a subcommand.
+        BareCommandDispatch.IsBare(new[] { "--no-color", "status" }).Should().BeFalse();
+        BareCommandDispatch.IsBare(new[] { "--yes", "--print-only", "init" }).Should().BeFalse();
+    }
+
+    [Fact]
+    public void IsBare_multipleValueBearingFlags_returnsTrue()
+    {
+        // Bare invocation with two value-bearing flags chained: each consumes its value, no
+        // positional remains.
+        BareCommandDispatch.IsBare(new[] { "--root", "/repo", "--model", "someorg/m" }).Should().BeTrue();
+    }
+
+    [Fact]
+    public void Rewrite_valueBearingFlagThenSubcommand_passesThrough()
+    {
+        // Regression guard for the IsBare bug: `--root /repo serve` must reach the existing
+        // `serve` subcommand unchanged, not be rewritten to `dashboard --root /repo serve`.
+        var args = new[] { "--root", "/repo", "serve" };
+        var result = BareCommandDispatch.Rewrite(args, () => false);
+        result.Should().BeSameAs(args);
+    }
 }

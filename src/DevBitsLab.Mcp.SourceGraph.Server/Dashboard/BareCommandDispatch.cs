@@ -68,20 +68,60 @@ internal static class BareCommandDispatch
     }
 
     /// <summary>
-    /// "Bare" means: no positional subcommand. Anything that doesn't start with `-` and isn't
-    /// itself a flag value is a positional. We don't try to be clever about flag-value pairing
-    /// (e.g. `--root /x` would parse `/x` as positional under a naïve check); since CommandLine
-    /// already accepts `--root` at any position alongside a subcommand, we treat ANY non-`-`
-    /// arg as a subcommand-bearing invocation.
+    /// "Bare" means: no positional subcommand anywhere in <paramref name="args"/>. We walk the
+    /// whole list, skipping over value-bearing flag tokens (a flag like <c>--root /repo</c>
+    /// consumes two tokens), and return <c>true</c> only if every token was consumed as a flag
+    /// or as a flag's value. Any positional (non-<c>-</c>) token that isn't sitting in a value
+    /// slot is a subcommand and disqualifies the bare-rewrite path.
+    ///
+    /// <para>
+    /// This composes correctly with bare invocations like <c>sourcegraph-mcp --root /repo</c>
+    /// (still bare → rewrite to <c>dashboard --root /repo</c>) and with subcommand-bearing
+    /// invocations like <c>sourcegraph-mcp --root /repo serve</c> (NOT bare → pass through to
+    /// <c>serve</c>). The set of value-bearing flag names mirrors what
+    /// <see cref="Cli.CommandLine.Parse"/> calls <c>RequireArg</c> / <c>RequirePositiveInt</c>
+    /// on — kept in sync manually because cross-class coupling would be heavier than the
+    /// duplication.
+    /// </para>
     /// </summary>
     internal static bool IsBare(string[] args)
     {
         if (args.Length == 0) return true;
-        // The CommandLine.Parse contract is: args[0] is either the subcommand OR `-h/--help`.
-        // Anything else (including known flags like `--root`) shows the user didn't pass a
-        // subcommand. To compose with `--root <path>` style bare invocation, the first arg must
-        // start with `-` AND the args must not contain anything that doesn't start with `-`
-        // or a value following a flag we know wants one.
-        return args[0].StartsWith('-');
+        for (var i = 0; i < args.Length; i++)
+        {
+            var token = args[i];
+            if (!token.StartsWith('-'))
+            {
+                // A positional we didn't consume as a flag's value → this is a subcommand.
+                return false;
+            }
+            // Flag. Consume one extra token if this is a value-bearing flag.
+            if (ValueBearingFlags.Contains(token))
+            {
+                i++; // skip the value
+            }
+        }
+        return true;
     }
+
+    /// <summary>
+    /// Flags that <see cref="Cli.CommandLine.Parse"/> consumes a positional value after.
+    /// Adding a new value-bearing flag in <c>CommandLine</c> requires a matching entry here
+    /// (or the bare-detection misclassifies its value as a subcommand). Boolean flags are not
+    /// listed.
+    /// </summary>
+    private static readonly HashSet<string> ValueBearingFlags = new(StringComparer.Ordinal)
+    {
+        "--solution", "-s",
+        "--db",
+        "--model",
+        "--root",
+        "--scope",
+        "--query-timeout-seconds",
+        "--query-row-limit",
+        "--install-mode",
+        "--client",
+        "--watch-interval",
+        "--activity-bytes",
+    };
 }

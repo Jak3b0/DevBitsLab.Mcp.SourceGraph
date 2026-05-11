@@ -64,8 +64,12 @@ internal static class StatusRenderer
     private static void RenderEnvironment(TextWriter writer, EnvironmentSurface env, StatusRenderOptions options)
     {
         writer.WriteLine("Environment");
+        // The glyph predicates here must mirror `StatusCli.EvaluateExit` for the same surface.
+        // An empty SDK string is a hard-fail there (`string.IsNullOrEmpty`), and a missing repo
+        // root directory is a hard-fail too — rendering either as `On` would let the human
+        // surface say "healthy" while the exit code reports failure.
         WriteRow(writer,
-            kind: env.DotnetSdkVersion is null ? StateGlyphKind.Skip : StateGlyphKind.On,
+            kind: string.IsNullOrEmpty(env.DotnetSdkVersion) ? StateGlyphKind.Skip : StateGlyphKind.On,
             key: ".NET SDK",
             value: env.DotnetSdkVersion ?? "(not detected)");
         WriteRow(writer,
@@ -73,7 +77,7 @@ internal static class StatusRenderer
             key: "git on PATH",
             value: env.GitOnPath ? "yes" : "no");
         WriteRow(writer,
-            kind: StateGlyphKind.On,
+            kind: Directory.Exists(env.RepoRootPath) ? StateGlyphKind.On : StateGlyphKind.Skip,
             key: "repo root",
             value: PathDisplay.Render(env.RepoRootPath, options.Root, options.Home));
         var solutionsRendered = env.SolutionFiles.Count == 0

@@ -26,7 +26,6 @@ internal static class JsonlTailReader
 
         byte[] buffer;
         bool startsAtFileBeginning;
-        bool endsAtNewline;
         try
         {
             // Open with FileShare.ReadWrite so a concurrent writer doesn't lock us out.
@@ -56,7 +55,6 @@ internal static class JsonlTailReader
                 // trailing partial line" invariant downstream.
                 Array.Resize(ref buffer, totalRead);
             }
-            endsAtNewline = buffer.Length > 0 && buffer[^1] == (byte)'\n';
         }
         catch (IOException) { return Array.Empty<JsonElement>(); }
         catch (UnauthorizedAccessException) { return Array.Empty<JsonElement>(); }
@@ -67,12 +65,12 @@ internal static class JsonlTailReader
 
         // Drop the partial first line when we seeked into the middle of the file.
         var first = startsAtFileBeginning ? 0 : 1;
-        // Drop the trailing element if it's a partial (mid-write) line. When the buffer ends
-        // with '\n', Split puts an empty string at the tail — that's harmless to skip too.
-        var last = endsAtNewline ? lines.Length - 1 : lines.Length - 1;
-        // Adjust: when endsAtNewline, the last entry is empty (between final '\n' and EOF).
-        // When !endsAtNewline, the last entry is a partial mid-write line that must be skipped.
-        // Both cases collapse to "skip lines[Length - 1]" by setting `last = lines.Length - 1`.
+        // Always drop the trailing element. Two cases, same outcome:
+        //   - buffer ended with `\n`: Split puts an empty string between the final '\n' and
+        //     EOF; skipping it costs nothing.
+        //   - buffer did not end with `\n`: the trailing element is a partial mid-write line we
+        //     MUST skip so a concurrent writer's torn line doesn't surface as garbage.
+        var last = lines.Length - 1;
         var result = new List<JsonElement>(Math.Max(0, last - first));
         for (var i = first; i < last; i++)
         {

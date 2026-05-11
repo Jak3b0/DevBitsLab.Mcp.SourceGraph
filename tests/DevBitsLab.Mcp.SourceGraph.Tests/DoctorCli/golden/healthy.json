@@ -27,19 +27,14 @@
     },
     {
       "name": "embedding-cache",
-      "status": "pass",
-      "message": "embedding model cache present at __CACHE_DIR__ (__SIZE__)"
+      "status": "warn",
+      "message": "embedding model cache absent at __CACHE_DIR__ \u2014 \u0060semantic_search\u0060 will return its disabled-message until model files are placed there (or pass --no-embeddings to silence)"
     },
     {
       "name": "db-writable",
       "status": "pass",
       "message": "per-scope DB dir writable: __ROOT__/.sourcegraph/scopes"
-    },
-    {
-      "name": "client-claude-desktop",
-      "status": "pass",
-      "message": "claude-desktop config wired (user: __HOME__/Library/Application Support/Claude/claude_desktop_config.json)"
     }
   ],
-  "exit_code": 0
+  "exit_code": 2
 }

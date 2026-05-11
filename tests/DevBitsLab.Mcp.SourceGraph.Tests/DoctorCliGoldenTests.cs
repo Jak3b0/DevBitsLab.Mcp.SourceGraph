@@ -1,6 +1,5 @@
 using System.Text.RegularExpressions;
 using DevBitsLab.Mcp.SourceGraph.Server.Cli;
-using FluentAssertions;
 using Xunit;
 
 namespace DevBitsLab.Mcp.SourceGraph.Tests;
@@ -18,20 +17,45 @@ namespace DevBitsLab.Mcp.SourceGraph.Tests;
 /// runners. Normalisation is intentionally narrow: only fields the doctor surface emits
 /// from <see cref="OnboardingDetector"/>'s detection or from <c>ModelStore.DefaultCacheDir</c>.
 /// </para>
+/// <para>
+/// To keep the goldens deterministic across hosts — a dev machine with an embedding cache
+/// and Claude Desktop installed produces different doctor output than a fresh CI runner —
+/// the fixture isolates <c>HOME</c> / <c>USERPROFILE</c> / <c>XDG_CACHE_HOME</c> /
+/// <c>LOCALAPPDATA</c> / <c>APPDATA</c> to temp directories for the duration of each test.
+/// Detection then sees a clean home with no cache and no client configs, which matches the
+/// shape committed in the golden files.
+/// </para>
 /// </summary>
 [Collection("CliConsole")]
 public sealed class DoctorCliGoldenTests : IDisposable
 {
     private readonly string _tempRoot;
+    private readonly string _isolatedHome;
+    private readonly string _isolatedCache;
     private readonly TextWriter _originalStdout;
     private readonly TextWriter _originalStderr;
     private readonly StringWriter _stdout = new();
     private readonly StringWriter _stderr = new();
+    private readonly Dictionary<string, string?> _savedEnv = new();
 
     public DoctorCliGoldenTests()
     {
         _tempRoot = Path.Join(Path.GetTempPath(), "sg-doctor-golden-" + Guid.NewGuid().ToString("N"));
+        _isolatedHome = Path.Join(Path.GetTempPath(), "sg-doctor-home-" + Guid.NewGuid().ToString("N"));
+        _isolatedCache = Path.Join(Path.GetTempPath(), "sg-doctor-cache-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_tempRoot);
+        Directory.CreateDirectory(_isolatedHome);
+        Directory.CreateDirectory(_isolatedCache);
+
+        // Isolate detection-relevant env vars so the golden output is independent of the dev
+        // machine's actual state (an existing embedding cache or a Claude Desktop install would
+        // otherwise leak into the doctor output and diverge from CI).
+        SaveAndSet("HOME", _isolatedHome);
+        SaveAndSet("USERPROFILE", _isolatedHome);
+        SaveAndSet("XDG_CACHE_HOME", _isolatedCache);
+        SaveAndSet("LOCALAPPDATA", _isolatedCache);
+        SaveAndSet("APPDATA", Path.Join(_isolatedHome, "AppData", "Roaming"));
+
         _originalStdout = Console.Out;
         _originalStderr = Console.Error;
         Console.SetOut(_stdout);
@@ -42,9 +66,25 @@ public sealed class DoctorCliGoldenTests : IDisposable
     {
         Console.SetOut(_originalStdout);
         Console.SetError(_originalStderr);
+        foreach (var (key, value) in _savedEnv)
+        {
+            Environment.SetEnvironmentVariable(key, value);
+        }
         try { Directory.Delete(_tempRoot, recursive: true); }
         catch (IOException) { /* best-effort cleanup */ }
         catch (UnauthorizedAccessException) { /* best-effort cleanup */ }
+        try { Directory.Delete(_isolatedHome, recursive: true); }
+        catch (IOException) { /* best-effort cleanup */ }
+        catch (UnauthorizedAccessException) { /* best-effort cleanup */ }
+        try { Directory.Delete(_isolatedCache, recursive: true); }
+        catch (IOException) { /* best-effort cleanup */ }
+        catch (UnauthorizedAccessException) { /* best-effort cleanup */ }
+    }
+
+    private void SaveAndSet(string name, string value)
+    {
+        _savedEnv[name] = Environment.GetEnvironmentVariable(name);
+        Environment.SetEnvironmentVariable(name, value);
     }
 
     [Fact]
@@ -53,7 +93,7 @@ public sealed class DoctorCliGoldenTests : IDisposable
         File.WriteAllText(Path.Join(_tempRoot, "Test.slnx"), "<Solution/>");
         var cli = CommandLine.Parse(new[] { "doctor", "--root", _tempRoot, "--json" });
         var rc = await DoctorCli.RunAsync(cli);
-        rc.Should().BeOneOf(0, 2);
+        Assert.Contains(rc, new[] { 0, 2 });
         var actual = Normalise(_stdout.ToString(), _tempRoot);
         AssertOrCreateGolden(actual, "healthy.json");
     }
@@ -68,7 +108,7 @@ public sealed class DoctorCliGoldenTests : IDisposable
         File.WriteAllText(Path.Join(_tempRoot, "Test.slnx"), "<Solution/>");
         var cli = CommandLine.Parse(new[] { "doctor", "--root", _tempRoot, "--json" });
         var rc = await DoctorCli.RunAsync(cli);
-        rc.Should().Be(1);
+        Assert.Equal(1, rc);
         var actual = Normalise(_stdout.ToString(), _tempRoot);
         AssertOrCreateGolden(actual, "partial.json");
     }
@@ -79,7 +119,7 @@ public sealed class DoctorCliGoldenTests : IDisposable
         File.WriteAllText(Path.Join(_tempRoot, "Test.slnx"), "<Solution/>");
         var cli = CommandLine.Parse(new[] { "doctor", "--root", _tempRoot });
         var rc = await DoctorCli.RunAsync(cli);
-        rc.Should().BeOneOf(0, 2);
+        Assert.Contains(rc, new[] { 0, 2 });
         var actual = Normalise(_stdout.ToString(), _tempRoot);
         AssertOrCreateGolden(actual, "healthy.human.txt");
     }
@@ -89,6 +129,14 @@ public sealed class DoctorCliGoldenTests : IDisposable
     /// If the golden file doesn't yet exist, write it and fail loudly so the change author knows
     /// they're seeding a new baseline rather than asserting against one.
     /// </summary>
+    /// <remarks>
+    /// We deliberately avoid FluentAssertions' <c>.Should().Be(expected, because)</c> here: its
+    /// failure-message formatter routes the failure text (which embeds <paramref name="actual"/>)
+    /// through <see cref="string.Format(string,object[])"/>, and JSON output's <c>{</c>/<c>}</c>
+    /// literals get interpreted as format placeholders, which throws before the real diff is
+    /// shown. xunit's <see cref="Assert.Equal(string,string)"/> formats no template — it just
+    /// reports the byte-diff position cleanly.
+    /// </remarks>
     private static void AssertOrCreateGolden(string actual, string name)
     {
         var goldenPath = LocateGoldenFile(name);
@@ -101,8 +149,7 @@ public sealed class DoctorCliGoldenTests : IDisposable
                 "Re-run the test to assert against the newly-seeded golden.");
         }
         var expected = File.ReadAllText(goldenPath);
-        actual.Should().Be(expected,
-            $"normalised doctor output should match golden {name}; update {goldenPath} only when intentionally changing the contract.");
+        Assert.Equal(expected, actual);
     }
 
     private static string LocateGoldenFile(string name)

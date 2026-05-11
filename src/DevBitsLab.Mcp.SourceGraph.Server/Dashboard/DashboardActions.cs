@@ -126,12 +126,16 @@ internal static class DashboardActions
             // In-place — gated (destructive)
             DashboardAction.RebuildScope => await RebuildScopeAsync(ctx, token).ConfigureAwait(false),
             DashboardAction.UnwireClient => await UnwireClientAsync(ctx, token).ConfigureAwait(false),
+            DashboardAction.RemoveScope => RemoveScope(ctx),
 
             // In-place — not gated
             DashboardAction.ReindexScope => await ReindexScopeAsync(ctx, token).ConfigureAwait(false),
             DashboardAction.WireClient => await WireClientAsync(ctx, token).ConfigureAwait(false),
             DashboardAction.EmbeddingsPull => await EmbeddingsPullAsync(ctx, token).ConfigureAwait(false),
             DashboardAction.EmbeddingsVerify => await EmbeddingsVerifyAsync(ctx, token).ConfigureAwait(false),
+
+            // Inline form — suspends Live in the caller, runs Spectre prompts inline.
+            DashboardAction.AddScope => AddScope(ctx),
 
             // Guided
             DashboardAction.InitGuided => await InitGuidedAsync(ctx, token).ConfigureAwait(false),
@@ -205,6 +209,76 @@ internal static class DashboardActions
             ctx.Freshness?.RequestImmediateRebuild();
             return Task.FromResult(result);
         }, ctx, token).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Remove the selected scope from <c>.sourcegraph.json</c>. Gated behind
+    /// <see cref="ConfirmModal"/>; the per-scope DB on disk is preserved (re-add cache semantics).
+    /// </summary>
+    private static DashboardActionResult RemoveScope(DashboardActionContext ctx)
+    {
+        if (ctx.Selection.FocusedSection != DashboardSection.Scopes)
+            return DashboardActionResult.Failure("remove requires the Scopes section selected");
+        if (ctx.Snapshot.Scopes.Count == 0)
+            return DashboardActionResult.Failure("no scope to remove");
+        if (ctx.Selection.RowIndex < 0 || ctx.Selection.RowIndex >= ctx.Snapshot.Scopes.Count)
+            return DashboardActionResult.Failure("selection out of range");
+        var scope = ctx.Snapshot.Scopes[ctx.Selection.RowIndex];
+
+        if (!ConfirmModal.Prompt(ctx.Console, "remove scope", scope.Name))
+            return DashboardActionResult.Success("remove cancelled");
+
+        ScopeConfig config;
+        try
+        {
+            config = ScopeConfigLoader.Load(ctx.Root);
+        }
+        catch (ScopeConfigException ex)
+        {
+            return DashboardActionResult.Failure($"failed to read .sourcegraph.json: {ex.Message}");
+        }
+        var result = Cli.ScopesCli.RemoveScopeFromConfig(ctx.Root, config, scope.Name);
+        if (!result.Ok)
+            return DashboardActionResult.Failure(result.Message);
+        ctx.Freshness?.RequestImmediateRebuild();
+        return DashboardActionResult.Success($"removed scope '{scope.Name}'");
+    }
+
+    /// <summary>
+    /// Show the inline add-scope form and persist the result. Runs synchronously inside the
+    /// outer-loop suspend window (Live region is exited before this is called, the same way
+    /// guided init/demo are dispatched). The form itself is the deliberate action — no
+    /// confirm-modal gate.
+    /// </summary>
+    private static DashboardActionResult AddScope(DashboardActionContext ctx)
+    {
+        if (ctx.Selection.FocusedSection != DashboardSection.Scopes)
+            return DashboardActionResult.Failure("add requires the Scopes section selected");
+
+        ScopeConfig config;
+        try
+        {
+            config = ScopeConfigLoader.Load(ctx.Root);
+        }
+        catch (ScopeConfigException ex)
+        {
+            return DashboardActionResult.Failure($"failed to read .sourcegraph.json: {ex.Message}");
+        }
+
+        var result = AddScopeForm.Prompt(ctx.Console, ctx.Root, config);
+        return result.Outcome switch
+        {
+            AddScopeForm.Outcome.Saved => TickAndReturn(ctx, DashboardActionResult.Success(result.Message)),
+            AddScopeForm.Outcome.Cancelled => DashboardActionResult.Info(result.Message),
+            AddScopeForm.Outcome.Failed => DashboardActionResult.Failure(result.Message),
+            _ => DashboardActionResult.Failure("unexpected add-scope form outcome"),
+        };
+
+        static DashboardActionResult TickAndReturn(DashboardActionContext ctx, DashboardActionResult r)
+        {
+            ctx.Freshness?.RequestImmediateRebuild();
+            return r;
+        }
     }
 
     // ────────────────────────────────────────────────────────────────────────────────

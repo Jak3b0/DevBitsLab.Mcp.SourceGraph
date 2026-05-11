@@ -8,9 +8,10 @@ using Xunit;
 namespace DevBitsLab.Mcp.SourceGraph.Tests.Cli.Rendering;
 
 /// <summary>
-/// Covers <see cref="InitRenderer"/>: phase-header presence, two-space indentation invariant
-/// under headers, glyph-presence in Apply rows, and the "omit when inputs empty" rule for
-/// <c>Pre-warm</c>.
+/// Covers <see cref="InitRenderer"/>: phase-header presence (◆-prefixed), indentation invariant
+/// under headers, dot-glyph presence in Apply rows, and the "omit when inputs empty" rule for
+/// <c>Pre-warm</c>. After the visual was unified with the dashboard the row tokens are
+/// <c>●</c>/<c>○</c>/<c>◐</c>/<c>✗</c>/<c>−</c>; the leaf <c>🌿</c> stays only on the banner.
 /// </summary>
 [Collection("CliConsole")]
 public sealed class InitRendererTests : IDisposable
@@ -59,18 +60,22 @@ public sealed class InitRendererTests : IDisposable
         using var sw = new StringWriter();
         InitRenderer.RenderEnvironment(sw, detection, root: "/tmp/myrepo", home: "/home/test");
         var lines = sw.ToString().Split('\n');
-        lines.Should().Contain(l => l.StartsWith("Environment"), "phase heading at left margin");
-        // Every non-empty, non-heading line under the phase is indented two spaces.
-        var phaseRows = lines.SkipWhile(l => !l.StartsWith("Environment")).Skip(1)
+        // The heading is the section-leader (◆) followed by the phase name.
+        lines.Should().Contain(l => l.Contains("Environment") && !l.StartsWith(" "),
+            "phase heading at left margin");
+        // Every non-empty, non-heading line under the phase is indented four spaces (matches the
+        // dashboard's detail-view body indent).
+        var phaseRows = lines.SkipWhile(l => !l.Contains("Environment") || l.StartsWith(" "))
+            .Skip(1)
             .TakeWhile(l => !string.IsNullOrWhiteSpace(l) && !IsPhaseHeading(l));
         foreach (var row in phaseRows)
         {
-            row.Should().StartWith("  ", $"row '{row}' must be indented two spaces under Environment");
+            row.Should().StartWith("    ", $"row '{row}' must be indented four spaces under Environment");
         }
     }
 
     [Fact]
-    public void RenderEnvironment_emitsLeafForPassRow_andWarnForMissingGit()
+    public void RenderEnvironment_emitsOkDotForPassRow_andWarnForMissingGit()
     {
         var detection = new OnboardingDetectionResult(
             DotnetSdkVersion: "10.0.100",
@@ -83,8 +88,27 @@ public sealed class InitRendererTests : IDisposable
         using var sw = new StringWriter();
         InitRenderer.RenderEnvironment(sw, detection, root: "/tmp/myrepo", home: "/home/test");
         var output = sw.ToString();
-        output.Should().Contain("🌿"); // pass rows
-        output.Should().Contain("⚠"); // git-missing row
+        // Leaves are reserved for the banner; row-status uses the dot vocabulary.
+        output.Should().NotContain("🌿");
+        output.Should().Contain("●"); // pass rows
+        output.Should().Contain("◐"); // git-missing row (warn → half-circle)
+    }
+
+    [Fact]
+    public void RenderEnvironment_emitsSectionLeader()
+    {
+        var detection = new OnboardingDetectionResult(
+            DotnetSdkVersion: "10.0.100",
+            GitOnPath: true,
+            RepoRootPath: "/tmp/myrepo",
+            SolutionFiles: new[] { "/tmp/myrepo/MyApp.slnx" },
+            SourceGraphConfigStatus: SourceGraphConfigStatus.Missing,
+            SourceGraphConfigError: null,
+            ClientConfigsDetected: Array.Empty<DetectedClientConfig>());
+        using var sw = new StringWriter();
+        InitRenderer.RenderEnvironment(sw, detection, root: "/tmp/myrepo", home: "/home/test");
+        // ◆ section leader precedes the heading in brand position.
+        sw.ToString().Should().Contain("◆ Environment");
     }
 
     [Fact]
@@ -98,11 +122,11 @@ public sealed class InitRendererTests : IDisposable
         using var sw = new StringWriter();
         InitRenderer.RenderClientsToWire(sw, rows);
         var lines = sw.ToString().Split('\n');
-        lines.Should().Contain(l => l.StartsWith("Clients to wire"));
+        lines.Should().Contain(l => l.Contains("Clients to wire") && !l.StartsWith(" "));
         var slugRows = lines.Where(l => l.Contains("claude-code") || l.Contains("cursor")).ToList();
-        slugRows.Should().AllSatisfy(l => l.Should().StartWith("  "), "rows under headings are 2-space indented");
-        // Default-on row has the leaf glyph; default-off has the middle-dot.
-        sw.ToString().Should().Contain("🌿").And.Contain("·");
+        slugRows.Should().AllSatisfy(l => l.Should().StartWith("    "), "rows under headings are 4-space indented");
+        // Default-on row has the ok-dot; default-off has the off-dot.
+        sw.ToString().Should().Contain("●").And.Contain("○");
     }
 
     [Fact]
@@ -114,7 +138,7 @@ public sealed class InitRendererTests : IDisposable
     }
 
     [Fact]
-    public void RenderApplyRow_insertEmitsLeafAndVerb()
+    public void RenderApplyRow_insertEmitsOkDotAndVerb()
     {
         using var sw = new StringWriter();
         InitRenderer.RenderApplyRow(sw,
@@ -125,11 +149,11 @@ public sealed class InitRendererTests : IDisposable
             root: "/tmp/myrepo",
             home: "/home/test");
         var line = sw.ToString();
-        line.Should().StartWith("  🌿 ").And.Contain("wrote").And.Contain("claude-code").And.Contain(".mcp.json");
+        line.Should().StartWith("    ● ").And.Contain("wrote").And.Contain("claude-code").And.Contain(".mcp.json");
     }
 
     [Fact]
-    public void RenderApplyRow_skipExistingDiffersEmitsXAndDescription()
+    public void RenderApplyRow_skipExistingDiffersEmitsFailDotAndDescription()
     {
         using var sw = new StringWriter();
         InitRenderer.RenderApplyRow(sw,
@@ -144,7 +168,7 @@ public sealed class InitRendererTests : IDisposable
     }
 
     [Fact]
-    public void RenderApplyRow_skipHasCommentsEmitsWarnAndDescription()
+    public void RenderApplyRow_skipHasCommentsEmitsWarnDotAndDescription()
     {
         using var sw = new StringWriter();
         InitRenderer.RenderApplyRow(sw,
@@ -155,11 +179,11 @@ public sealed class InitRendererTests : IDisposable
             root: "/tmp/myrepo",
             home: "/home/test");
         var output = sw.ToString();
-        output.Should().Contain("⚠ ").And.Contain("comments");
+        output.Should().Contain("◐ ").And.Contain("comments");
     }
 
     [Fact]
-    public void RenderApplyRow_skipUnsupportedEmitsEmDashAndDescription()
+    public void RenderApplyRow_skipUnsupportedEmitsDashDotAndDescription()
     {
         using var sw = new StringWriter();
         InitRenderer.RenderApplyRow(sw,
@@ -170,11 +194,11 @@ public sealed class InitRendererTests : IDisposable
             root: "/tmp/myrepo",
             home: "/home/test");
         var output = sw.ToString();
-        output.Should().Contain("— ").And.Contain("unsupported").And.Contain("user-scope Copilot");
+        output.Should().Contain("− ").And.Contain("unsupported").And.Contain("user-scope Copilot");
     }
 
     [Fact]
-    public void RenderApplyRow_noOpEmitsLeafAndNoChange()
+    public void RenderApplyRow_noOpEmitsOkDotAndNoChange()
     {
         using var sw = new StringWriter();
         InitRenderer.RenderApplyRow(sw,
@@ -185,15 +209,15 @@ public sealed class InitRendererTests : IDisposable
             root: "/tmp/myrepo",
             home: "/home/test");
         var line = sw.ToString();
-        line.Should().Contain("🌿").And.Contain("no change");
+        line.Should().Contain("●").And.Contain("no change");
     }
 
     [Fact]
-    public void RenderPreWarmSummary_exitZero_emitsLeafAndElapsed()
+    public void RenderPreWarmSummary_exitZero_emitsOkDotAndElapsed()
     {
         using var sw = new StringWriter();
         InitRenderer.RenderPreWarmSummary(sw, exitCode: 0, elapsed: TimeSpan.FromSeconds(11.4), solutionName: "MyApp.slnx");
-        sw.ToString().Should().Contain("🌿").And.Contain("indexed").And.Contain("MyApp.slnx").And.Contain("11.4");
+        sw.ToString().Should().Contain("●").And.Contain("indexed").And.Contain("MyApp.slnx").And.Contain("11.4");
     }
 
     [Fact]
@@ -201,7 +225,7 @@ public sealed class InitRendererTests : IDisposable
     {
         using var sw = new StringWriter();
         InitRenderer.RenderPreWarmSummary(sw, exitCode: 2, elapsed: TimeSpan.FromSeconds(7.0), solutionName: "MyApp.slnx");
-        sw.ToString().Should().Contain("⚠").And.Contain("pre-warm exit 2");
+        sw.ToString().Should().Contain("◐").And.Contain("pre-warm exit 2");
     }
 
     [Fact]
@@ -218,15 +242,43 @@ public sealed class InitRendererTests : IDisposable
         using var sw = new StringWriter();
         InitRenderer.RenderNext(sw, new[] { "Run sourcegraph-mcp demo", "Verify with usage_stats" });
         var lines = sw.ToString().Split('\n');
-        lines.Should().Contain(l => l.StartsWith("Next"));
-        var nextRows = lines.SkipWhile(l => !l.StartsWith("Next")).Skip(1).Where(l => !string.IsNullOrWhiteSpace(l));
-        nextRows.Should().AllSatisfy(l => l.Should().StartWith("  "));
+        lines.Should().Contain(l => l.Contains("Next") && !l.StartsWith(" "));
+        var nextRows = lines.SkipWhile(l => !l.Contains("Next") || l.StartsWith(" "))
+            .Skip(1)
+            .Where(l => !string.IsNullOrWhiteSpace(l));
+        nextRows.Should().AllSatisfy(l => l.Should().StartWith("    "));
+    }
+
+    [Fact]
+    public void NoLeaf_substitutesAsciiTokens_forRowsAndHeader()
+    {
+        // Under --no-leaf the dot vocabulary collapses to the bracketed ASCII tokens; the section
+        // leader downgrades to [*] so the header still leads with a 3-cell glyph.
+        LeafFormatter.Suppressed = true;
+        var detection = new OnboardingDetectionResult(
+            DotnetSdkVersion: "10.0.100",
+            GitOnPath: true,
+            RepoRootPath: "/tmp/myrepo",
+            SolutionFiles: new[] { "/tmp/myrepo/MyApp.slnx" },
+            SourceGraphConfigStatus: SourceGraphConfigStatus.Missing,
+            SourceGraphConfigError: null,
+            ClientConfigsDetected: Array.Empty<DetectedClientConfig>());
+        using var sw = new StringWriter();
+        InitRenderer.RenderEnvironment(sw, detection, root: "/tmp/myrepo", home: "/home/test");
+        var output = sw.ToString();
+        output.Should().NotContain("●").And.NotContain("◐").And.NotContain("✗").And.NotContain("○").And.NotContain("−");
+        output.Should().NotContain("◆");
+        // ASCII row tokens.
+        output.Should().Contain("[x] ");
+        // Header substitution.
+        output.Should().Contain("[*] Environment");
     }
 
     private static bool IsPhaseHeading(string line)
     {
-        // Heuristic: known phase names at left margin.
-        return line.StartsWith("Environment") || line.StartsWith("Clients to wire")
-            || line.StartsWith("Apply") || line.StartsWith("Pre-warm") || line.StartsWith("Next");
+        // Heuristic: known phase names appear at left margin (after ◆ or [*] section leader).
+        return (line.StartsWith("◆") || line.StartsWith("[*]"))
+            && (line.Contains("Environment") || line.Contains("Clients to wire")
+                || line.Contains("Apply") || line.Contains("Pre-warm") || line.Contains("Next"));
     }
 }

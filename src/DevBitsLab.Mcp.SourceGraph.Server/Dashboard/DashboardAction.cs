@@ -60,6 +60,19 @@ internal enum DashboardAction
     // In-place (gate via ConfirmModal)
     RebuildScope,
     UnwireClient,
+    /// <summary>
+    /// Remove the selected scope from <c>.sourcegraph.json</c>. The per-scope DB on disk is
+    /// preserved (re-add cache semantics, matching the CLI <c>scopes remove</c> behaviour).
+    /// Destructive — gated behind <see cref="ConfirmModal"/>.
+    /// </summary>
+    RemoveScope,
+
+    /// <summary>
+    /// Add a new scope to <c>.sourcegraph.json</c>. Triggers the dashboard's inline form
+    /// (scope name + solution path + isolated). Additive — no confirm modal; the form itself is
+    /// the deliberate action.
+    /// </summary>
+    AddScope,
 
     // Guided (suspend + subprocess)
     InitGuided,

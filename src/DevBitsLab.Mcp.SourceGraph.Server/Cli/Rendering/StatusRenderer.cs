@@ -1,4 +1,5 @@
 using DevBitsLab.Mcp.SourceGraph.Server.Cli.Snapshot;
+using DevBitsLab.Mcp.SourceGraph.Server.Dashboard;
 using DevBitsLab.Mcp.SourceGraph.Server.Tools;
 
 namespace DevBitsLab.Mcp.SourceGraph.Server.Cli.Rendering;
@@ -17,13 +18,14 @@ internal sealed record StatusRenderOptions(string Root, string? Home, bool NoCol
 /// <summary>
 /// Phase-headed prose renderer for <see cref="DashboardSnapshot"/>. Mirrors
 /// <see cref="InitRenderer"/>'s shape — five phases (Environment, Scopes, Clients, Embeddings,
-/// Recent activity), each emitting a heading at the left margin followed by two-space-indented
-/// rows. Glyph language and ASCII fallback live in <see cref="StateGlyph"/>; column alignment is
-/// preserved across emoji and ASCII modes by design.
+/// Recent activity), each emitting a <c>◆</c>-prefixed heading at the left margin followed by
+/// four-space-indented rows. Dot vocabulary and ASCII fallback live in
+/// <see cref="DashboardTheme"/>; column alignment is preserved across emoji and ASCII modes by
+/// design.
 /// </summary>
 internal static class StatusRenderer
 {
-    private const string Indent = "  ";
+    private const string Indent = "    ";
 
     // Column widths chosen to accommodate the longest label in each phase.
     private const int EnvKeyWidth = 18;
@@ -38,8 +40,8 @@ internal static class StatusRenderer
 
     /// <summary>
     /// Render <paramref name="snapshot"/> to <paramref name="writer"/> using the
-    /// state-glyph language. Header rows do not carry a glyph; under each header, rows are
-    /// indented two spaces and begin with the appropriate state glyph token.
+    /// dot vocabulary. Section-leader (<c>◆</c>) precedes each heading; rows under a heading
+    /// are indented four spaces and begin with the appropriate dot token.
     /// </summary>
     public static void RenderHuman(
         DashboardSnapshot snapshot,
@@ -63,36 +65,36 @@ internal static class StatusRenderer
 
     private static void RenderEnvironment(TextWriter writer, EnvironmentSurface env, StatusRenderOptions options)
     {
-        writer.WriteLine("Environment");
-        // The glyph predicates here must mirror `StatusCli.EvaluateExit` for the same surface.
+        writer.WriteLine(DashboardTheme.SectionHeaderPlain("Environment"));
+        // The dot predicates here must mirror `StatusCli.EvaluateExit` for the same surface.
         // An empty SDK string is a hard-fail there (`string.IsNullOrEmpty`), and a missing repo
-        // root directory is a hard-fail too — rendering either as `On` would let the human
+        // root directory is a hard-fail too — rendering either as `Ok` would let the human
         // surface say "healthy" while the exit code reports failure.
         WriteRow(writer,
-            kind: string.IsNullOrEmpty(env.DotnetSdkVersion) ? StateGlyphKind.Skip : StateGlyphKind.On,
+            kind: string.IsNullOrEmpty(env.DotnetSdkVersion) ? StatusKind.Fail : StatusKind.Ok,
             key: ".NET SDK",
             value: env.DotnetSdkVersion ?? "(not detected)");
         WriteRow(writer,
-            kind: env.GitOnPath ? StateGlyphKind.On : StateGlyphKind.Warn,
+            kind: env.GitOnPath ? StatusKind.Ok : StatusKind.Warn,
             key: "git on PATH",
             value: env.GitOnPath ? "yes" : "no");
         WriteRow(writer,
-            kind: Directory.Exists(env.RepoRootPath) ? StateGlyphKind.On : StateGlyphKind.Skip,
+            kind: Directory.Exists(env.RepoRootPath) ? StatusKind.Ok : StatusKind.Fail,
             key: "repo root",
             value: PathDisplay.Render(env.RepoRootPath, options.Root, options.Home));
         var solutionsRendered = env.SolutionFiles.Count == 0
             ? "(none)"
             : string.Join(", ", env.SolutionFiles.Select(p => PathDisplay.Render(p, options.Root, options.Home)));
         WriteRow(writer,
-            kind: env.SolutionFiles.Count == 0 ? StateGlyphKind.Warn : StateGlyphKind.On,
+            kind: env.SolutionFiles.Count == 0 ? StatusKind.Warn : StatusKind.Ok,
             key: "solutions",
             value: solutionsRendered);
         var (kind, value) = env.SourceGraphConfigStatus switch
         {
-            "valid" => (StateGlyphKind.On, "valid"),
-            "missing" => (StateGlyphKind.On, "missing (single-scope synth path)"),
-            "malformed" => (StateGlyphKind.Skip, $"MALFORMED — {env.SourceGraphConfigError}"),
-            _ => (StateGlyphKind.Warn, env.SourceGraphConfigStatus),
+            "valid" => (StatusKind.Ok, "valid"),
+            "missing" => (StatusKind.Ok, "missing (single-scope synth path)"),
+            "malformed" => (StatusKind.Fail, $"MALFORMED — {env.SourceGraphConfigError}"),
+            _ => (StatusKind.Warn, env.SourceGraphConfigStatus),
         };
         WriteRow(writer, kind, ".sourcegraph.json", value);
         writer.WriteLine();
@@ -100,10 +102,10 @@ internal static class StatusRenderer
 
     private static void RenderScopes(TextWriter writer, IReadOnlyList<ScopeRow> scopes)
     {
-        writer.WriteLine("Scopes");
+        writer.WriteLine(DashboardTheme.SectionHeaderPlain("Scopes"));
         if (scopes.Count == 0)
         {
-            writer.WriteLine($"{Indent}{StateGlyph.For(StateGlyphKind.Off)}(no scopes registered — run `sourcegraph-mcp serve` once to materialise)");
+            writer.WriteLine($"{Indent}{DashboardTheme.DotPlain(StatusKind.Off)}(no scopes registered — run `sourcegraph-mcp serve` once to materialise)");
             writer.WriteLine();
             return;
         }
@@ -111,13 +113,13 @@ internal static class StatusRenderer
         {
             var kind = s.Status switch
             {
-                "ok" => StateGlyphKind.On,
-                "partial" => StateGlyphKind.Warn,
-                "degraded" => StateGlyphKind.Skip,
-                "indexing" => StateGlyphKind.Warn,
-                _ => StateGlyphKind.Off,
+                "ok" => StatusKind.Ok,
+                "partial" => StatusKind.Warn,
+                "degraded" => StatusKind.Fail,
+                "indexing" => StatusKind.Warn,
+                _ => StatusKind.Off,
             };
-            var glyph = StateGlyph.For(kind);
+            var glyph = DashboardTheme.DotPlain(kind);
             var name = s.Name.PadRight(ScopeNameWidth);
             var status = s.Status.PadRight(ScopeStatusWidth);
             var ageLabel = s.LastIndexedAt.HasValue
@@ -129,15 +131,15 @@ internal static class StatusRenderer
             // names without consulting `scopes info`.
             if (s.Status == "partial" && s.FailedProjects.Count > 0)
             {
-                writer.WriteLine($"{Indent}    failed projects: {string.Join(", ", s.FailedProjects)}");
+                writer.WriteLine($"{Indent}      failed projects: {string.Join(", ", s.FailedProjects)}");
             }
             if (s.Status == "partial" && s.FailedFiles.Count > 0)
             {
-                writer.WriteLine($"{Indent}    failed files: {string.Join(", ", s.FailedFiles)}");
+                writer.WriteLine($"{Indent}      failed files: {string.Join(", ", s.FailedFiles)}");
             }
             if (s.Status == "degraded")
             {
-                writer.WriteLine($"{Indent}    recommended: run `repair_scope mode=rebuild`");
+                writer.WriteLine($"{Indent}      recommended: run `repair_scope mode=rebuild`");
             }
         }
         writer.WriteLine();
@@ -145,10 +147,10 @@ internal static class StatusRenderer
 
     private static void RenderClients(TextWriter writer, IReadOnlyList<ClientRow> clients, StatusRenderOptions options)
     {
-        writer.WriteLine("Clients");
+        writer.WriteLine(DashboardTheme.SectionHeaderPlain("Clients"));
         if (clients.Count == 0)
         {
-            writer.WriteLine($"{Indent}{StateGlyph.For(StateGlyphKind.Off)}(no client configs detected)");
+            writer.WriteLine($"{Indent}{DashboardTheme.DotPlain(StatusKind.Off)}(no client configs detected)");
             writer.WriteLine();
             return;
         }
@@ -157,11 +159,11 @@ internal static class StatusRenderer
         {
             var kind = c switch
             {
-                { ContainsSourcegraphEntry: true } => StateGlyphKind.On,
-                { Exists: true } => StateGlyphKind.Off,
-                _ => StateGlyphKind.Unsupported,
+                { ContainsSourcegraphEntry: true } => StatusKind.Ok,
+                { Exists: true } => StatusKind.Off,
+                _ => StatusKind.Unsupported,
             };
-            var glyph = StateGlyph.For(kind);
+            var glyph = DashboardTheme.DotPlain(kind);
             var slug = c.Slug.PadRight(ClientSlugWidth);
             var scope = c.Scope.PadRight(ClientScopeWidth);
             var pathDisplay = PathDisplay.Render(c.Path, options.Root, options.Home);
@@ -172,36 +174,36 @@ internal static class StatusRenderer
 
     private static void RenderEmbeddings(TextWriter writer, EmbeddingsSurface emb, StatusRenderOptions options)
     {
-        writer.WriteLine("Embeddings");
-        var kind = emb.CachePresent ? StateGlyphKind.On : StateGlyphKind.Warn;
+        writer.WriteLine(DashboardTheme.SectionHeaderPlain("Embeddings"));
+        var kind = emb.CachePresent ? StatusKind.Ok : StatusKind.Warn;
         var verifiedLabel = emb.Verified ? "verified" : "unverified";
         var sizeLabel = emb.CachePresent ? FormatBytes(emb.TotalBytes) : "(absent)";
-        writer.WriteLine($"{Indent}{StateGlyph.For(kind)}{emb.ModelId}   {sizeLabel}   {verifiedLabel}");
-        writer.WriteLine($"{Indent}    cache: {PathDisplay.Render(emb.CacheDir, options.Root, options.Home)}");
+        writer.WriteLine($"{Indent}{DashboardTheme.DotPlain(kind)}{emb.ModelId}   {sizeLabel}   {verifiedLabel}");
+        writer.WriteLine($"{Indent}      cache: {PathDisplay.Render(emb.CacheDir, options.Root, options.Home)}");
         writer.WriteLine();
     }
 
     private static void RenderRecentActivity(TextWriter writer, IReadOnlyList<ActivityEntry> activity)
     {
-        writer.WriteLine("Recent activity");
+        writer.WriteLine(DashboardTheme.SectionHeaderPlain("Recent activity"));
         if (activity.Count == 0)
         {
-            writer.WriteLine($"{Indent}{StateGlyph.For(StateGlyphKind.Off)}(no recorded activity)");
+            writer.WriteLine($"{Indent}{DashboardTheme.DotPlain(StatusKind.Off)}(no recorded activity)");
             return;
         }
         foreach (var a in activity)
         {
-            var kind = a.Ok ? StateGlyphKind.On : StateGlyphKind.Skip;
+            var kind = a.Ok ? StatusKind.Ok : StatusKind.Fail;
             var time = a.Ts.ToLocalTime().ToString("HH:mm:ss");
             var name = (a.Detail ?? a.Kind).PadRight(20);
             var scope = (a.Scope ?? "-").PadRight(12);
-            writer.WriteLine($"{Indent}{StateGlyph.For(kind)}{time}  {name} {scope} {a.Ms,5}ms");
+            writer.WriteLine($"{Indent}{DashboardTheme.DotPlain(kind)}{time}  {name} {scope} {a.Ms,5}ms");
         }
     }
 
-    private static void WriteRow(TextWriter writer, StateGlyphKind kind, string key, string value)
+    private static void WriteRow(TextWriter writer, StatusKind kind, string key, string value)
     {
-        var glyph = StateGlyph.For(kind);
+        var glyph = DashboardTheme.DotPlain(kind);
         var keyPadded = key.PadRight(EnvKeyWidth);
         writer.WriteLine($"{Indent}{glyph}{keyPadded} {value}");
     }

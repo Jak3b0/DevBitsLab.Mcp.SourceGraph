@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Reflection;
 using DevBitsLab.Mcp.SourceGraph.Server.Cli.ClientConfigWriters;
 using DevBitsLab.Mcp.SourceGraph.Server.Cli.Rendering;
+using DevBitsLab.Mcp.SourceGraph.Server.Dashboard;
 using DevBitsLab.Mcp.SourceGraph.Storage;
 
 namespace DevBitsLab.Mcp.SourceGraph.Server.Cli;
@@ -360,9 +361,7 @@ internal static class InitCli
         foreach (var id in Enum.GetValues<ClientId>())
         {
             var defaultYes = autoSelected.Contains(id) || defaults[id];
-            var glyph = defaultYes
-                ? Rendering.StateGlyph.For(Rendering.StateGlyphKind.On)
-                : Rendering.StateGlyph.For(Rendering.StateGlyphKind.Off);
+            var glyph = DashboardTheme.DotPlain(defaultYes ? StatusKind.Ok : StatusKind.Off);
             Console.WriteLine($"  {glyph}{id.ToSlug(),-15}");
             if (defaultYes) slugs.Add(id.ToSlug());
         }

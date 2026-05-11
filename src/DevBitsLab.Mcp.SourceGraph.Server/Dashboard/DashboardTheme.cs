@@ -3,10 +3,10 @@ using DevBitsLab.Mcp.SourceGraph.Server.Tools;
 namespace DevBitsLab.Mcp.SourceGraph.Server.Dashboard;
 
 /// <summary>
-/// Status kinds the new dashboard theme renders as colored dots. Distinct vocabulary from
-/// <see cref="Cli.Rendering.StateGlyphKind"/>: the leaf-based <c>StateGlyph</c> stays in
-/// service for <c>init</c> and <c>status</c>; the dashboard switched to dots + saturated colour
-/// for a denser, modern-CLI feel.
+/// Status kinds the dashboard theme renders as colored dots. This is the single vocabulary used
+/// across the dashboard, <c>init</c>, and <c>status</c>: the leaf <c>🌿</c> is reserved for the
+/// brand mark (title bar / MCP tool responses); every row-status position uses the dot
+/// vocabulary below.
 /// </summary>
 internal enum StatusKind
 {
@@ -29,10 +29,12 @@ internal enum StatusKind
 /// render hex.
 ///
 /// <para>
-/// The dot vocabulary (●/◐/✗/○/−) is independent from the leaf vocabulary (🌿) the older
-/// surfaces use. <see cref="LeafFormatter.Suppressed"/> activates an ASCII fallback that matches
-/// <see cref="Cli.Rendering.StateGlyph"/>'s bracket tokens so a user on <c>--no-leaf</c> sees a
-/// consistent token vocabulary across the dashboard, <c>init</c>, and <c>status</c>.
+/// This vocabulary (●/◐/✗/○/−) is shared by every surface — dashboard, <c>init</c>,
+/// <c>status</c> — so an operator who learns one mode immediately reads the others. The leaf
+/// <c>🌿</c> is reserved for the brand mark (title bars + MCP tool responses) and never appears
+/// in a row-status position. <see cref="LeafFormatter.Suppressed"/> activates an ASCII fallback
+/// (<c>[x]</c> / <c>[!]</c> / <c>[X]</c> / <c>[ ]</c> / <c>[-]</c>) so the no-leaf path produces
+/// the same token vocabulary everywhere.
 /// </para>
 /// </summary>
 internal static class DashboardTheme
@@ -76,9 +78,8 @@ internal static class DashboardTheme
     /// <summary>
     /// Render a status dot as Spectre <c>Markup</c>. Honours
     /// <see cref="LeafFormatter.Suppressed"/> — under <c>--no-leaf</c> the output is the same
-    /// ASCII bracket-token vocabulary <see cref="Cli.Rendering.StateGlyph"/> uses, with no colour
-    /// markup, so the dashboard, <c>init</c>, and <c>status</c> agree on a single fallback token
-    /// per state.
+    /// ASCII bracket-token vocabulary <see cref="DotPlain"/> emits, with no colour markup, so the
+    /// dashboard, <c>init</c>, and <c>status</c> agree on a single fallback token per state.
     /// </summary>
     public static string Dot(StatusKind kind)
     {
@@ -86,7 +87,7 @@ internal static class DashboardTheme
         {
             // Escape the brackets so Spectre's Markup parser doesn't read them as tag delimiters
             // when this string is wrapped in `new Markup(...)`. The token vocabulary
-            // ([x] / [!] / [X] / [ ] / [-]) matches StateGlyph's ASCII fallback.
+            // ([x] / [!] / [X] / [ ] / [-]) is the same shape DotPlain emits.
             return kind switch
             {
                 StatusKind.Ok => "[[x]]",
@@ -106,5 +107,52 @@ internal static class DashboardTheme
             StatusKind.Unsupported => $"[{Muted}]{DotUnsupported}[/]",
             _ => $"[{Muted}]{DotOff}[/]",
         };
+    }
+
+    /// <summary>
+    /// Render a status dot as a plain-text token for surfaces that write straight to a
+    /// <see cref="System.IO.TextWriter"/> (e.g. <c>init</c>, <c>status</c>). Returns the dot
+    /// glyph followed by a single space so the token occupies a stable three-cell column. Under
+    /// <see cref="LeafFormatter.Suppressed"/> the bracketed ASCII fallback is returned instead —
+    /// same vocabulary as the Markup-bearing <see cref="Dot(StatusKind)"/>, but without Spectre
+    /// escape-doubling and without colour markup so the bytes are safe to pipe / capture / diff.
+    /// </summary>
+    public static string DotPlain(StatusKind kind)
+    {
+        if (LeafFormatter.Suppressed)
+        {
+            return kind switch
+            {
+                StatusKind.Ok => "[x] ",
+                StatusKind.Warn => "[!] ",
+                StatusKind.Fail => "[X] ",
+                StatusKind.Off => "[ ] ",
+                StatusKind.Unsupported => "[-] ",
+                _ => "[ ] ",
+            };
+        }
+        return kind switch
+        {
+            StatusKind.Ok => $"{DotOn} ",
+            StatusKind.Warn => $"{DotWarn} ",
+            StatusKind.Fail => $"{DotFail} ",
+            StatusKind.Off => $"{DotOff} ",
+            StatusKind.Unsupported => $"{DotUnsupported} ",
+            _ => $"{DotOff} ",
+        };
+    }
+
+    /// <summary>
+    /// Render a section header like <c>"◆ Environment"</c> for plain-text writers. The leader
+    /// glyph is the same <see cref="SectionLeader"/> the dashboard's Spectre layer uses for its
+    /// detail-view section headers; here we emit just the glyph + space + name with no ANSI
+    /// colour codes so the bytes are pipe / test-capture safe. Under
+    /// <see cref="LeafFormatter.Suppressed"/> the leader downgrades to a bracketed ASCII token
+    /// (<c>"[*]"</c>) keeping the three-cell column width consistent with the dot tokens.
+    /// </summary>
+    public static string SectionHeaderPlain(string name)
+    {
+        var leader = LeafFormatter.Suppressed ? "[*]" : SectionLeader;
+        return $"{leader} {name}";
     }
 }

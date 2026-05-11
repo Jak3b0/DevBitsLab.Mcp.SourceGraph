@@ -266,6 +266,10 @@ internal static class DashboardCli
                 case DashboardAction.DemoGuided:
                 case DashboardAction.OpenLogInPager:
                 case DashboardAction.OpenConfigInEditor:
+                case DashboardAction.AddScope:
+                    // AddScope drops out of Live because the inline form uses Spectre
+                    // TextPrompt<T>, which fights Live region's terminal management. The same
+                    // outer-loop suspend/resume pattern that init / demo use applies.
                     return false; // guided: must suspend Live
                 default:
                     return true;
@@ -524,7 +528,8 @@ internal static class DashboardViewGating
         DashboardAction.OpenRecentActivity or DashboardAction.OpenEnvironment => true,
 
         // Scopes-only
-        DashboardAction.ReindexScope or DashboardAction.RebuildScope => view == DashboardView.Scopes,
+        DashboardAction.ReindexScope or DashboardAction.RebuildScope or
+        DashboardAction.AddScope or DashboardAction.RemoveScope => view == DashboardView.Scopes,
         // Clients-only
         DashboardAction.WireClient or DashboardAction.UnwireClient => view == DashboardView.Clients,
         // Embeddings-only

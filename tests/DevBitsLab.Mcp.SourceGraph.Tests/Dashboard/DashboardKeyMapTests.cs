@@ -39,6 +39,8 @@ public sealed class DashboardKeyMapTests
         // Section actions — keymap is view-agnostic; dispatcher gates per-view.
         yield return new object[] { "r reindex", ConsoleKey.R, 'r', (int)ConsoleModifiers.None, (int)DashboardAction.ReindexScope };
         yield return new object[] { "R rebuild", ConsoleKey.R, 'R', (int)ConsoleModifiers.Shift, (int)DashboardAction.RebuildScope };
+        yield return new object[] { "N new scope", ConsoleKey.N, 'N', (int)ConsoleModifiers.Shift, (int)DashboardAction.AddScope };
+        yield return new object[] { "D delete scope", ConsoleKey.D, 'D', (int)ConsoleModifiers.Shift, (int)DashboardAction.RemoveScope };
         yield return new object[] { "w wire", ConsoleKey.W, 'w', (int)ConsoleModifiers.None, (int)DashboardAction.WireClient };
         yield return new object[] { "u unwire", ConsoleKey.U, 'u', (int)ConsoleModifiers.None, (int)DashboardAction.UnwireClient };
         yield return new object[] { "p pull", ConsoleKey.P, 'p', (int)ConsoleModifiers.None, (int)DashboardAction.EmbeddingsPull };
@@ -134,6 +136,8 @@ public sealed class DashboardKeyMapTests
         var hint = DashboardKeyMap.For(DashboardView.Scopes);
         hint.Should().Contain("reindex");
         hint.Should().Contain("rebuild");
+        hint.Should().Contain("new");      // [N] new scope
+        hint.Should().Contain("delete");   // [D] delete scope
         hint.Should().Contain("home");
     }
 
@@ -165,6 +169,8 @@ public sealed class DashboardKeyMapTests
             .Contain("Navigation")
             .And.Contain("Reindex")
             .And.Contain("Rebuild")
+            .And.Contain("New scope")
+            .And.Contain("Delete selected scope")
             .And.Contain("Wire")
             .And.Contain("Unwire")
             .And.Contain("Embeddings pull")

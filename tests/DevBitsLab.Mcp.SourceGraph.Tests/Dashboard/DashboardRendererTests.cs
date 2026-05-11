@@ -299,7 +299,7 @@ public sealed class DashboardRendererTests : IDisposable
         // Environment detail has short row content and the dot survives intact.
         var output = RenderToString(_ => DashboardRenderer.BuildEnvironmentDetail(Healthy(), DefaultOptions()));
         output.Should().NotContain("🌿");
-        // ASCII fallback tokens used by StateGlyph in --no-leaf mode.
+        // ASCII fallback tokens used by DashboardTheme in --no-leaf mode.
         output.Should().MatchRegex(@"\[[ xX!\-]\]");
     }
 

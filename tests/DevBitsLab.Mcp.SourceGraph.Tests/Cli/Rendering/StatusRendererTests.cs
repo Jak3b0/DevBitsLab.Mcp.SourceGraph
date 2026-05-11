@@ -7,9 +7,10 @@ using Xunit;
 namespace DevBitsLab.Mcp.SourceGraph.Tests.Cli.Rendering;
 
 /// <summary>
-/// Tests for <see cref="StatusRenderer"/>: phase headings, two-space indentation invariant under
-/// each heading, the state-glyph language in both emoji and ASCII modes, and the per-row mappings
-/// (partial scope → warn glyph + hanging detail; degraded scope → skip glyph + repair hint).
+/// Tests for <see cref="StatusRenderer"/>: ◆-prefixed phase headings, four-space indentation
+/// invariant under each heading, the dot vocabulary in both emoji and ASCII modes, and the
+/// per-row mappings (partial scope → warn dot + hanging detail; degraded scope → fail dot +
+/// repair hint).
 /// </summary>
 [Collection("CliConsole")]
 public sealed class StatusRendererTests : IDisposable
@@ -34,30 +35,36 @@ public sealed class StatusRendererTests : IDisposable
         var output = Render(snap);
         output.Should().Contain("Environment").And.Contain("Scopes").And.Contain("Clients")
             .And.Contain("Embeddings").And.Contain("Recent activity");
+        // Section leader ◆ should appear on each heading.
+        output.Should().Contain("◆ Environment");
+        output.Should().Contain("◆ Scopes");
+        output.Should().Contain("◆ Clients");
+        output.Should().Contain("◆ Embeddings");
+        output.Should().Contain("◆ Recent activity");
     }
 
     [Fact]
-    public void Render_eachRow_underHeading_isTwoSpaceIndented()
+    public void Render_eachRow_underHeading_isFourSpaceIndented()
     {
         var snap = Healthy();
         var output = Render(snap);
-        // Spot-check: after the "Environment" heading line, the next non-blank line must start
-        // with two spaces. Same for each phase.
+        // Spot-check: after each phase's "◆ <name>" line, the next non-blank line must start
+        // with four spaces (the body indent under the section leader).
         var lines = output.Split('\n');
         var headings = new[] { "Environment", "Scopes", "Clients", "Embeddings", "Recent activity" };
         foreach (var heading in headings)
         {
-            var idx = Array.FindIndex(lines, l => l.TrimEnd() == heading);
-            idx.Should().BeGreaterThan(-1, $"phase heading '{heading}' should appear");
+            var idx = Array.FindIndex(lines, l => l.TrimEnd() == $"◆ {heading}");
+            idx.Should().BeGreaterThan(-1, $"phase heading '◆ {heading}' should appear");
             // Find the next non-blank line after the heading.
             var next = lines.Skip(idx + 1).FirstOrDefault(l => !string.IsNullOrWhiteSpace(l));
             next.Should().NotBeNull();
-            next!.Should().StartWith("  ", $"rows under '{heading}' should be two-space indented");
+            next!.Should().StartWith("    ", $"rows under '◆ {heading}' should be four-space indented");
         }
     }
 
     [Fact]
-    public void Render_partialScope_emitsWarnGlyphAndFailedProjects()
+    public void Render_partialScope_emitsWarnDotAndFailedProjects()
     {
         var snap = Healthy() with
         {
@@ -71,15 +78,15 @@ public sealed class StatusRendererTests : IDisposable
             },
         };
         var output = Render(snap);
-        // Emoji-mode: ⚠ for partial.
-        output.Should().Contain("⚠");
+        // Emoji-mode: ◐ (half-circle / warn) for partial.
+        output.Should().Contain("◐");
         output.Should().Contain("backend");
         output.Should().Contain("Legacy.csproj");
         output.Should().Contain("Old.csproj");
     }
 
     [Fact]
-    public void Render_degradedScope_emitsSkipGlyphAndRepairHint()
+    public void Render_degradedScope_emitsFailDotAndRepairHint()
     {
         var snap = Healthy() with
         {
@@ -101,9 +108,14 @@ public sealed class StatusRendererTests : IDisposable
         var snap = Healthy();
         var output = Render(snap);
         output.Should().NotContain("🌿");
-        // Three-cell-wide ASCII tokens: [x] / [ ] / [!] / [X] / [-]
+        // None of the emoji dot characters should appear.
+        output.Should().NotContain("●").And.NotContain("○").And.NotContain("◐").And.NotContain("✗").And.NotContain("−");
+        // ◆ section leader downgrades to [*].
+        output.Should().NotContain("◆");
+        output.Should().Contain("[*] Environment");
+        // Three-cell-wide ASCII row tokens: [x] / [ ] / [!] / [X] / [-]
         output.Should().MatchRegex(@"\[[ xX!\-]\] ");
-        // Phase headings render identically in both modes.
+        // Phase headings render the same name in both modes.
         output.Should().Contain("Environment").And.Contain("Scopes");
     }
 
@@ -124,7 +136,7 @@ public sealed class StatusRendererTests : IDisposable
     }
 
     [Fact]
-    public void Render_clientWithEntry_emitsLeafGlyph()
+    public void Render_clientWithEntry_emitsOkDot()
     {
         var snap = Healthy() with
         {
@@ -137,12 +149,12 @@ public sealed class StatusRendererTests : IDisposable
         };
         var output = Render(snap);
         var lines = output.Split('\n');
-        // claude-code with entry → 🌿.
-        lines.Should().Contain(l => l.Contains("claude-code") && l.Contains("🌿"));
-        // cursor exists but no entry → · (off).
-        lines.Should().Contain(l => l.Contains("cursor") && l.Contains("·"));
-        // continue absent → — (unsupported).
-        lines.Should().Contain(l => l.Contains("continue") && l.Contains("—"));
+        // claude-code with entry → ● (ok).
+        lines.Should().Contain(l => l.Contains("claude-code") && l.Contains("●"));
+        // cursor exists but no entry → ○ (off).
+        lines.Should().Contain(l => l.Contains("cursor") && l.Contains("○"));
+        // continue absent → − (unsupported).
+        lines.Should().Contain(l => l.Contains("continue") && l.Contains("−"));
     }
 
     [Fact]

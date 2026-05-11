@@ -397,6 +397,186 @@ public sealed class DashboardActionsTests : IDisposable
     }
 
     // ────────────────────────────────────────────────────────────────────────────────
+    // Scope management (Add / Remove) — dashboard's `N` and `D` actions
+    // ────────────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task RemoveScope_userDeclinesConfirm_doesNotMutateConfig()
+    {
+        var sgPath = Path.Join(_tempRoot, ".sourcegraph.json");
+        var slnPath = Path.Join(_tempRoot, "x.slnx");
+        File.WriteAllText(slnPath, "<Solution />");
+        File.WriteAllText(sgPath, """
+            {
+              "scopes": [
+                { "name": "default", "solutions": ["x.slnx"] }
+              ]
+            }
+            """);
+        var console = new Spectre.Console.Testing.TestConsole();
+        console.Input.PushTextWithEnter("n"); // decline confirm
+        var ctx = new DashboardActionContext(
+            Snapshot: MakeSnapshot(),
+            Selection: new DashboardSelection(DashboardSection.Scopes, 0),
+            Console: console,
+            Freshness: null,
+            Root: _tempRoot,
+            Policy: DashboardActionPolicy.Default);
+        var before = File.ReadAllText(sgPath);
+        var result = await DashboardActions.RunAsync(DashboardAction.RemoveScope, ctx);
+        result.Ok.Should().BeTrue();
+        result.Message.Should().Contain("cancelled");
+        File.ReadAllText(sgPath).Should().Be(before, "config is unchanged when user declines confirm");
+    }
+
+    [Fact]
+    public async Task RemoveScope_userConfirms_removesFromConfig()
+    {
+        var sgPath = Path.Join(_tempRoot, ".sourcegraph.json");
+        var slnPath = Path.Join(_tempRoot, "x.slnx");
+        File.WriteAllText(slnPath, "<Solution />");
+        File.WriteAllText(sgPath, """
+            {
+              "scopes": [
+                { "name": "default", "solutions": ["x.slnx"] },
+                { "name": "other", "solutions": ["x.slnx"] }
+              ]
+            }
+            """);
+        var console = new Spectre.Console.Testing.TestConsole();
+        console.Input.PushTextWithEnter("y"); // confirm
+        var ctx = new DashboardActionContext(
+            Snapshot: MakeSnapshot(),
+            Selection: new DashboardSelection(DashboardSection.Scopes, 0),
+            Console: console,
+            Freshness: null,
+            Root: _tempRoot,
+            Policy: DashboardActionPolicy.Default);
+        var result = await DashboardActions.RunAsync(DashboardAction.RemoveScope, ctx);
+        result.Ok.Should().BeTrue();
+        var after = File.ReadAllText(sgPath);
+        after.Should().NotContain("\"name\": \"default\"");
+        after.Should().Contain("\"name\": \"other\"", "other scopes are preserved");
+    }
+
+    [Fact]
+    public async Task RemoveScope_wrongSection_returnsFailure()
+    {
+        var ctx = new DashboardActionContext(
+            Snapshot: MakeSnapshot(),
+            Selection: new DashboardSelection(DashboardSection.Clients, 0),
+            Console: new Spectre.Console.Testing.TestConsole(),
+            Freshness: null,
+            Root: _tempRoot,
+            Policy: DashboardActionPolicy.Default);
+        var result = await DashboardActions.RunAsync(DashboardAction.RemoveScope, ctx);
+        result.Ok.Should().BeFalse();
+        result.Message.Should().Contain("Scopes");
+    }
+
+    [Fact]
+    public void AddScopeToConfig_validInput_persistsScope()
+    {
+        var sgPath = Path.Join(_tempRoot, ".sourcegraph.json");
+        var slnPath = Path.Join(_tempRoot, "x.slnx");
+        File.WriteAllText(slnPath, "<Solution />");
+        var config = DevBitsLab.Mcp.SourceGraph.Storage.ScopeConfigLoader.Synthesise(
+            _tempRoot,
+            new[] { slnPath });
+        var result = DevBitsLab.Mcp.SourceGraph.Server.Cli.ScopesCli.AddScopeToConfig(
+            _tempRoot, config, "frontend", slnPath, isolated: false);
+        result.Ok.Should().BeTrue();
+        File.Exists(sgPath).Should().BeTrue();
+        File.ReadAllText(sgPath).Should().Contain("frontend");
+    }
+
+    [Fact]
+    public void AddScopeToConfig_invalidName_returnsFailure()
+    {
+        var slnPath = Path.Join(_tempRoot, "x.slnx");
+        File.WriteAllText(slnPath, "<Solution />");
+        var config = DevBitsLab.Mcp.SourceGraph.Storage.ScopeConfigLoader.Synthesise(
+            _tempRoot,
+            new[] { slnPath });
+        // Capital letters violate the kebab-case slug rule.
+        var result = DevBitsLab.Mcp.SourceGraph.Server.Cli.ScopesCli.AddScopeToConfig(
+            _tempRoot, config, "Frontend", slnPath, isolated: false);
+        result.Ok.Should().BeFalse();
+        result.ExitCode.Should().Be(2);
+        result.Message.Should().Contain("Invalid");
+    }
+
+    [Fact]
+    public void AddScopeToConfig_duplicateName_returnsFailure()
+    {
+        var slnPath = Path.Join(_tempRoot, "x.slnx");
+        File.WriteAllText(slnPath, "<Solution />");
+        var config = DevBitsLab.Mcp.SourceGraph.Storage.ScopeConfigLoader.Synthesise(
+            _tempRoot,
+            new[] { slnPath });
+        // The synthesised default config already has a scope named "default".
+        var result = DevBitsLab.Mcp.SourceGraph.Server.Cli.ScopesCli.AddScopeToConfig(
+            _tempRoot, config, "default", slnPath, isolated: false);
+        result.Ok.Should().BeFalse();
+        result.ExitCode.Should().Be(1);
+        result.Message.Should().Contain("already exists");
+    }
+
+    [Fact]
+    public void RemoveScopeFromConfig_missingName_returnsFailure()
+    {
+        var slnPath = Path.Join(_tempRoot, "x.slnx");
+        File.WriteAllText(slnPath, "<Solution />");
+        var config = DevBitsLab.Mcp.SourceGraph.Storage.ScopeConfigLoader.Synthesise(
+            _tempRoot,
+            new[] { slnPath });
+        var result = DevBitsLab.Mcp.SourceGraph.Server.Cli.ScopesCli.RemoveScopeFromConfig(
+            _tempRoot, config, "nonexistent");
+        result.Ok.Should().BeFalse();
+        result.ExitCode.Should().Be(1);
+        result.Message.Should().Contain("not found");
+    }
+
+    [Fact]
+    public void RemoveScopeFromConfig_existing_persistsRemoval()
+    {
+        var sgPath = Path.Join(_tempRoot, ".sourcegraph.json");
+        var slnPath = Path.Join(_tempRoot, "x.slnx");
+        File.WriteAllText(slnPath, "<Solution />");
+        File.WriteAllText(sgPath, """
+            {
+              "scopes": [
+                { "name": "frontend", "solutions": ["x.slnx"] },
+                { "name": "backend", "solutions": ["x.slnx"] }
+              ]
+            }
+            """);
+        var config = DevBitsLab.Mcp.SourceGraph.Storage.ScopeConfigLoader.Load(_tempRoot);
+        var result = DevBitsLab.Mcp.SourceGraph.Server.Cli.ScopesCli.RemoveScopeFromConfig(
+            _tempRoot, config, "frontend");
+        result.Ok.Should().BeTrue();
+        var after = File.ReadAllText(sgPath);
+        after.Should().NotContain("\"name\": \"frontend\"");
+        after.Should().Contain("\"name\": \"backend\"");
+    }
+
+    [Fact]
+    public void DashboardViewGating_AddScope_isScopesOnly()
+    {
+        DashboardViewGating.IsAllowed(DashboardAction.AddScope, DashboardView.Scopes).Should().BeTrue();
+        DashboardViewGating.IsAllowed(DashboardAction.AddScope, DashboardView.Clients).Should().BeFalse();
+        DashboardViewGating.IsAllowed(DashboardAction.AddScope, DashboardView.Home).Should().BeFalse();
+    }
+
+    [Fact]
+    public void DashboardViewGating_RemoveScope_isScopesOnly()
+    {
+        DashboardViewGating.IsAllowed(DashboardAction.RemoveScope, DashboardView.Scopes).Should().BeTrue();
+        DashboardViewGating.IsAllowed(DashboardAction.RemoveScope, DashboardView.Clients).Should().BeFalse();
+        DashboardViewGating.IsAllowed(DashboardAction.RemoveScope, DashboardView.Home).Should().BeFalse();
+    }
+
+    // ────────────────────────────────────────────────────────────────────────────────
     // Helpers
     // ────────────────────────────────────────────────────────────────────────────────
 

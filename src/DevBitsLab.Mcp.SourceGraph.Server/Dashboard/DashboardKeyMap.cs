@@ -87,6 +87,10 @@ internal static class DashboardKeyMap
             // In-place (gate)
             'R' => DashboardAction.RebuildScope,
             'u' => DashboardAction.UnwireClient,
+            'D' => DashboardAction.RemoveScope,
+
+            // Inline form (additive — no confirm modal; the form is the deliberate action)
+            'N' => DashboardAction.AddScope,
 
             // Guided
             'i' => DashboardAction.InitGuided,
@@ -118,7 +122,7 @@ internal static class DashboardKeyMap
                 DashboardView.Home =>
                     "[Up/Dn] select   [Enter] open   1-5 jump   [?] help   [q] quit",
                 DashboardView.Scopes =>
-                    "[Up/Dn] row   [Enter]/[r] reindex   [R] rebuild   [d] demo   [Esc] home   [q] quit",
+                    "[Up/Dn] row   [Enter]/[r] reindex   [R] rebuild   [N] new   [D] delete   [d] demo   [Esc] home   [q] quit",
                 DashboardView.Clients =>
                     "[Up/Dn] row   [Enter] toggle wire   [w] wire   [u] unwire   [Esc] home   [q] quit",
                 DashboardView.Embeddings =>
@@ -138,7 +142,7 @@ internal static class DashboardKeyMap
             DashboardView.Home =>
                 $"[{b}]↑↓[/] [{m}]select[/]   [{b}]⏎[/] [{m}]open[/]   [{b}]1-5[/] [{m}]jump[/]   [{b}]?[/] [{m}]help[/]   [{b}]q[/] [{m}]quit[/]",
             DashboardView.Scopes =>
-                $"[{b}]↑↓[/] [{m}]row[/]   [{b}]⏎/r[/] [{m}]reindex[/]   [{b}]R[/] [{m}]rebuild[/]   [{b}]d[/] [{m}]demo[/]   [{b}]Esc[/] [{m}]home[/]   [{b}]q[/] [{m}]quit[/]",
+                $"[{b}]↑↓[/] [{m}]row[/]   [{b}]⏎/r[/] [{m}]reindex[/]   [{b}]R[/] [{m}]rebuild[/]   [{b}]N[/] [{m}]new[/]   [{b}]D[/] [{m}]delete[/]   [{b}]d[/] [{m}]demo[/]   [{b}]Esc[/] [{m}]home[/]   [{b}]q[/] [{m}]quit[/]",
             DashboardView.Clients =>
                 $"[{b}]↑↓[/] [{m}]row[/]   [{b}]⏎[/] [{m}]toggle wire[/]   [{b}]w[/] [{m}]wire[/]   [{b}]u[/] [{m}]unwire[/]   [{b}]Esc[/] [{m}]home[/]   [{b}]q[/] [{m}]quit[/]",
             DashboardView.Embeddings =>
@@ -168,6 +172,8 @@ internal static class DashboardKeyMap
         Section actions (only effective in the matching detail view):
           r               Reindex selected scope (reconcile_drift)
           R               Rebuild selected scope (CONFIRM)
+          N               New scope (inline form: name + solution path + isolated)
+          D               Delete selected scope (CONFIRM)
           w               Wire missing client
           u               Unwire selected client (CONFIRM)
           p               Embeddings pull (active model)

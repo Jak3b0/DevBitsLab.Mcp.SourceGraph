@@ -100,7 +100,9 @@ public sealed class FreshnessSourceTests : IDisposable
         fs.Start();
         await WaitForAsync(() => source.Count >= 1, TimeSpan.FromMilliseconds(500));
         var baseline = source.Count;
-        // Outside the 1-second window from Start; immediate rebuild should fire.
+        // 50ms is well inside the 1s coalescing window — the point of this test is that
+        // `RequestImmediateRebuild()` deliberately bypasses that window. A coalesced rebuild
+        // wouldn't fire for another ~950ms; the immediate path runs now.
         await Task.Delay(50);
         fs.RequestImmediateRebuild();
         await WaitForAsync(() => source.Count > baseline, TimeSpan.FromSeconds(2));

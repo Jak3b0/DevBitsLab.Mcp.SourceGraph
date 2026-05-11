@@ -103,18 +103,22 @@ internal static class StatusCli
         {
             while (!cts.IsCancellationRequested)
             {
-                if (!first)
-                {
-                    // Cursor home + clear to end. Stable on every terminal that honours ANSI.
-                    Console.Write("\x1b[H\x1b[J");
-                }
-                first = false;
-                var snap = await SnapshotBuilder.BuildAsync(root, options, cts.Token).ConfigureAwait(false);
-                snap = snap with { ExitCode = EvaluateExit(snap) };
-                RenderOnce(snap, cli, root, home);
-                lastExit = snap.ExitCode;
+                // Wrap the whole loop body so an OperationCanceledException from either
+                // `BuildAsync` or `Task.Delay` (both honour `cts.Token`) is treated as a
+                // clean Ctrl+C exit. Without this, a Ctrl+C arriving mid-build would
+                // propagate out and `--watch` would return non-zero with a stack trace.
                 try
                 {
+                    if (!first)
+                    {
+                        // Cursor home + clear to end. Stable on every terminal that honours ANSI.
+                        Console.Write("\x1b[H\x1b[J");
+                    }
+                    first = false;
+                    var snap = await SnapshotBuilder.BuildAsync(root, options, cts.Token).ConfigureAwait(false);
+                    snap = snap with { ExitCode = EvaluateExit(snap) };
+                    RenderOnce(snap, cli, root, home);
+                    lastExit = snap.ExitCode;
                     await Task.Delay(interval, cts.Token).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) { /* clean exit on Ctrl+C */ }

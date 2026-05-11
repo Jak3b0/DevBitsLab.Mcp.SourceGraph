@@ -13,16 +13,33 @@ namespace DevBitsLab.Mcp.SourceGraph.Server.Cli.Snapshot;
 internal static class JsonlTailReader
 {
     /// <summary>
+    /// Upper bound on the tail-window size, regardless of what the caller asked for. The
+    /// JSONL log is local-disk-only and read once per snapshot rebuild — there's no
+    /// legitimate need to materialise more than this in one call. Caps the allocation so a
+    /// pathological <c>--activity-bytes</c> value (whether mis-typed or hostile) can't OOM
+    /// the <c>status</c>/<c>dashboard</c> process.
+    /// </summary>
+    private const int MaxBytesFromEnd = 16 * 1024 * 1024; // 16 MiB
+
+    /// <summary>
     /// Open <paramref name="path"/>, seek to <c>max(0, length - bytesFromEnd)</c>, drop the
     /// partial first line (when the seek didn't land at offset 0), parse each remaining
     /// complete line, and drop a trailing line missing its terminator. Returns an empty list
     /// when the file doesn't exist or can't be opened. Best-effort — any IO/parse error during
     /// a single line is swallowed so a corrupt or in-flight write doesn't poison the rest.
     /// </summary>
+    /// <remarks>
+    /// <paramref name="bytesFromEnd"/> is silently clamped to <see cref="MaxBytesFromEnd"/>
+    /// (16 MiB) so a caller passing an absurdly large window can't trigger a huge buffer
+    /// allocation. Larger windows than 16 MiB aren't useful in practice — the recent-activity
+    /// row cap (<c>SnapshotOptions.RecentActivityCap</c>, default 50) is the more meaningful
+    /// limiting factor anyway.
+    /// </remarks>
     public static IReadOnlyList<JsonElement> TailLines(string path, int bytesFromEnd)
     {
         if (string.IsNullOrEmpty(path) || !File.Exists(path)) return Array.Empty<JsonElement>();
         if (bytesFromEnd <= 0) return Array.Empty<JsonElement>();
+        bytesFromEnd = Math.Min(bytesFromEnd, MaxBytesFromEnd);
 
         byte[] buffer;
         bool startsAtFileBeginning;

@@ -57,10 +57,16 @@ internal static class UnifiedDiffRenderer
 
         foreach (var hunk in GroupHunks(pieces.ToList(), oldLines.Length, newLines.Length, contextLines))
         {
-            // Header `@@ -a,b +c,d @@` — 1-based starting line; counts are line counts.
+            // Header `@@ -a,b +c,d @@`. Standard unified-diff convention: the start line is
+            // 1-based when count > 0 and 0 when count == 0. The zero-count case represents a
+            // hunk where one side is empty (e.g. `@@ -0,0 +1,N @@` for content added to an
+            // empty file, or `@@ -1,N +0,0 @@` for a full deletion); parsers like `patch`
+            // depend on this exact form.
             var oldCount = hunk.OldEnd - hunk.OldStart;
             var newCount = hunk.NewEnd - hunk.NewStart;
-            writer.WriteLine($"@@ -{hunk.OldStart + 1},{oldCount} +{hunk.NewStart + 1},{newCount} @@");
+            var oldStart = oldCount == 0 ? 0 : hunk.OldStart + 1;
+            var newStart = newCount == 0 ? 0 : hunk.NewStart + 1;
+            writer.WriteLine($"@@ -{oldStart},{oldCount} +{newStart},{newCount} @@");
 
             // Walk the hunk's range, emitting context / removals / additions. We only track the
             // old-side index `oi` because every emitted line reads from `oldLines` (context,

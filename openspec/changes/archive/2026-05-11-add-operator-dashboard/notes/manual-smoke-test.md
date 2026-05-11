@@ -29,7 +29,7 @@ Run each checklist item in order, against a clean `dotnet build` of the worktree
 
 8. **Arrow keys.** Press ↓ several times; confirm the cursor ▶ moves within the focused section.
 9. **j / k aliases.** Press `j` and `k`; confirm equivalent movement.
-10. **Tab / Shift+Tab.** Confirm the focused section moves to next / previous; cursor resets to row 0.
+10. **Number keys 1–5.** From the home view, confirm `1` / `2` / `3` / `4` / `5` jump to Scopes / Clients / Embeddings / Recent activity / Environment. `Esc` or `h` returns to home. (Tab / Shift+Tab were unbound by the later home/detail-view rewrite; the original proposal listed them here.)
 11. **? help overlay.** Press `?`; confirm a footer overlay listing every documented key. Press
     `?` again or `Esc` to close.
 12. **s force refresh.** Press `s`; status bar should briefly show `snapshot refresh requested`.

@@ -46,7 +46,6 @@ internal static class BatchedPickerInput
         var tokens = trimmed.Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
         var current = new HashSet<string>(defaults, StringComparer.Ordinal);
         var unknown = new List<string>();
-        var sawValidEdit = false;
 
         foreach (var tok in tokens)
         {
@@ -65,16 +64,13 @@ internal static class BatchedPickerInput
                 unknown.Add(slug);
                 continue;
             }
-            sawValidEdit = true;
             if (op == '+') current.Add(slug);
             else current.Remove(slug);
         }
 
-        // If we got no recognisable edits at all and at least one unknown slug, still proceed
-        // (per the spec's "unknown slug warns and is ignored" semantics) — the prompt is not
-        // reprompted unless the *form* was wrong.
-        _ = sawValidEdit; // local kept for clarity; intentional drop.
-
+        // Spec invariant: "unknown slug warns and is ignored". A token list that contains
+        // only unknown slugs still parses successfully — we proceed with the defaults and the
+        // unknown-slug warning list. Reprompt only fires on a malformed token (handled above).
         return new PickerResult(
             Selection: current,
             UnknownSlugs: unknown,

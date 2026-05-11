@@ -53,22 +53,24 @@ internal static class AddScopeForm
                     if (!ScopeIdValidator.IsValid(candidate.Trim()))
                         return ValidationResult.Error("[red]must match ^[[a-z0-9]][[a-z0-9-]]{0,63}$ (kebab-case slug)[/]");
                     if (config.Scopes.Any(s => string.Equals(s.Id, candidate.Trim(), StringComparison.Ordinal)))
-                        return ValidationResult.Error($"[red]scope '{candidate.Trim()}' already exists[/]");
+                        return ValidationResult.Error($"[red]scope '{Markup.Escape(candidate.Trim())}' already exists[/]");
                     return ValidationResult.Success();
                 })
                 .AllowEmpty()).Trim();
         if (string.IsNullOrEmpty(name)) return Result.Cancelled;
 
         // 2. Solution path — must resolve to an existing file after env-var expansion.
+        // The inline form doesn't support glob patterns; users wanting glob-based scopes can
+        // edit `.sourcegraph.json` directly via `[e]`. Keeping the prompt text honest.
         var solution = console.Prompt(
-            new TextPrompt<string>("[bold]Solution path (or glob):[/]")
+            new TextPrompt<string>("[bold]Solution path:[/]")
                 .Validate(candidate =>
                 {
                     if (string.IsNullOrWhiteSpace(candidate))
                         return ValidationResult.Error("[red]solution path is required[/]");
                     var expanded = ExpandPath(candidate.Trim(), root);
                     if (!File.Exists(expanded))
-                        return ValidationResult.Error($"[red]file not found: {expanded}[/]");
+                        return ValidationResult.Error($"[red]file not found:[/] {Markup.Escape(expanded)}");
                     return ValidationResult.Success();
                 })
                 .AllowEmpty()).Trim();

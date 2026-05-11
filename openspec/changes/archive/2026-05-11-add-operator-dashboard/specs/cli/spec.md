@@ -78,7 +78,7 @@ The following in-place actions SHALL NOT gate (they are idempotent / additive):
 - `[p]` embeddings pull (idempotent against a populated cache).
 - `[v]` embeddings verify (read-only).
 
-Read-only actions (`↑↓`, `Tab`, `Enter`, `Esc`, `q`, `?`, `s`) SHALL NOT gate.
+Read-only actions (`↑↓`, `Enter`, `Esc`, `q`, `?`, `s`) SHALL NOT gate. (Tab was unbound by the later home/detail-view rewrite; the original proposal listed it here.)
 
 Guided actions (`[i]`, `[d]`, `[l]`, `[e]`) SHALL NOT gate at the dashboard layer — the guided subcommand carries its own interaction model.
 

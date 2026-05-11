@@ -354,6 +354,81 @@ public sealed class DashboardRendererTests : IDisposable
     }
 
     // ────────────────────────────────────────────────────────────────────────────────
+    // Cell / Viewport helpers (the deterministic-row-layout primitives that replaced Spectre Grid)
+    // ────────────────────────────────────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData("foo", 8, "foo     ")]                  // pads right
+    [InlineData("toolongname", 8, "toolong…")]          // truncates with ellipsis
+    [InlineData("", 5, "     ")]                        // empty pads to width
+    [InlineData("a", 1, "a")]                           // exact fit
+    [InlineData("ab", 1, "…")]                          // collapses to just the ellipsis at width 1
+    public void Cell_padsAndTruncatesAsExpected(string plain, int width, string expected)
+    {
+        // Cell with no color tag returns the raw padded/truncated text (with Markup.Escape applied).
+        // For the inputs here, none of the characters are markup-significant so Markup.Escape is a no-op.
+        DashboardRenderer.Cell(plain, width).Should().Be(expected);
+    }
+
+    [Fact]
+    public void Cell_appliesColorTag_andTruncates()
+    {
+        // The colour wraps the truncated visible text; padding is OUTSIDE the colour tag so the
+        // ANSI reset doesn't apply to the trailing spaces.
+        var result = DashboardRenderer.Cell("toolong", 5, "red");
+        result.Should().Be("[red]tool…[/]");
+    }
+
+    [Fact]
+    public void Cell_rightAligns()
+    {
+        var result = DashboardRenderer.Cell("42", 5, rightAligned: true);
+        result.Should().Be("   42");
+    }
+
+    [Fact]
+    public void Viewport_listFitsWithinWindow_returnsFullRange()
+    {
+        var (start, end, above, below) = DashboardRenderer.Viewport(totalRows: 3, selectedRow: 1, maxVisible: 8);
+        start.Should().Be(0);
+        end.Should().Be(3);
+        above.Should().Be(0);
+        below.Should().Be(0);
+    }
+
+    [Fact]
+    public void Viewport_listLargerThanWindow_centersOnSelected()
+    {
+        // 20 rows, 8 visible, selected at row 10 → window centered around row 10.
+        var (start, end, above, below) = DashboardRenderer.Viewport(totalRows: 20, selectedRow: 10, maxVisible: 8);
+        (end - start).Should().Be(8);
+        (start <= 10 && 10 < end).Should().BeTrue("selected row must be inside the window");
+        above.Should().BeGreaterThan(0);
+        below.Should().BeGreaterThan(0);
+    }
+
+    [Fact]
+    public void Viewport_selectedNearEnd_clampsToTail()
+    {
+        // 20 rows, 8 visible, selected at last row → window slides to the end.
+        var (start, end, above, below) = DashboardRenderer.Viewport(totalRows: 20, selectedRow: 19, maxVisible: 8);
+        start.Should().Be(12);
+        end.Should().Be(20);
+        above.Should().Be(12);
+        below.Should().Be(0);
+    }
+
+    [Fact]
+    public void Viewport_selectedAtStart_clampsToHead()
+    {
+        var (start, end, above, below) = DashboardRenderer.Viewport(totalRows: 20, selectedRow: 0, maxVisible: 8);
+        start.Should().Be(0);
+        end.Should().Be(8);
+        above.Should().Be(0);
+        below.Should().Be(12);
+    }
+
+    // ────────────────────────────────────────────────────────────────────────────────
     // Helpers
     // ────────────────────────────────────────────────────────────────────────────────
 

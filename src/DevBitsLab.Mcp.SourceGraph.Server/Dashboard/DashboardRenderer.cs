@@ -390,7 +390,7 @@ internal static class DashboardRenderer
 
     /// <summary>The Scopes detail view: full per-scope table + Selected drawer + failed-projects bullets.</summary>
     public static IRenderable BuildScopesDetail(DashboardSnapshot snapshot, DashboardRenderOptions options,
-        int selectedRow = 0)
+        int selectedRow = 0, int maxVisibleRows = 8)
     {
         var rows = new List<IRenderable> { new Markup("") };
         if (snapshot.Scopes.Count == 0)
@@ -399,33 +399,25 @@ internal static class DashboardRenderer
             return new Padder(new Rows(rows)).PadLeft(2).PadRight(1);
         }
 
-        // Header + data share the same column layout; build it once. Column widths after the
-        // selection-cue refactor: the leading column holds the selection indicator (◉/○); the
-        // Status column shows the status word coloured by severity (no leading status-dot).
-        Grid NewScopesGrid() => new Grid()
-            .AddColumn(new GridColumn().NoWrap().Width(2))
-            .AddColumn(new GridColumn().NoWrap().Width(14))
-            .AddColumn(new GridColumn().NoWrap().Width(11))
-            .AddColumn(new GridColumn().NoWrap().Width(13).RightAligned())
-            .AddColumn(new GridColumn().NoWrap().Width(12).RightAligned())
-            .AddColumn(new GridColumn().NoWrap().Width(16))
-            .AddColumn(new GridColumn().NoWrap());
+        // Column widths chosen to fit the 80-col minimum. Sum: 2 + 14 + 10 + 11 + 11 + 12 + 8 = 68
+        // cells of content + 3 of padding = 71 cells. Leaves room for the body region's own
+        // padding without triggering column collapse.
+        const int nameW = 14, statusW = 10, symW = 11, refsW = 11, ageW = 12, failedW = 8;
 
-        var hcol = $"[{DashboardTheme.MutedDim}]";
-        var headerGrid = NewScopesGrid();
-        headerGrid.AddRow(
-            new Markup(""),
-            new Markup($"{hcol}Name[/]"),
-            new Markup($"{hcol}Status[/]"),
-            new Markup($"{hcol}Symbols[/]"),
-            new Markup($"{hcol}Refs[/]"),
-            new Markup($"{hcol}Last indexed[/]"),
-            new Markup($"{hcol}Failed[/]"));
-        rows.Add(headerGrid);
+        // Header row.
+        var hcol = DashboardTheme.MutedDim;
+        rows.Add(new Markup(string.Concat(
+            Cell("", 2),
+            Cell("Name", nameW, hcol),
+            Cell("Status", statusW, hcol),
+            Cell("Symbols", symW, hcol, rightAligned: true),
+            Cell("Refs", refsW, hcol, rightAligned: true),
+            Cell("Last indexed", ageW, hcol),
+            Cell("Failed", failedW, hcol))));
 
-        var grid = NewScopesGrid();
-
-        for (var i = 0; i < snapshot.Scopes.Count; i++)
+        var (start, end, moreAbove, moreBelow) = Viewport(snapshot.Scopes.Count, selectedRow, maxVisibleRows);
+        if (moreAbove > 0) rows.Add(new Markup($"  [{DashboardTheme.MutedDim}]↑ {moreAbove} more[/]"));
+        for (var i = start; i < end; i++)
         {
             var s = snapshot.Scopes[i];
             var kind = MapScopeStatus(s.Status);
@@ -433,24 +425,22 @@ internal static class DashboardRenderer
                 ? FormatRelativeTime(DateTimeOffset.UtcNow - s.LastIndexedAt.Value)
                 : "(never)";
             var failed = s.FailedProjects.Count > 0
-                ? $"{s.FailedProjects.Count} project{(s.FailedProjects.Count == 1 ? "" : "s")}"
+                ? $"{s.FailedProjects.Count} proj{(s.FailedProjects.Count == 1 ? "" : "s")}"
                 : "—";
-            // Status moves to text colour — no leading dot in the row.
-            var statusCell = $"[{DashboardTheme.ColorFor(kind)}]{Markup.Escape(s.Status)}[/]";
             var selected = i == selectedRow;
+            var nameColor = selected ? $"bold {DashboardTheme.Brand}" : "";
 
-            grid.AddRow(
-                SelectionMarker(selected),
-                new Markup(selected
-                    ? $"[bold {DashboardTheme.Brand}]{Markup.Escape(s.Name)}[/]"
-                    : Markup.Escape(s.Name)),
-                new Markup(statusCell),
-                new Markup(Markup.Escape($"{s.SymbolCount:N0}")),
-                new Markup(Markup.Escape($"{s.ReferenceCount:N0}")),
-                new Markup($"[{DashboardTheme.Muted}]{Markup.Escape(ageLabel)}[/]"),
-                new Markup($"[{DashboardTheme.Muted}]{Markup.Escape(failed)}[/]"));
+            var line = string.Concat(
+                DashboardTheme.SelectionDot(selected) + " ",
+                Cell(s.Name, nameW, nameColor),
+                Cell(s.Status, statusW, DashboardTheme.ColorFor(kind)),
+                Cell($"{s.SymbolCount:N0}", symW, rightAligned: true),
+                Cell($"{s.ReferenceCount:N0}", refsW, rightAligned: true),
+                Cell(ageLabel, ageW, DashboardTheme.Muted),
+                Cell(failed, failedW, DashboardTheme.Muted));
+            rows.Add(new Markup(line));
         }
-        rows.Add(grid);
+        if (moreBelow > 0) rows.Add(new Markup($"  [{DashboardTheme.MutedDim}]↓ {moreBelow} more[/]"));
 
         // Inline separator + Selected drawer.
         if (selectedRow >= 0 && selectedRow < snapshot.Scopes.Count)
@@ -503,7 +493,7 @@ internal static class DashboardRenderer
 
     /// <summary>The Clients detail view: full per-client table + Selected drawer.</summary>
     public static IRenderable BuildClientsDetail(DashboardSnapshot snapshot, DashboardRenderOptions options,
-        int selectedRow = 0)
+        int selectedRow = 0, int maxVisibleRows = 8)
     {
         var rows = new List<IRenderable> { new Markup("") };
         if (snapshot.Clients.Count == 0)
@@ -513,18 +503,17 @@ internal static class DashboardRenderer
         }
 
         var ordered = snapshot.Clients.OrderBy(c => c.Scope == "project" ? 0 : 1).ToArray();
+        // Column widths chosen so total + padding fits comfortably inside the dashboard's
+        // 80-col minimum width — 2 (selection) + 16 + 9 + 14 + 28 = 69 cells of content + 3
+        // of left/right padding = 72. Path is truncated with an ellipsis if it exceeds 28 cells.
+        const int slugW = 16, scopeW = 9, stateW = 14, pathW = 28;
 
-        // Column widths after the selection-cue refactor: leading column is the selection
-        // indicator (◉/○); the row's wired/unwired state is communicated by colouring the
-        // state-label cell (no leading status-dot column).
-        var grid = new Grid()
-            .AddColumn(new GridColumn().NoWrap().Width(2))
-            .AddColumn(new GridColumn().NoWrap().Width(18))
-            .AddColumn(new GridColumn().NoWrap().Width(10))
-            .AddColumn(new GridColumn().NoWrap().Width(14))
-            .AddColumn(new GridColumn().NoWrap());
-
-        for (var i = 0; i < ordered.Length; i++)
+        var (start, end, moreAbove, moreBelow) = Viewport(ordered.Length, selectedRow, maxVisibleRows);
+        if (moreAbove > 0)
+        {
+            rows.Add(new Markup($"  [{DashboardTheme.MutedDim}]↑ {moreAbove} more[/]"));
+        }
+        for (var i = start; i < end; i++)
         {
             var c = ordered[i];
             var (kind, stateLabel) = c switch
@@ -535,16 +524,21 @@ internal static class DashboardRenderer
             };
             var path = PathDisplay.Render(c.Path, options.Root, options.Home);
             var selected = i == selectedRow;
-            grid.AddRow(
-                SelectionMarker(selected),
-                new Markup(selected
-                    ? $"[bold {DashboardTheme.Brand}]{Markup.Escape(c.Slug)}[/]"
-                    : Markup.Escape(c.Slug)),
-                new Markup($"[{DashboardTheme.Muted}]{Markup.Escape(c.Scope)}[/]"),
-                new Markup($"[{DashboardTheme.ColorFor(kind)}]{Markup.Escape(stateLabel)}[/]"),
-                new Markup($"[{DashboardTheme.Muted}]{Markup.Escape(path)}[/]"));
+            var slugColor = selected ? $"bold {DashboardTheme.Brand}" : "";
+            // Selection column: glyph already carries colour markup, just need a trailing space
+            // to make the cell two cells wide.
+            var line = string.Concat(
+                DashboardTheme.SelectionDot(selected) + " ",
+                Cell(c.Slug, slugW, slugColor),
+                Cell(c.Scope, scopeW, DashboardTheme.Muted),
+                Cell(stateLabel, stateW, DashboardTheme.ColorFor(kind)),
+                Cell(path, pathW, DashboardTheme.Muted));
+            rows.Add(new Markup(line));
         }
-        rows.Add(grid);
+        if (moreBelow > 0)
+        {
+            rows.Add(new Markup($"  [{DashboardTheme.MutedDim}]↓ {moreBelow} more[/]"));
+        }
 
         if (selectedRow >= 0 && selectedRow < ordered.Length)
         {
@@ -622,15 +616,14 @@ internal static class DashboardRenderer
             .Take(maxRows)
             .ToArray();
 
-        var grid = new Grid()
-            .AddColumn(new GridColumn().NoWrap().Width(2))
-            .AddColumn(new GridColumn().NoWrap().Width(10))
-            .AddColumn(new GridColumn().NoWrap().Width(24))
-            .AddColumn(new GridColumn().NoWrap().Width(14))
-            .AddColumn(new GridColumn().NoWrap().Width(3))
-            .AddColumn(new GridColumn().NoWrap());
+        // Column widths chosen to fit the 80-col minimum. Sum: 2 + 10 + 24 + 14 + 3 + 12 = 65
+        // cells of content + 3 padding = 68. Detail column truncated to 24 with ellipsis if
+        // longer. The status-dot column is 2 cells (DashboardTheme.Dot returns "● " etc.).
+        const int timeW = 10, nameW = 24, scopeW = 14, msW = 12;
 
-        for (var i = 0; i < rowsList.Length; i++)
+        var (start, end, moreAbove, moreBelow) = Viewport(rowsList.Length, selectedRow, maxRows);
+        if (moreAbove > 0) rows.Add(new Markup($"  [{DashboardTheme.MutedDim}]↑ {moreAbove} more[/]"));
+        for (var i = start; i < end; i++)
         {
             var a = rowsList[i];
             var kind = a.Ok ? StatusKind.Ok : StatusKind.Fail;
@@ -639,17 +632,18 @@ internal static class DashboardRenderer
             var scope = a.Scope ?? "-";
             var msLabel = a.Ok ? FormatMillis(a.Ms) : $"failed: {FormatMillis(a.Ms)}";
             var selected = i == selectedRow;
-            grid.AddRow(
-                SelectionMarker(selected),
-                new Markup($"[{DashboardTheme.Muted}]{Markup.Escape(time)}[/]"),
-                new Markup(selected
-                    ? $"[bold {DashboardTheme.Brand}]{Markup.Escape(name)}[/]"
-                    : Markup.Escape(name)),
-                new Markup($"[{DashboardTheme.Muted}]{Markup.Escape(scope)}[/]"),
-                new Markup(DashboardTheme.Dot(kind)),
-                new Markup($"[{DashboardTheme.Muted}]{Markup.Escape(msLabel)}[/]"));
+            var nameColor = selected ? $"bold {DashboardTheme.Brand}" : "";
+
+            var line = string.Concat(
+                DashboardTheme.SelectionDot(selected) + " ",
+                Cell(time, timeW, DashboardTheme.Muted),
+                Cell(name, nameW, nameColor),
+                Cell(scope, scopeW, DashboardTheme.Muted),
+                DashboardTheme.Dot(kind) + " ",
+                Cell(msLabel, msW, DashboardTheme.Muted));
+            rows.Add(new Markup(line));
         }
-        rows.Add(grid);
+        if (moreBelow > 0) rows.Add(new Markup($"  [{DashboardTheme.MutedDim}]↓ {moreBelow} more[/]"));
 
         if (selectedRow >= 0 && selectedRow < rowsList.Length)
         {
@@ -738,6 +732,57 @@ internal static class DashboardRenderer
     /// colour of its status word. Honours <see cref="LeafFormatter.Suppressed"/>.
     /// </summary>
     private static Markup SelectionMarker(bool selected) => new(DashboardTheme.SelectionDot(selected));
+
+    /// <summary>
+    /// Build a fixed-width cell as a Markup-ready string. Truncates with an ellipsis when
+    /// <paramref name="plain"/> is wider than <paramref name="width"/>, pads with spaces
+    /// otherwise. The result is safe to concatenate with other cell strings into a single
+    /// <see cref="Markup"/> line — sidestepping Spectre's <see cref="Grid"/> column
+    /// negotiation entirely. The Grid approach mis-handled narrow body widths by squeezing
+    /// columns down to 1-char width and then "no-wrapping" each character onto its own line
+    /// (`p\nr\no\nj\ne\nc\nt`); pre-formatting bypasses that whole pathology.
+    /// </summary>
+    /// <param name="plain">Raw text — exactly what the user sees, no markup.</param>
+    /// <param name="width">Total cell width in display cells.</param>
+    /// <param name="colorTag">Optional Spectre colour tag (e.g. <c>"#5fa07a"</c> or <c>"grey50 bold"</c>); empty for default.</param>
+    /// <param name="rightAligned">Pad to the LEFT of the content when true.</param>
+    internal static string Cell(string plain, int width, string colorTag = "", bool rightAligned = false)
+    {
+        if (width <= 0) return string.Empty;
+        string visible;
+        if (plain.Length > width)
+        {
+            // Truncate with a single ellipsis. width == 1 collapses to just the ellipsis.
+            visible = width == 1 ? "…" : plain[..(width - 1)] + "…";
+        }
+        else
+        {
+            visible = plain;
+        }
+        var padCount = Math.Max(0, width - visible.Length);
+        var pad = padCount == 0 ? string.Empty : new string(' ', padCount);
+        var escaped = Markup.Escape(visible);
+        var inner = string.IsNullOrEmpty(colorTag) ? escaped : $"[{colorTag}]{escaped}[/]";
+        return rightAligned ? pad + inner : inner + pad;
+    }
+
+    /// <summary>
+    /// Compute a viewport over <paramref name="totalRows"/> that keeps
+    /// <paramref name="selectedRow"/> visible within <paramref name="maxVisible"/> rows.
+    /// Returns the [start, end) indices to render plus the "more above"/"more below" counts
+    /// the caller renders as hint rows. When the list fits, start=0 and end=totalRows.
+    /// </summary>
+    internal static (int Start, int End, int MoreAbove, int MoreBelow) Viewport(
+        int totalRows, int selectedRow, int maxVisible)
+    {
+        if (totalRows <= maxVisible) return (0, totalRows, 0, 0);
+        if (maxVisible <= 0) return (0, 0, 0, totalRows);
+        // Keep selected near the centre; clamp at list ends so the slice always has maxVisible rows.
+        var half = maxVisible / 2;
+        var start = Math.Max(0, Math.Min(selectedRow - half, totalRows - maxVisible));
+        var end = start + maxVisible;
+        return (start, end, start, totalRows - end);
+    }
 
     /// <summary>Operator-friendly relative time like <c>2m ago</c> / <c>3h ago</c>; matches StatusRenderer.</summary>
     internal static string FormatRelativeTime(TimeSpan delta)

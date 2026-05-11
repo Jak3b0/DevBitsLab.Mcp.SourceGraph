@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Reflection;
 using DevBitsLab.Mcp.SourceGraph.Server.Cli.ClientConfigWriters;
 using DevBitsLab.Mcp.SourceGraph.Server.Cli.Rendering;
 using DevBitsLab.Mcp.SourceGraph.Storage;
@@ -483,47 +484,54 @@ internal static class InitCli
         InitRenderer.RenderPreWarmHeading(Console.Out, solutionName);
         var sw = Stopwatch.StartNew();
         // Shell out for the pre-warm so we don't re-create the indexer construction graph that
-        // lives in Program.cs. Three invocation strategies, tried in order — the first one that
-        // starts wins. The order is chosen so the path that actually works in each install
-        // mode is hit first:
-        //   1. `dotnet sourcegraph-mcp index <abs>` — works for global tool install AND for the
-        //      .NET local-tool manifest pattern. Most common in practice.
-        //   2. `<entry-apphost> index <abs>` — works when the current process is launched via a
-        //      native apphost (e.g. running in-tree via `dotnet run` produces an apphost binary
-        //      whose Environment.ProcessPath is the apphost itself, not "dotnet").
-        //   3. `dotnet <entry-dll> index <abs>` — last-resort fallback when neither of the
-        //      above starts: re-invokes the same .dll under `dotnet exec`-style launch.
-        var attempts = new List<(string FileName, string[] Args)>
+        // lives in Program.cs. The strategy is "re-invoke the same binary we are now," because
+        // it's guaranteed to know the `index` subcommand and live with no install dependency.
+        //
+        // The entry binary is discovered in two ways with different reliability:
+        //
+        //   1. `Assembly.GetEntryAssembly()?.Location` — the entry .dll path. Reliable in
+        //      every run mode (dev `dotnet <dll>`, global tool, `dotnet publish` apphost,
+        //      local-tool manifest); empty only under single-file deployment.
+        //
+        //   2. `Environment.ProcessPath` — the executable that started the process. In dev
+        //      mode this is the dotnet host (e.g. `/usr/local/share/dotnet/dotnet`), which is
+        //      NOT a sourcegraph binary — so we only use it when it looks like an apphost
+        //      (path ends with `sourcegraph-mcp` / `sourcegraph-mcp.exe`).
+        //
+        // Strategies are tried in order; the first one that starts AND exits 0 wins. We try
+        // the entry-self forms first because they always work in dev mode (the most common
+        // local-test context). The `dotnet sourcegraph-mcp` global-tool form is the fallback
+        // for the single-file edge case where neither entry hint is available.
+        var attempts = new List<(string FileName, string[] Args)>();
+        var entryDll = Assembly.GetEntryAssembly()?.Location;
+        if (!string.IsNullOrEmpty(entryDll) && entryDll.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
         {
-            ("dotnet", new[] { "sourcegraph-mcp", "index", abs }),
-        };
-        var processPath = Environment.ProcessPath;
-        if (!string.IsNullOrEmpty(processPath))
-        {
-            // Heuristic: a `.dll` at ProcessPath means we're being run as `dotnet <dll>`; any
-            // other extension (none on Unix, `.exe` on Windows) means an apphost.
-            if (processPath.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
-            {
-                attempts.Add(("dotnet", new[] { processPath, "index", abs }));
-            }
-            else
-            {
-                attempts.Add((processPath, new[] { "index", abs }));
-            }
+            attempts.Add(("dotnet", new[] { entryDll, "index", abs }));
         }
+        var processPath = Environment.ProcessPath;
+        if (!string.IsNullOrEmpty(processPath) && IsSourceGraphApphost(processPath))
+        {
+            attempts.Add((processPath, new[] { "index", abs }));
+        }
+        // Global-tool fallback. Only reachable when neither entry hint resolved (single-file
+        // publish without an embedded dll path). Carries the original implementation's
+        // assumption that `sourcegraph-mcp` is installed on PATH via `dotnet tool install -g`.
+        attempts.Add(("dotnet", new[] { "sourcegraph-mcp", "index", abs }));
 
+        // Capture stderr from each attempt rather than inheriting it; we only surface output
+        // from the attempt we accept (exit 0) so a transient first-strategy failure doesn't
+        // leak a confusing "Could not execute…" message before the (successful) fallback.
+        // stdout we still inherit because successful indexer runs print progress that's worth
+        // seeing live; an interleave with our own rendering is acceptable since the indexer is
+        // the only live writer at this point.
+        string? lastStderr = null;
+        int? lastExit = null;
         foreach (var (fileName, args) in attempts)
         {
-            // Inherit stdout/stderr instead of redirecting. The original implementation
-            // redirected both pipes but never drained them, which would deadlock the child
-            // once a buffer filled (a real `index` pass on a sizeable solution easily
-            // produces enough output to hit that). Inheriting lets the user see indexer
-            // progress live AND avoids the deadlock entirely; we only need to know the
-            // child's exit code, which comes from WaitForExitAsync.
             var psi = new ProcessStartInfo(fileName)
             {
                 RedirectStandardOutput = false,
-                RedirectStandardError = false,
+                RedirectStandardError = true,
                 UseShellExecute = false,
             };
             foreach (var a in args) psi.ArgumentList.Add(a);
@@ -531,10 +539,24 @@ internal static class InitCli
             {
                 using var p = Process.Start(psi);
                 if (p is null) continue;
+                // Drain stderr concurrently with the wait so a chatty stderr can't deadlock
+                // the child. We re-emit it only if this attempt wins.
+                var stderrTask = p.StandardError.ReadToEndAsync();
                 await p.WaitForExitAsync().ConfigureAwait(false);
-                sw.Stop();
-                InitRenderer.RenderPreWarmSummary(Console.Out, p.ExitCode, sw.Elapsed, solutionName);
-                return;
+                var stderr = await stderrTask.ConfigureAwait(false);
+                if (p.ExitCode == 0)
+                {
+                    if (!string.IsNullOrEmpty(stderr)) Console.Error.Write(stderr);
+                    sw.Stop();
+                    InitRenderer.RenderPreWarmSummary(Console.Out, p.ExitCode, sw.Elapsed, solutionName);
+                    return;
+                }
+                // Non-zero exit. Could be "tool not installed" (try next) OR "indexer failed"
+                // (would surface as the final result if no later attempt wins). Remember and
+                // continue.
+                lastStderr = stderr;
+                lastExit = p.ExitCode;
+                continue;
             }
             catch (System.ComponentModel.Win32Exception)
             {
@@ -552,7 +574,30 @@ internal static class InitCli
                 return;
             }
         }
-        Console.Error.WriteLine("warn: pre-warm could not start any subprocess (tried `dotnet sourcegraph-mcp` + the current entry binary). Run `sourcegraph-mcp index <solution>` manually if needed.");
+        // No strategy succeeded. Re-emit the most recent stderr (closest to what the user
+        // would have wanted to see) and a single summary line for the closing report.
+        sw.Stop();
+        if (!string.IsNullOrEmpty(lastStderr)) Console.Error.Write(lastStderr);
+        if (lastExit.HasValue)
+        {
+            InitRenderer.RenderPreWarmSummary(Console.Out, lastExit.Value, sw.Elapsed, solutionName);
+        }
+        else
+        {
+            Console.Error.WriteLine("warn: pre-warm could not start any subprocess. Run `sourcegraph-mcp index <solution>` manually if needed.");
+        }
+    }
+
+    /// <summary>
+    /// Heuristic: is <paramref name="processPath"/> a sourcegraph-mcp apphost (vs. the dotnet
+    /// host or some unrelated launcher)? Apphosts produced by <c>dotnet publish</c> and
+    /// <c>dotnet tool install -g</c> name themselves after the assembly entry-point; we accept
+    /// any file whose base name (without `.exe`) is exactly <c>sourcegraph-mcp</c>.
+    /// </summary>
+    private static bool IsSourceGraphApphost(string processPath)
+    {
+        var name = Path.GetFileNameWithoutExtension(processPath);
+        return string.Equals(name, "sourcegraph-mcp", StringComparison.OrdinalIgnoreCase);
     }
 
     private sealed record WriterRunResult(

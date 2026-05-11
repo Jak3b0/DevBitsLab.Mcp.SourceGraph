@@ -167,6 +167,13 @@ internal static class DashboardActions
             return DashboardActionResult.Failure("selection out of range");
         var scope = ctx.Snapshot.Scopes[ctx.Selection.RowIndex];
 
+        // Refuse to rebuild while an index is already in flight on this scope. Rebuild's
+        // first step archives the existing DB and starts fresh; running that against a DB
+        // the live indexer is currently writing into races and can corrupt either side.
+        if (scope.Status == "indexing")
+            return DashboardActionResult.Failure(
+                $"refusing to rebuild '{scope.Name}': scope is currently indexing. Wait for it to finish first.");
+
         if (!ConfirmModal.Prompt(ctx.Console, "rebuild", scope.Name))
             return DashboardActionResult.Success("rebuild cancelled");
 
@@ -224,6 +231,22 @@ internal static class DashboardActions
         if (ctx.Selection.RowIndex < 0 || ctx.Selection.RowIndex >= ctx.Snapshot.Scopes.Count)
             return DashboardActionResult.Failure("selection out of range");
         var scope = ctx.Snapshot.Scopes[ctx.Selection.RowIndex];
+
+        // Refuse to remove the last scope. Without any scope, .sourcegraph.json would be
+        // empty and the server would fall back to its synth-default path — surprising to
+        // trigger from a single keystroke. If that's actually what the user wants, deleting
+        // .sourcegraph.json directly (via `[e]` editor) is the explicit way to get there.
+        if (ctx.Snapshot.Scopes.Count == 1)
+            return DashboardActionResult.Failure(
+                $"refusing to remove '{scope.Name}': it's the last scope. To revert to single-scope synth-default, delete .sourcegraph.json (open via `[e]`)");
+
+        // Refuse to remove a scope mid-index. The live-indexer process (in the `serve` host)
+        // holds an open write handle on this scope's DB; removing the scope entry from
+        // .sourcegraph.json mid-write orphans that handle and can leave the DB in an
+        // inconsistent state on rollback. Wait for indexing to finish first.
+        if (scope.Status == "indexing")
+            return DashboardActionResult.Failure(
+                $"refusing to remove '{scope.Name}': scope is currently indexing. Wait for it to finish, then try again.");
 
         if (!ConfirmModal.Prompt(ctx.Console, "remove scope", scope.Name))
             return DashboardActionResult.Success("remove cancelled");
@@ -293,6 +316,13 @@ internal static class DashboardActions
         if (ctx.Selection.RowIndex < 0 || ctx.Selection.RowIndex >= ctx.Snapshot.Scopes.Count)
             return DashboardActionResult.Failure("selection out of range");
         var scope = ctx.Snapshot.Scopes[ctx.Selection.RowIndex];
+
+        // Refuse to reindex while an index is already in flight. Two write paths on the same
+        // per-scope DB will at best serialise on SQLite's busy timeout and at worst corrupt
+        // under concurrent indexer state.
+        if (scope.Status == "indexing")
+            return DashboardActionResult.Failure(
+                $"refusing to reindex '{scope.Name}': scope is currently indexing. Wait for it to finish first.");
 
         var solution = ResolveSolutionForScope(ctx, scope.Name);
         if (solution is null)
@@ -383,6 +413,14 @@ internal static class DashboardActions
 
     private static async Task<DashboardActionResult> EmbeddingsVerifyAsync(DashboardActionContext ctx, CancellationToken token)
     {
+        // Refuse to verify when there are no cached files to verify against. VerifyAsync
+        // against an absent cache returns an empty status struct that the per-file mismatch
+        // check below reads as "0 bad files" and would report success — misleading to a user
+        // who pressed `v` to check the cache they don't have. Send them to `[p]` instead.
+        if (!ctx.Snapshot.Embeddings.CachePresent)
+            return DashboardActionResult.Failure(
+                "no embedding cache to verify — press [p] to pull the active model first");
+
         return await RunWatchdoggedAsync(async () =>
         {
             var mgr = BuildEmbeddingsManager(ctx);

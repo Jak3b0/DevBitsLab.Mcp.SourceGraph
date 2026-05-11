@@ -409,14 +409,15 @@ public sealed class DashboardActionsTests : IDisposable
         File.WriteAllText(sgPath, """
             {
               "scopes": [
-                { "name": "default", "solutions": ["x.slnx"] }
+                { "name": "default", "solutions": ["x.slnx"] },
+                { "name": "other", "solutions": ["x.slnx"] }
               ]
             }
             """);
         var console = new Spectre.Console.Testing.TestConsole();
         console.Input.PushTextWithEnter("n"); // decline confirm
         var ctx = new DashboardActionContext(
-            Snapshot: MakeSnapshot(),
+            Snapshot: MakeSnapshotWithTwoScopes(),
             Selection: new DashboardSelection(DashboardSection.Scopes, 0),
             Console: console,
             Freshness: null,
@@ -446,7 +447,7 @@ public sealed class DashboardActionsTests : IDisposable
         var console = new Spectre.Console.Testing.TestConsole();
         console.Input.PushTextWithEnter("y"); // confirm
         var ctx = new DashboardActionContext(
-            Snapshot: MakeSnapshot(),
+            Snapshot: MakeSnapshotWithTwoScopes(),
             Selection: new DashboardSelection(DashboardSection.Scopes, 0),
             Console: console,
             Freshness: null,
@@ -457,6 +458,68 @@ public sealed class DashboardActionsTests : IDisposable
         var after = File.ReadAllText(sgPath);
         after.Should().NotContain("\"name\": \"default\"");
         after.Should().Contain("\"name\": \"other\"", "other scopes are preserved");
+    }
+
+    [Fact]
+    public async Task RemoveScope_lastScope_isRefused()
+    {
+        var sgPath = Path.Join(_tempRoot, ".sourcegraph.json");
+        File.WriteAllText(Path.Join(_tempRoot, "x.slnx"), "<Solution />");
+        File.WriteAllText(sgPath, """
+            {
+              "scopes": [
+                { "name": "only", "solutions": ["x.slnx"] }
+              ]
+            }
+            """);
+        var console = new Spectre.Console.Testing.TestConsole();
+        var ctx = new DashboardActionContext(
+            Snapshot: MakeSnapshot(),
+            Selection: new DashboardSelection(DashboardSection.Scopes, 0),
+            Console: console,
+            Freshness: null,
+            Root: _tempRoot,
+            Policy: DashboardActionPolicy.Default);
+        var before = File.ReadAllText(sgPath);
+        var result = await DashboardActions.RunAsync(DashboardAction.RemoveScope, ctx);
+        result.Ok.Should().BeFalse();
+        result.Message.Should().Contain("last scope");
+        File.ReadAllText(sgPath).Should().Be(before, "guard refuses before any file mutation");
+    }
+
+    [Fact]
+    public async Task RemoveScope_indexingScope_isRefused()
+    {
+        var sgPath = Path.Join(_tempRoot, ".sourcegraph.json");
+        File.WriteAllText(Path.Join(_tempRoot, "x.slnx"), "<Solution />");
+        File.WriteAllText(sgPath, """
+            {
+              "scopes": [
+                { "name": "default", "solutions": ["x.slnx"] },
+                { "name": "other", "solutions": ["x.slnx"] }
+              ]
+            }
+            """);
+        var indexingSnapshot = MakeSnapshotWithTwoScopes() with
+        {
+            Scopes = new[]
+            {
+                new ScopeRow("default", "indexing", 0, 0, null,
+                    Array.Empty<string>(), Array.Empty<string>(), false),
+                new ScopeRow("other", "ok", 100, 200, DateTimeOffset.UtcNow,
+                    Array.Empty<string>(), Array.Empty<string>(), false),
+            },
+        };
+        var ctx = new DashboardActionContext(
+            Snapshot: indexingSnapshot,
+            Selection: new DashboardSelection(DashboardSection.Scopes, 0),
+            Console: new Spectre.Console.Testing.TestConsole(),
+            Freshness: null,
+            Root: _tempRoot,
+            Policy: DashboardActionPolicy.Default);
+        var result = await DashboardActions.RunAsync(DashboardAction.RemoveScope, ctx);
+        result.Ok.Should().BeFalse();
+        result.Message.Should().Contain("indexing");
     }
 
     [Fact]
@@ -617,4 +680,20 @@ public sealed class DashboardActionsTests : IDisposable
         UsageLogPath: Path.Join(_tempRoot, ".sourcegraph", "usage.jsonl"),
         HealsLogPath: Path.Join(_tempRoot, ".sourcegraph", "heals.jsonl"),
         ExitCode: 0);
+
+    /// <summary>
+    /// Variant with two scopes (`default` + `other`) for tests that exercise the remove-scope
+    /// path, which now refuses to remove the last remaining scope. The two-scope shape lets
+    /// the action complete without firing the "last scope" guard.
+    /// </summary>
+    private DashboardSnapshot MakeSnapshotWithTwoScopes() => MakeSnapshot() with
+    {
+        Scopes = new[]
+        {
+            new ScopeRow("default", "ok", 100, 200, DateTimeOffset.UtcNow,
+                Array.Empty<string>(), Array.Empty<string>(), false),
+            new ScopeRow("other", "ok", 50, 75, DateTimeOffset.UtcNow,
+                Array.Empty<string>(), Array.Empty<string>(), false),
+        },
+    };
 }

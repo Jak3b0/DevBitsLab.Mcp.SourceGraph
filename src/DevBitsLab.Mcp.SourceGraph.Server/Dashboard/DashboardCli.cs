@@ -267,21 +267,33 @@ internal static class DashboardCli
                 case DashboardAction.OpenLogInPager:
                 case DashboardAction.OpenConfigInEditor:
                 case DashboardAction.AddScope:
-                    // AddScope drops out of Live because the inline form uses Spectre
-                    // TextPrompt<T>, which fights Live region's terminal management. The same
-                    // outer-loop suspend/resume pattern that init / demo use applies.
-                    return false; // guided: must suspend Live
+                case DashboardAction.RemoveScope:
+                case DashboardAction.UnwireClient:
                 case DashboardAction.ReindexScope:
                 case DashboardAction.RebuildScope:
-                    // Reindex / rebuild shell out to `sourcegraph-mcp index <solution>` which
-                    // can run for tens of seconds to minutes against a real solution AND
-                    // writes indexer-progress lines to stdio. Running that inside the Live
-                    // region interleaves the subprocess output with Spectre's cursor positioning
-                    // and leaves the terminal in a broken state. They're "in-place" in the
-                    // permission sense (no input collection needed) but interactively they
-                    // behave like guided actions — drop out of Live, run visibly, resume.
-                    // Rebuild's confirm modal renders cleanly outside Live too.
-                    return false; // guided: must suspend Live
+                    // The "must suspend Live" set. Any action that (a) shows a Spectre prompt
+                    // (ConfirmModal / TextPrompt / etc.), (b) spawns a subprocess with
+                    // inherited stdio, or (c) opens an external editor/pager needs the
+                    // terminal exclusively — running it inside Spectre's Live block
+                    // interleaves output with Live's cursor positioning and corrupts the
+                    // terminal state. The outer-loop suspend/resume pattern drops Live, runs
+                    // the action against a clean terminal, then re-enters Live.
+                    //
+                    // Membership audit:
+                    //   - InitGuided / DemoGuided / OpenLogInPager / OpenConfigInEditor:
+                    //     subprocess with inherited stdio.
+                    //   - AddScope: Spectre TextPrompt form.
+                    //   - RemoveScope / UnwireClient / RebuildScope: ConfirmModal (Spectre
+                    //     ConfirmationPrompt) — same Live-fighting behaviour as TextPrompt.
+                    //   - ReindexScope / RebuildScope: also shell out to
+                    //     `sourcegraph-mcp index` and need the terminal for the indexer's
+                    //     progress lines.
+                    //
+                    // Actions NOT in this set (intentionally stay in-place):
+                    //   - WireClient: writer file IO only, no prompt or stdio.
+                    //   - EmbeddingsPull / EmbeddingsVerify: HTTP / file IO only, no
+                    //     terminal interaction.
+                    return false;
                 default:
                     return true;
             }

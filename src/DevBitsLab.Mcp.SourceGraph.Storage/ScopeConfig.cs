@@ -98,9 +98,20 @@ public static class ScopeConfigLoader
             throw new ScopeConfigException($"{FileName} is not valid JSON: {ex.Message}", ex);
         }
 
+        // A null or empty `scopes` array is treated as a recoverable empty config — not a
+        // hard error. This is the natural state the file lands in after `scopes remove`
+        // wipes the last entry (or after a hand-edit). Throwing here used to leave the user
+        // stuck: every subsequent `scopes add` / dashboard `[N]` re-loaded the same broken
+        // file and bailed before the user could add a fresh scope. Returning an empty
+        // `ScopeConfig` lets the caller recover — the first added scope simply becomes the
+        // only one.
         if (dto.Scopes is null || dto.Scopes.Count == 0)
         {
-            throw new ScopeConfigException($"{FileName} has no `scopes` array.");
+            // We deliberately don't carry `dto.Plugins` through here — the DTO type is the
+            // JSON shape (`PluginRefJson`), not the projected `PluginRef`. The recovery path
+            // doesn't need plugin info to be useful (the caller is about to add a scope and
+            // re-save), and leaving Plugins null lets the ScopeConfig record use its default.
+            return new ScopeConfig(Array.Empty<Scope>(), dto.DefaultScope);
         }
 
         var seen = new HashSet<string>(StringComparer.Ordinal);

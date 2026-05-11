@@ -21,7 +21,7 @@ calls with a single structured tool call:
 
 > **Note on the 🌿 icon:** This server uses a green-leaf emoji (`🌿`) as a brand
 > mark to indicate that responses come from the source graph tools. You'll see it
-> in tool responses, tool names, and descriptions. Some AI agents may strip or
+> in tool responses, tool titles, and descriptions. Some AI agents may strip or
 > filter emoji from their output, so the icon might not always be visible in your
 > chat interface. You can disable it entirely with `--no-leaf` if preferred.
 

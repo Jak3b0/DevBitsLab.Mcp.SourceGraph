@@ -256,6 +256,71 @@ public sealed class DashboardActionsTests : IDisposable
     }
 
     [Fact]
+    public void ResolvePrimaryAction_Clients_wiredRow_dispatchesUnwire()
+    {
+        // Enter on a Clients row whose ContainsSourcegraphEntry == true must resolve to
+        // UnwireClient — the wire/unwire toggle the redesign added.
+        var snap = MakeSnapshot() with
+        {
+            Clients = new[]
+            {
+                new ClientRow("claude-code", "project", _configPath, Exists: true, ContainsSourcegraphEntry: true),
+            },
+        };
+        var sel = new DashboardSelection(DashboardSection.Clients, 0);
+        var action = DashboardPrimaryAction.Resolve(sel, snap);
+        action.Should().Be(DashboardAction.UnwireClient);
+    }
+
+    [Fact]
+    public void ResolvePrimaryAction_Clients_unwiredRow_dispatchesWire()
+    {
+        var snap = MakeSnapshot() with
+        {
+            Clients = new[]
+            {
+                new ClientRow("claude-code", "project", _configPath, Exists: true, ContainsSourcegraphEntry: false),
+            },
+        };
+        var sel = new DashboardSelection(DashboardSection.Clients, 0);
+        var action = DashboardPrimaryAction.Resolve(sel, snap);
+        action.Should().Be(DashboardAction.WireClient);
+    }
+
+    [Fact]
+    public void ResolvePrimaryAction_Scopes_dispatchesReindex()
+    {
+        var sel = new DashboardSelection(DashboardSection.Scopes, 0);
+        DashboardPrimaryAction.Resolve(sel, MakeSnapshot()).Should().Be(DashboardAction.ReindexScope);
+    }
+
+    [Fact]
+    public void ResolvePrimaryAction_Embeddings_dispatchesPull()
+    {
+        var sel = new DashboardSelection(DashboardSection.Embeddings, 0);
+        DashboardPrimaryAction.Resolve(sel, MakeSnapshot()).Should().Be(DashboardAction.EmbeddingsPull);
+    }
+
+    [Fact]
+    public void ResolvePrimaryAction_RecentActivity_returnsNone()
+    {
+        // No first-class detail pane yet; routing returns None so the dispatcher can surface
+        // a discoverability hint instead of hanging.
+        var sel = new DashboardSelection(DashboardSection.RecentActivity, 0);
+        DashboardPrimaryAction.Resolve(sel, MakeSnapshot()).Should().Be(DashboardAction.None);
+    }
+
+    [Fact]
+    public void DashboardActionResult_severity_factoryDefaults()
+    {
+        // Spec: Success → Success, Failure → Fail, Noop → Info, Info → Info.
+        DashboardActionResult.Success("x").Severity.Should().Be(ToastSeverity.Success);
+        DashboardActionResult.Failure("x").Severity.Should().Be(ToastSeverity.Fail);
+        DashboardActionResult.Noop.Severity.Should().Be(ToastSeverity.Info);
+        DashboardActionResult.Info("x").Severity.Should().Be(ToastSeverity.Info);
+    }
+
+    [Fact]
     public void ResolveSourceGraphLaunch_prefers_processPath_dll()
     {
         // ProcessPath in test runs is typically the testhost or vstest .dll; the helper should

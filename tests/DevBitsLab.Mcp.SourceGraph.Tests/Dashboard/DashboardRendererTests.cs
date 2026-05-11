@@ -76,8 +76,8 @@ public sealed class DashboardRendererTests : IDisposable
         };
         var output = RenderToString(_ =>
             DashboardRenderer.BuildScopesSection(snap, DefaultOptions(), focused: true, selectedRow: 1));
-        // The cursor character ▶ should be present when focused.
-        output.Should().Contain("▶");
+        // The new theme draws a brand-coloured left bar (▌) on the selected row.
+        output.Should().Contain("▌");
     }
 
     [Fact]
@@ -154,8 +154,12 @@ public sealed class DashboardRendererTests : IDisposable
     public void BuildFooter_containsKeyHint()
     {
         var output = RenderToString(_ => DashboardRenderer.BuildFooter());
+        // New theme: top row has the primary keys with `more` (formerly `help`); second row has
+        // the in-place + guided keys.
         output.Should().Contain("quit");
-        output.Should().Contain("help");
+        output.Should().Contain("section");
+        output.Should().Contain("wire");
+        output.Should().Contain("reindex");
     }
 
     [Fact]

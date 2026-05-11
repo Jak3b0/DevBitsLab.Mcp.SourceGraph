@@ -19,16 +19,30 @@ namespace DevBitsLab.Mcp.SourceGraph.Server.Dashboard;
 internal sealed record DashboardSelection(DashboardSection FocusedSection, int RowIndex);
 
 /// <summary>
+/// Severity of the action's outcome — drives the toast colour in the renderer. <c>Success</c> is
+/// brand-green, <c>Warn</c> amber, <c>Fail</c> red; <c>Info</c> renders muted (and the no-message
+/// case is hidden entirely).
+/// </summary>
+internal enum ToastSeverity
+{
+    Success,
+    Warn,
+    Fail,
+    Info,
+}
+
+/// <summary>
 /// Outcome of one action invocation. Carries a short status message the dashboard surfaces in
 /// its footer/status bar plus a flag the loop honours when the user pressed quit. Failure-mode
 /// actions also set <see cref="Ok"/> false so the status bar can render the failure inline.
 /// </summary>
-internal sealed record DashboardActionResult(bool Ok, bool Quit, string Message)
+internal sealed record DashboardActionResult(bool Ok, bool Quit, string Message, ToastSeverity Severity = ToastSeverity.Success)
 {
-    public static DashboardActionResult Noop => new(Ok: true, Quit: false, Message: "");
-    public static DashboardActionResult QuitSignal => new(Ok: true, Quit: true, Message: "quitting");
-    public static DashboardActionResult Success(string msg) => new(Ok: true, Quit: false, Message: msg);
-    public static DashboardActionResult Failure(string msg) => new(Ok: false, Quit: false, Message: msg);
+    public static DashboardActionResult Noop => new(Ok: true, Quit: false, Message: "", Severity: ToastSeverity.Info);
+    public static DashboardActionResult QuitSignal => new(Ok: true, Quit: true, Message: "quitting", Severity: ToastSeverity.Info);
+    public static DashboardActionResult Success(string msg) => new(Ok: true, Quit: false, Message: msg, Severity: ToastSeverity.Success);
+    public static DashboardActionResult Failure(string msg) => new(Ok: false, Quit: false, Message: msg, Severity: ToastSeverity.Fail);
+    public static DashboardActionResult Info(string msg) => new(Ok: true, Quit: false, Message: msg, Severity: ToastSeverity.Info);
 }
 
 /// <summary>
@@ -92,6 +106,13 @@ internal static class DashboardActions
             DashboardAction.NextSection or DashboardAction.PreviousSection or
             DashboardAction.OpenDetail or DashboardAction.CloseDetail or
             DashboardAction.ToggleHelp => DashboardActionResult.Noop,
+
+            // PrimaryAction (Enter) is mapped section-by-section by the caller (DashboardCli's
+            // dispatch helper rewrites it to one of ReindexScope / WireClient / UnwireClient /
+            // EmbeddingsPull). If it reaches the dispatcher as a raw PrimaryAction the caller's
+            // routing failed; treat as a no-op so the user gets a visible "nothing happened"
+            // toast rather than a hang.
+            DashboardAction.PrimaryAction => DashboardActionResult.Info("no primary action for this section"),
 
             DashboardAction.ForceRefresh => ForceRefresh(ctx),
 

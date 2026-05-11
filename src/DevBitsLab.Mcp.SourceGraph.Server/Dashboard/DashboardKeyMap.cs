@@ -45,7 +45,7 @@ internal static class DashboardKeyMap
                 return (key.Modifiers & ConsoleModifiers.Shift) == ConsoleModifiers.Shift
                     ? DashboardAction.PreviousSection
                     : DashboardAction.NextSection;
-            case ConsoleKey.Enter: return DashboardAction.OpenDetail;
+            case ConsoleKey.Enter: return DashboardAction.PrimaryAction;
             case ConsoleKey.Escape: return DashboardAction.CloseDetail;
             case ConsoleKey.Spacebar: return DashboardAction.None; // reserved
         }
@@ -83,11 +83,36 @@ internal static class DashboardKeyMap
     }
 
     /// <summary>
-    /// Short hint string for the footer bar. Stable order; matches the v1 key map. Suitable for
-    /// rendering as a single line under all five sections.
+    /// Two-line key hint for the footer. Primary keys on top (always visible); secondary in-place
+    /// + guided keys on the second line so a first-time user finds them without pressing <c>?</c>.
+    ///
+    /// <para>
+    /// Returns Spectre markup with key glyphs in <see cref="DashboardTheme.Brand"/> and labels in
+    /// <see cref="DashboardTheme.Muted"/>. Honours <see cref="Tools.LeafFormatter.Suppressed"/>:
+    /// in the no-leaf path the unicode glyphs (<c>⏎</c>, <c>⇥</c>, <c>↑↓</c>, <c>⇧R</c>) are
+    /// replaced with bracketed ASCII tokens (<c>[Enter]</c>, <c>[Tab]</c>, <c>[Up/Dn]</c>,
+    /// <c>[Shift+R]</c>) so terminals without nerd-font support still read cleanly.
+    /// </para>
     /// </summary>
-    public const string FooterHint =
-        "[q] quit  [?] help  [↑↓] nav  [Enter] details  [Tab] section";
+    public static string FooterHint
+    {
+        get
+        {
+            if (Tools.LeafFormatter.Suppressed)
+            {
+                const string row1 = "[Enter] act   [Tab] section   [Up/Dn] row   [q] quit   [?] more";
+                const string row2 = "[w] wire  [u] unwire  [r] reindex  [Shift+R] rebuild  [p] pull  [v] verify  [i] init  [d] demo  [l] log  [e] config";
+                return row1 + "\n" + row2;
+            }
+            // Markup: keys in brand, labels in muted grey. \n splits the two rows; Spectre's
+            // Markup parser preserves the newline so the renderer can lay it out as two lines.
+            var b = DashboardTheme.Brand;
+            var m = DashboardTheme.Muted;
+            var row1m = $"[{b}]⏎[/] [{m}]act[/]   [{b}]⇥[/] [{m}]section[/]   [{b}]↑↓[/] [{m}]row[/]   [{b}]q[/] [{m}]quit[/]   [{b}]?[/] [{m}]more[/]";
+            var row2m = $"[{b}]w[/] [{m}]wire[/]  [{b}]u[/] [{m}]unwire[/]  [{b}]r[/] [{m}]reindex[/]  [{b}]⇧R[/] [{m}]rebuild[/]  [{b}]p[/] [{m}]pull[/]  [{b}]v[/] [{m}]verify[/]  [{b}]i[/] [{m}]init[/]  [{b}]d[/] [{m}]demo[/]  [{b}]l[/] [{m}]log[/]  [{b}]e[/] [{m}]config[/]";
+            return row1m + "\n" + row2m;
+        }
+    }
 
     /// <summary>
     /// Multi-line key reference shown by the inline help overlay (`?`). Same vocabulary as the

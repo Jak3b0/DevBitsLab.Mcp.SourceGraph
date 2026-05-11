@@ -21,7 +21,7 @@ public sealed class DashboardKeyMapTests
         yield return new object[] { "DownArrow", ConsoleKey.DownArrow, '\0', (int)ConsoleModifiers.None, (int)DashboardAction.MoveDown };
         yield return new object[] { "Tab", ConsoleKey.Tab, '\t', (int)ConsoleModifiers.None, (int)DashboardAction.NextSection };
         yield return new object[] { "Shift+Tab", ConsoleKey.Tab, '\t', (int)ConsoleModifiers.Shift, (int)DashboardAction.PreviousSection };
-        yield return new object[] { "Enter", ConsoleKey.Enter, '\r', (int)ConsoleModifiers.None, (int)DashboardAction.OpenDetail };
+        yield return new object[] { "Enter", ConsoleKey.Enter, '\r', (int)ConsoleModifiers.None, (int)DashboardAction.PrimaryAction };
         yield return new object[] { "Esc", ConsoleKey.Escape, (char)27, (int)ConsoleModifiers.None, (int)DashboardAction.CloseDetail };
         yield return new object[] { "q", ConsoleKey.Q, 'q', (int)ConsoleModifiers.None, (int)DashboardAction.Quit };
         yield return new object[] { "Q", ConsoleKey.Q, 'Q', (int)ConsoleModifiers.Shift, (int)DashboardAction.Quit };

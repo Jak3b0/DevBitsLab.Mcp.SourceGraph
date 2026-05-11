@@ -39,22 +39,22 @@ internal static class DashboardLayout
             return new Layout("root").Update(BuildTooSmall(width, height));
         }
 
-        // Vertical composition:
-        //   header (3 rows)
-        //   top row split horizontally: Environment + Scopes
-        //   middle row split horizontally: Clients + Embeddings
+        // Vertical composition (new borderless theme):
+        //   header (2 rows: brand line + separator)
+        //   environment (8 rows: header + 5 detail rows + spacer)
+        //   scopes (variable)
+        //   clients (variable)
+        //   embeddings (variable)
         //   recent activity (flex)
-        //   footer (3 rows)
+        //   footer (5 rows: separator + 2 hint rows + spacer + toast)
         var root = new Layout("root").SplitRows(
             new Layout(HeaderRegion).Size(3),
-            new Layout("top").Size(8).SplitColumns(
-                new Layout(EnvironmentRegion),
-                new Layout(ScopesRegion)),
-            new Layout("middle").Size(8).SplitColumns(
-                new Layout(ClientsRegion),
-                new Layout(EmbeddingsRegion)),
+            new Layout(EnvironmentRegion).Size(8),
+            new Layout(ScopesRegion).Size(6),
+            new Layout(ClientsRegion).Size(6),
+            new Layout(EmbeddingsRegion).Size(4),
             new Layout(RecentRegion),
-            new Layout(FooterRegion).Size(3));
+            new Layout(FooterRegion).Size(5));
         return root;
     }
 

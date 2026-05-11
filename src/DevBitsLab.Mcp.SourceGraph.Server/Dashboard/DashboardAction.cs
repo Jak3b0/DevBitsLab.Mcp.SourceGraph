@@ -26,6 +26,15 @@ internal enum DashboardAction
     ToggleHelp,
     ForceRefresh,
 
+    /// <summary>
+    /// The section-aware "act on the selected row" action <c>Enter</c> is bound to. The dispatcher
+    /// in <see cref="DashboardCli"/> routes this to a section-specific concrete action (reindex
+    /// for Scopes, wire/unwire toggle for Clients, pull for Embeddings, etc.). Kept as a
+    /// distinct enum value rather than overloading <see cref="OpenDetail"/> so a future
+    /// detail-pane feature can reclaim Enter on a section-by-section basis.
+    /// </summary>
+    PrimaryAction,
+
     // In-place (no gate)
     ReindexScope,
     WireClient,

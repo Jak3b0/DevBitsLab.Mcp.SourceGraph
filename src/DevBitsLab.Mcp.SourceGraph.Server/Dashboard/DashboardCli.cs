@@ -122,6 +122,12 @@ internal static class DashboardCli
     }
 
     /// <summary>
+    /// Toast state: text + when it was set + severity. The renderer fades it out as wall-clock
+    /// time advances; an empty <see cref="Text"/> hides the toast entirely.
+    /// </summary>
+    internal readonly record struct ToastState(string Text, DateTimeOffset SetAt, ToastSeverity Severity);
+
+    /// <summary>
     /// Encapsulates the per-frame state of the main loop: current snapshot, selection,
     /// help-overlay flag, status message, exit code. Keeping it as an instance class (vs. a
     /// pile of locals in <see cref="RunAsync"/>) lets the snapshot-changed event handler and
@@ -137,7 +143,7 @@ internal static class DashboardCli
         private DashboardSection _focused = DashboardSection.Scopes;
         private int _selectedRow;
         private bool _helpOpen;
-        private string _statusMessage = "";
+        private ToastState _toast = new("", DateTimeOffset.MinValue, ToastSeverity.Info);
         private bool _dirty = true;
 
         public LoopState(IAnsiConsole console, FreshnessSource freshness, string root, string version)
@@ -278,6 +284,16 @@ internal static class DashboardCli
                 sel = new DashboardSelection(_focused, _selectedRow);
             }
             if (snap is null) return;
+
+            // PrimaryAction (Enter) is section-specific: Scopes → reindex, Clients → wire/unwire
+            // toggle, Embeddings → pull, RecentActivity → surface a discoverability hint. Resolve
+            // here before handing to the dispatcher so the dispatcher's per-action validation
+            // (e.g. "reindex requires Scopes section selected") fires under the right action.
+            if (action == DashboardAction.PrimaryAction)
+            {
+                action = DashboardPrimaryAction.Resolve(sel, snap);
+            }
+
             var ctx = new DashboardActionContext(
                 Snapshot: snap,
                 Selection: sel,
@@ -289,7 +305,9 @@ internal static class DashboardCli
             if (result.Quit) ExitCode = 0;
             lock (_gate)
             {
-                _statusMessage = result.Message;
+                _toast = string.IsNullOrEmpty(result.Message)
+                    ? new ToastState("", DateTimeOffset.MinValue, ToastSeverity.Info)
+                    : new ToastState(result.Message, DateTimeOffset.UtcNow, result.Severity);
             }
         }
 
@@ -309,10 +327,21 @@ internal static class DashboardCli
         {
             lock (_gate)
             {
-                var values = Enum.GetValues<DashboardSection>();
-                var idx = Array.IndexOf(values, _focused);
-                idx = ((idx + delta) % values.Length + values.Length) % values.Length;
-                _focused = values[idx];
+                // Environment is always-unfocused (read-only, never enters the Tab cycle); the
+                // user reported in bug-1 that Tab landing on Environment looked broken because
+                // BuildEnvironmentSection didn't take a focused parameter. We skip it here so
+                // the Tab cycle is { Scopes, Clients, Embeddings, RecentActivity } only.
+                var cycle = new[]
+                {
+                    DashboardSection.Scopes,
+                    DashboardSection.Clients,
+                    DashboardSection.Embeddings,
+                    DashboardSection.RecentActivity,
+                };
+                var idx = Array.IndexOf(cycle, _focused);
+                if (idx < 0) idx = 0; // defensive: if _focused was somehow Environment, land on Scopes
+                idx = ((idx + delta) % cycle.Length + cycle.Length) % cycle.Length;
+                _focused = cycle[idx];
                 _selectedRow = 0;
                 _dirty = true;
             }
@@ -329,7 +358,24 @@ internal static class DashboardCli
         };
 
         private void MarkDirty() { lock (_gate) _dirty = true; }
-        private bool IsDirty() { lock (_gate) { var d = _dirty; _dirty = false; return d; } }
+        private bool IsDirty()
+        {
+            lock (_gate)
+            {
+                // Force a redraw while a toast is visible so its fade-out animation actually plays
+                // (the renderer reads the toast's age relative to now to fade it out; without
+                // this, no input + no snapshot change = no redraw = stuck-looking toast).
+                if (_toast.Text.Length > 0)
+                {
+                    var age = DateTimeOffset.UtcNow - _toast.SetAt;
+                    if (age < TimeSpan.FromSeconds(5)) _dirty = true;
+                    else _toast = new ToastState("", DateTimeOffset.MinValue, ToastSeverity.Info);
+                }
+                var d = _dirty;
+                _dirty = false;
+                return d;
+            }
+        }
 
         private void Redraw(Layout layout)
         {
@@ -337,14 +383,14 @@ internal static class DashboardCli
             DashboardSection focused;
             int selectedRow;
             bool helpOpen;
-            string status;
+            ToastState toast;
             lock (_gate)
             {
                 snap = _snapshot;
                 focused = _focused;
                 selectedRow = _selectedRow;
                 helpOpen = _helpOpen;
-                status = _statusMessage;
+                toast = _toast;
             }
 
             if (snap is null)
@@ -354,7 +400,8 @@ internal static class DashboardCli
             }
 
             layout[DashboardLayout.HeaderRegion].Update(DashboardRenderer.BuildHeader(snap, _renderOptions));
-            layout[DashboardLayout.EnvironmentRegion].Update(DashboardRenderer.BuildEnvironmentSection(snap, _renderOptions));
+            // Environment is never in the Tab cycle — render always-unfocused.
+            layout[DashboardLayout.EnvironmentRegion].Update(DashboardRenderer.BuildEnvironmentSection(snap, _renderOptions, focused: false));
             layout[DashboardLayout.ScopesRegion].Update(DashboardRenderer.BuildScopesSection(snap, _renderOptions,
                 focused: focused == DashboardSection.Scopes, selectedRow: selectedRow));
             layout[DashboardLayout.ClientsRegion].Update(DashboardRenderer.BuildClientsSection(snap, _renderOptions,
@@ -365,7 +412,7 @@ internal static class DashboardCli
                 focused: focused == DashboardSection.RecentActivity, selectedRow: selectedRow));
             var footer = helpOpen
                 ? RenderHelpFooter()
-                : DashboardRenderer.BuildFooter(status);
+                : DashboardRenderer.BuildFooter(toast);
             layout[DashboardLayout.FooterRegion].Update(footer);
         }
 
@@ -378,5 +425,44 @@ internal static class DashboardCli
                 Padding = new Padding(1, 0, 1, 0),
             };
         }
+    }
+}
+
+/// <summary>
+/// Routes the <c>Enter</c> (PrimaryAction) key to a concrete action based on which section is
+/// focused. Lifted out of <see cref="DashboardCli"/>'s private LoopState so unit tests can
+/// pin the wire/unwire toggle behaviour the spec calls out without standing up the full loop.
+/// </summary>
+internal static class DashboardPrimaryAction
+{
+    /// <summary>
+    /// Map <c>Enter</c> (PrimaryAction) to the section-specific concrete action.
+    /// <list type="bullet">
+    /// <item><see cref="DashboardSection.Scopes"/> → reindex the selected scope.</item>
+    /// <item><see cref="DashboardSection.Clients"/> → toggle wire/unwire on the selected client (the wire/unwire affordance the spec calls out for the Clients section).</item>
+    /// <item><see cref="DashboardSection.Embeddings"/> → pull the active model.</item>
+    /// <item><see cref="DashboardSection.RecentActivity"/> → no primary action yet (return <see cref="DashboardAction.None"/>; the dispatcher surfaces a discoverability hint).</item>
+    /// <item><see cref="DashboardSection.Environment"/> → no primary action (Environment is never in the focus cycle).</item>
+    /// </list>
+    /// </summary>
+    public static DashboardAction Resolve(DashboardSelection sel, DashboardSnapshot snap) =>
+        sel.FocusedSection switch
+        {
+            DashboardSection.Scopes => DashboardAction.ReindexScope,
+            DashboardSection.Clients => ResolveClientToggle(sel, snap),
+            DashboardSection.Embeddings => DashboardAction.EmbeddingsPull,
+            DashboardSection.RecentActivity => DashboardAction.None,
+            DashboardSection.Environment => DashboardAction.None,
+            _ => DashboardAction.None,
+        };
+
+    private static DashboardAction ResolveClientToggle(DashboardSelection sel, DashboardSnapshot snap)
+    {
+        // Mirror DashboardActions.OrderedClients ordering so the same row index resolves.
+        var clients = snap.Clients.OrderBy(c => c.Scope == "project" ? 0 : 1).ToArray();
+        if (sel.RowIndex < 0 || sel.RowIndex >= clients.Length) return DashboardAction.WireClient;
+        return clients[sel.RowIndex].ContainsSourcegraphEntry
+            ? DashboardAction.UnwireClient
+            : DashboardAction.WireClient;
     }
 }

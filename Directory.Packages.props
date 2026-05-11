@@ -31,6 +31,12 @@
 
     <!-- CLI -->
     <PackageVersion Include="System.CommandLine" Version="2.0.7" />
+    <!-- Diff rendering for the init diff conflict preview. MIT, AOT-friendly, ~50KB. -->
+    <PackageVersion Include="DiffPlex" Version="1.7.2" />
+    <!-- TUI substrate for the live operator dashboard. MIT, AOT-friendly, ~1 MB. Pinned to the
+         latest stable 0.49.x patch per add-operator-dashboard design Decision 1. -->
+    <PackageVersion Include="Spectre.Console" Version="0.49.1" />
+    <PackageVersion Include="Spectre.Console.Testing" Version="0.49.1" />
 
     <!-- Embeddings: ONNX Runtime + Microsoft.Extensions.AI abstraction + tokenizer library.
          Microsoft.ML.Tokenizers covers BPE (RoBERTa-style, used by Jina v2 base code and most

@@ -1,0 +1,45 @@
+{
+  "checks": [
+    {
+      "name": "dotnet-sdk",
+      "status": "pass",
+      "message": ".NET SDK __SDK_VERSION__"
+    },
+    {
+      "name": "git",
+      "status": "pass",
+      "message": "git on PATH"
+    },
+    {
+      "name": "repo-root",
+      "status": "pass",
+      "message": "repo root: __ROOT__"
+    },
+    {
+      "name": "solutions",
+      "status": "pass",
+      "message": "discovered 1 solution(s): Test.slnx"
+    },
+    {
+      "name": "sourcegraph-config",
+      "status": "pass",
+      "message": "no .sourcegraph.json (single-scope synth path)"
+    },
+    {
+      "name": "embedding-cache",
+      "status": "pass",
+      "message": "embedding model cache present at __CACHE_DIR__ (__SIZE__)"
+    },
+    {
+      "name": "db-writable",
+      "status": "pass",
+      "message": "per-scope DB dir writable: __ROOT__/.sourcegraph/scopes"
+    },
+    {
+      "name": "client-claude-desktop",
+      "status": "pass",
+      "message": "claude-desktop config wired (user: __HOME__/Library/Application Support/Claude/claude_desktop_config.json)"
+    }
+  ],
+  "exit_code": 0
+}

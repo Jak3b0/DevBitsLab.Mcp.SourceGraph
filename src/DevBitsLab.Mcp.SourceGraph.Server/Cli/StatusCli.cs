@@ -1,0 +1,160 @@
+using DevBitsLab.Mcp.SourceGraph.Server.Cli.Rendering;
+using DevBitsLab.Mcp.SourceGraph.Server.Cli.Snapshot;
+
+namespace DevBitsLab.Mcp.SourceGraph.Server.Cli;
+
+/// <summary>
+/// Top-level <c>sourcegraph-mcp status</c> subcommand. Aggregates a <see cref="DashboardSnapshot"/>
+/// via <see cref="SnapshotBuilder.BuildAsync"/>, evaluates the exit code by walking each surface,
+/// then dispatches to either <see cref="StatusRenderer.RenderHuman"/> or the JSON serializer.
+///
+/// <para>
+/// Exit semantics:
+///   <list type="bullet">
+///   <item><c>0</c> — every surface healthy.</item>
+///   <item><c>2</c> — any surface warns (partial / indexing scope, embedding cache absent, git missing).</item>
+///   <item><c>1</c> — any surface hard-fails (SDK missing, .sourcegraph.json malformed, degraded scope, DB dir unwritable).</item>
+///   </list>
+/// </para>
+///
+/// <para>
+/// <c>--watch</c> is honoured only under a tty (<see cref="Console.IsInputRedirected"/> == false);
+/// piped/CI invocations downgrade silently to a single snapshot.
+/// </para>
+/// </summary>
+internal static class StatusCli
+{
+    /// <summary>
+    /// Resolve flags, build the snapshot, render, and return the evaluated exit code.
+    /// </summary>
+    public static async Task<int> RunAsync(CommandLine cli)
+    {
+        var root = cli.ResolvedRepoRoot();
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile,
+            Environment.SpecialFolderOption.DoNotVerify);
+
+        var options = new SnapshotOptions(
+            ActivityBytes: cli.ActivityBytes ?? 524288,
+            RecentActivityCap: 50);
+
+        if (cli.Watch && !Console.IsInputRedirected)
+        {
+            return await RunWatchAsync(cli, root, home, options).ConfigureAwait(false);
+        }
+
+        // Default (non-watch / piped) path: build once, render once, exit.
+        var snapshot = await SnapshotBuilder.BuildAsync(root, options).ConfigureAwait(false);
+        snapshot = snapshot with { ExitCode = EvaluateExit(snapshot) };
+        RenderOnce(snapshot, cli, root, home);
+        return snapshot.ExitCode;
+    }
+
+    /// <summary>
+    /// Watch loop: re-renders the snapshot in place every <c>--watch-interval</c> seconds until
+    /// <see cref="Console.CancelKeyPress"/> fires. Uses ANSI cursor-home + clear-to-end (no
+    /// external Spectre dependency); guarantees clean shutdown on Ctrl+C.
+    /// </summary>
+    private static async Task<int> RunWatchAsync(CommandLine cli, string root, string? home, SnapshotOptions options)
+    {
+        using var cts = new CancellationTokenSource();
+        ConsoleCancelEventHandler handler = (_, e) =>
+        {
+            e.Cancel = true;
+            cts.Cancel();
+        };
+        Console.CancelKeyPress += handler;
+        var interval = TimeSpan.FromSeconds(Math.Max(1, cli.WatchInterval ?? 2));
+        var first = true;
+        var lastExit = 0;
+        try
+        {
+            while (!cts.IsCancellationRequested)
+            {
+                if (!first)
+                {
+                    // Cursor home + clear to end. Stable on every terminal that honours ANSI.
+                    Console.Write("\x1b[H\x1b[J");
+                }
+                first = false;
+                var snap = await SnapshotBuilder.BuildAsync(root, options, cts.Token).ConfigureAwait(false);
+                snap = snap with { ExitCode = EvaluateExit(snap) };
+                RenderOnce(snap, cli, root, home);
+                lastExit = snap.ExitCode;
+                try
+                {
+                    await Task.Delay(interval, cts.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) { /* clean exit on Ctrl+C */ }
+            }
+        }
+        finally
+        {
+            Console.CancelKeyPress -= handler;
+        }
+        return lastExit;
+    }
+
+    /// <summary>
+    /// One render — JSON or prose — to <see cref="Console.Out"/>. Extracted so the watch loop
+    /// and the one-shot path share the same dispatch.
+    /// </summary>
+    private static void RenderOnce(DashboardSnapshot snapshot, CommandLine cli, string root, string? home)
+    {
+        if (cli.Json)
+        {
+            var json = DashboardSnapshotJson.Serialize(snapshot);
+            Console.Out.WriteLine(json);
+            return;
+        }
+        var options = new StatusRenderOptions(Root: root, Home: home, NoColor: cli.NoColor);
+        StatusRenderer.RenderHuman(snapshot, Console.Out, options);
+    }
+
+    /// <summary>
+    /// Walk the snapshot surface-by-surface and decide the aggregate exit code per spec:
+    /// <c>1</c> on hard-fail, <c>2</c> on warn, <c>0</c> on healthy.
+    /// </summary>
+    public static int EvaluateExit(DashboardSnapshot snapshot)
+    {
+        var hardFail = false;
+        var warn = false;
+
+        // Environment.
+        if (snapshot.Environment.SourceGraphConfigStatus == "malformed") hardFail = true;
+        if (string.IsNullOrEmpty(snapshot.Environment.DotnetSdkVersion)) hardFail = true;
+        if (!Directory.Exists(snapshot.Environment.RepoRootPath)) hardFail = true;
+        if (!snapshot.Environment.GitOnPath) warn = true;
+
+        // Scopes.
+        foreach (var s in snapshot.Scopes)
+        {
+            if (s.Status == "degraded") hardFail = true;
+            if (s.Status is "partial" or "indexing") warn = true;
+        }
+
+        // Per-scope DB dir writability — fail when the dir exists but isn't writable. We don't
+        // require the dir to exist (a fresh repo has none, and that's not a fail).
+        var scopeDir = Path.Join(snapshot.Environment.RepoRootPath, ".sourcegraph", "scopes");
+        if (Directory.Exists(scopeDir) && !TestWritability(scopeDir)) hardFail = true;
+
+        // Embeddings.
+        if (!snapshot.Embeddings.CachePresent) warn = true;
+
+        if (hardFail) return 1;
+        if (warn) return 2;
+        return 0;
+    }
+
+    private static bool TestWritability(string dir)
+    {
+        try
+        {
+            var probe = Path.Join(dir, ".sg-status-probe-" + Guid.NewGuid().ToString("N"));
+            File.WriteAllBytes(probe, Array.Empty<byte>());
+            File.Delete(probe);
+            return true;
+        }
+        catch (IOException) { return false; }
+        catch (UnauthorizedAccessException) { return false; }
+    }
+}

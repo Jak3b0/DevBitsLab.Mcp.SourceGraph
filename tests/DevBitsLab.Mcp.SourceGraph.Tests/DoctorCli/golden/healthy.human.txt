@@ -1,0 +1,12 @@
+🌿 SourceGraph doctor
+
+  [OK] dotnet-sdk             .NET SDK __SDK_VERSION__
+  [OK] git                    git on PATH
+  [OK] repo-root              repo root: __ROOT__
+  [OK] solutions              discovered 1 solution(s): Test.slnx
+  [OK] sourcegraph-config     no .sourcegraph.json (single-scope synth path)
+  [OK] embedding-cache        embedding model cache present at __CACHE_DIR__ (__SIZE__)
+  [OK] db-writable            per-scope DB dir writable: __ROOT__/.sourcegraph/scopes
+  [OK] client-claude-desktop  claude-desktop config wired (user: __HOME__/Library/Application Support/Claude/claude_desktop_config.json)
+
+summary: 8 pass, 0 warn, 0 fail

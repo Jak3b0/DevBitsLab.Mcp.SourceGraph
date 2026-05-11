@@ -6,6 +6,7 @@ using DevBitsLab.Mcp.SourceGraph.Indexing;
 using DevBitsLab.Mcp.SourceGraph.Sdk;
 using DevBitsLab.Mcp.SourceGraph.Server;
 using DevBitsLab.Mcp.SourceGraph.Server.Cli;
+using DevBitsLab.Mcp.SourceGraph.Server.Dashboard;
 using DevBitsLab.Mcp.SourceGraph.Server.Observability;
 using DevBitsLab.Mcp.SourceGraph.Server.Plugins;
 using DevBitsLab.Mcp.SourceGraph.Server.Scoping;
@@ -15,6 +16,12 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
+
+// Bare-command dispatch: a bare `sourcegraph-mcp` invocation drops into the dashboard under a
+// tty and into `status` under redirected stdin / non-interactive contexts. The rewrite is a no-op
+// when a positional subcommand or `--help` is already present. See
+// openspec/changes/add-operator-dashboard/design.md decision 2.
+args = BareCommandDispatch.Rewrite(args, BareCommandDispatch.IsStdinRedirectedOrNonInteractive);
 
 CommandLine cli;
 try
@@ -43,6 +50,8 @@ return cli.Subcommand switch
     "clear" => await RunClearAsync(cli).ConfigureAwait(false),
     "init" => await InitCli.RunAsync(cli).ConfigureAwait(false),
     "doctor" => await DoctorCli.RunAsync(cli).ConfigureAwait(false),
+    "status" => await StatusCli.RunAsync(cli).ConfigureAwait(false),
+    "dashboard" => await DashboardCli.RunAsync(cli).ConfigureAwait(false),
     "demo" => await DemoCli.RunAsync(cli).ConfigureAwait(false),
     "init-scopes" => await ScopesCli.RunInitAsync(cli).ConfigureAwait(false),
     "scopes" => await ScopesCli.RunSubcommandAsync(cli).ConfigureAwait(false),

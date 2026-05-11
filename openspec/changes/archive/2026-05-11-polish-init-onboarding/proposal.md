@@ -1,0 +1,37 @@
+## Why
+
+The `sourcegraph-mcp init` subcommand is the first surface most users meet, and today its output is hard to scan and follow: glyphs are inconsistent (`✓ ⚠ ⓘ` for outcomes plus a banner-only `🌿`), labels collide visually with values, the interactive client picker fires `[Y/n]` once per client (N inline prompts), and full absolute paths bury the structure. The brand mark `🌿` exists but isn't doing semantic work — it's decoration. We want a polished, phase-organised layout that treats the leaf as the universal "selected / passed / on" signal, plus a batched picker that asks once with a compact `+slug / -slug` grammar.
+
+Separately, `Claude Desktop` is invisible to users who didn't already know about the `--claude-desktop` flag — it's filtered out of the picker entirely unless that flag is set. With Claude Desktop being a primary surface for many users, that asymmetry hides a supported integration. We want it discoverable in the picker (with a sensible default-off when not detected) without auto-wiring user-tree files behind anyone's back.
+
+This change is the foundation for the operator console work that follows (`add-operator-status`, `add-operator-dashboard`): both downstream changes consume init's polished writer surface and the leaf-state glyph language defined here.
+
+## What Changes
+
+- **Output format** — `init` (and the closing report on `init --print-only`) is reorganised under named phase headings: `Environment`, `Clients to wire`, `Apply`, `Pre-warm` (when run), `Next`. Inside each phase, two-space indented rows with a leading state glyph and aligned columns. No more `,-22` colon-padded labels.
+- **Leaf-as-state glyph language** — the `🌿` glyph is promoted from banner decoration to the universal positive-state marker (selected, passed, wrote, unchanged, indexed). A small companion vocabulary covers the other states: `·` (off / not selected), `⚠` (soft warning), `✗` (hard skip / conflict), `—` (unsupported / N/A). The `--no-leaf` / `SOURCEGRAPH_NO_LEAF=1` opt-out flips the leaf to the ASCII checkbox `[x]` and the off-state to `[ ]`, preserving the same scan pattern.
+- **Batched interactive picker** — replaces the per-row `[Y/n]` prompts with a single confirmation: defaults rendered as a list (each row marked `🌿` for default-on, `·` for default-off), followed by one prompt that accepts `Enter` (apply defaults), `n` (deselect everything), or a `+slug / -slug` edit string (e.g. `+cursor -copilot`). Slugs that don't parse warn and are ignored.
+- **Claude Desktop in the default flow** — `claude-desktop` becomes a first-class row in the picker, always shown, with its default-on driven by detection: ON if its platform-specific config file exists on disk, OFF otherwise. The `--claude-desktop` flag is preserved as a back-compat alias for "force default-on for this row." `claude-desktop` always writes user-scope (no project-scope path exists; unchanged from today).
+- **Detection-driven defaults across the picker** — `cursor` and `continue` rows likewise lean on detection: their default is ON when a wired-or-existing config file is found, OFF otherwise. (`claude-code` and `copilot` keep their default-ON status because their project-scope targets are nearly always desired in committed-config projects.)
+- **`--diff` flag** — when a writer would land in `SkipExistingDiffers` (existing `sourcegraph` entry differs from what we would write), `--diff` surfaces a unified diff of `existing` vs `proposed` to stdout instead of just naming the conflict. Read-only; pairs with `--force` for the act-on-it path.
+- **Path display** — paths in the `Apply` and `Clients` phases are rendered relative to `--root` when the path is inside the repo (e.g. `.mcp.json` instead of `/Users/jacques/work/MyApp/.mcp.json`); user-tree paths are rendered with `~/` substitution; full absolute paths only on conflict-error detail lines.
+- **Pre-warm rendering** — the `Pre-warm` phase collapses to a single status line on success (`🌿 indexed MyApp.slnx in 11.4s`). The child indexer's stdout still inherits as today (no buffering of long-running indexer output), but a single summary line follows on completion. Failure path keeps full detail.
+- **Closing-report symmetry** — every `WriterAction` outcome is reported with its description, including `SkipHasComments` (which today prints its snippet to stdout mid-run but doesn't surface the description in the closing report).
+
+## Capabilities
+
+### New Capabilities
+<!-- None — this change refines existing capabilities rather than introducing a new one. -->
+
+### Modified Capabilities
+
+- `cli`: The existing `init subcommand` requirement is updated to (a) declare the polished output shape (phase headings, leaf-state glyph language, relative paths), (b) describe the batched picker grammar, (c) drop the "Claude Desktop is opt-in only" carve-out from the description, and (d) add `--diff` to the flag list. Three new requirements are added: `init output state-glyph language`, `init batched client picker`, and `init --diff conflict preview`.
+- `mcp-config`: The existing `Project-scoped defaults; user-scope opt-in` requirement is updated to remove the clause forbidding Claude Desktop auto-selection. Detection-driven defaults are now permitted for any client with a user-scope path; the project-scope safety property (no user-tree writes without explicit consent) is preserved by making "consent" include picker confirmation, not just the legacy `--user-<client>` flag.
+
+## Impact
+
+- **Code**: `src/DevBitsLab.Mcp.SourceGraph.Server/Cli/InitCli.cs` — the bulk of the rewrite; new `Render*` helpers replace the inline `Console.WriteLine` calls; new `BatchedPickerInput.Parse` for the `+/- slug` grammar; new `RelativePathRenderer`. `Cli/OnboardingDetector.cs` — small additions to expose detection signals (already-installed, already-wired) to the picker default logic. `Cli/CommandLine.cs` — adds `--diff`. `Cli/DoctorCli.cs` — left alone in this change (Change 2 reworks it). `Cli/ClientConfigWriters/` — no signature changes; the `WriterPlan.ContentBytes` plumbing already exposes the "would-write" content the diff needs.
+- **Spec**: One delta on `cli` (one MODIFIED + three ADDED requirements). One delta on `mcp-config` (one MODIFIED requirement).
+- **Tests**: `tests/Server.Tests/InitCliTests.cs` (or equivalent) — existing tests that pin exact output strings (banner, summary lines, picker prompt format) update in lock-step. New tests cover: leaf-state-glyph rendering, batched picker grammar (`+/- slug` parsing), Claude Desktop visibility in picker, detection-driven defaults, `--diff` rendering. Snapshot/golden-file tests, if any, regenerate.
+- **Public API / dependencies**: No new NuGet dependencies. No MCP wire format changes. No schema migrations. Only user-visible CLI text + one new flag. Back-compat: `--claude-desktop` flag still works (now means "force default-on for that row"); per-row `Y/n` answer is no longer accepted (any test that piped per-line answers needs to switch to the batched-input form). The legacy interactive flow is removed, not deprecated, since a piped `--yes` answer never used the per-row prompts in the first place — non-tty flows are unaffected.
+- **Documentation**: `README.md` Quickstart section updates to reflect the new `init` output shape; the `Wiring it into an MCP client` Claude Desktop subsection updates to note that `--claude-desktop` is no longer required for the picker to surface the row. `CLAUDE.md` adds a one-liner naming the leaf-state-glyph language.

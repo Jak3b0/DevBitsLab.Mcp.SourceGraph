@@ -140,20 +140,52 @@ From a fresh clone of any .NET solution:
 dotnet tool install -g DevBitsLab.Mcp.SourceGraph.Tool
 sourcegraph-mcp init        # interactive: detects clients, writes .mcp.json / .vscode/mcp.json / etc.
 sourcegraph-mcp demo        # canned probe: ping → graph_stats → search_symbols → find_definition
+sourcegraph-mcp             # bare: drops into the live operator dashboard under a tty,
+                            # falls back to `status` snapshot when stdin is redirected.
 ```
 
 `init` writes only **project-scoped** files by default (`.mcp.json`,
 `.vscode/mcp.json`, `.cursor/mcp.json`, `.continue/mcp/sourcegraph.yaml`).
-User-scope writes (or Claude Desktop) require explicit per-client flags.
-`demo` reads the indexed scope and prints the same leaf-stamped markdown
-your agent will see — instant verification.
+Claude Desktop is detected automatically and surfaced in the interactive
+picker — default-on if its platform-specific config file already exists,
+default-off otherwise. `demo` reads the indexed scope and prints the same
+leaf-stamped markdown your agent will see — instant verification.
+
+The output organises under named phase headings (`Environment`,
+`Clients to wire`, `Apply`, `Pre-warm` when run, `Next`), with a single
+leaf-state vocabulary in the leftmost column:
+
+```
+🌿 SourceGraph init
+
+Environment
+  🌿 .NET SDK           10.0.201
+  🌿 git on PATH        yes
+  🌿 repo root          .
+  🌿 solutions          MySolution.slnx
+  🌿 .sourcegraph.json  missing (single-scope synth path)
+
+Apply
+  🌿 wrote              claude-code     .mcp.json
+  🌿 wrote              copilot         .vscode/mcp.json
+
+Next
+  Open this repo in your MCP client.
+  Verify with `sourcegraph-mcp demo`.
+```
+
+`🌿` = positive (on / passed / wrote), `·` = off, `⚠` = warn, `✗` = hard skip,
+`—` = unsupported. Under `--no-leaf` or `SOURCEGRAPH_NO_LEAF=1` the tokens
+become `[x] / [ ] / [!] / [X] / [-]`, preserving column alignment.
 
 Other useful first-run commands:
 
 ```bash
 sourcegraph-mcp init --yes --client copilot,claude-code --print-only   # CI-friendly preview
 sourcegraph-mcp doctor                                                  # environment diagnostic
+sourcegraph-mcp status                                                  # one-screen operator console (env + scopes + clients + embeddings + recent activity)
 sourcegraph-mcp init --prewarm                                          # also pre-build the index
+sourcegraph-mcp init --diff                                             # preview conflict diff before --force
 ```
 
 ## Wiring it into an MCP client
@@ -262,8 +294,12 @@ The shape matches Claude Code:
 ```
 
 Note: `${workspaceFolder}` doesn't apply at the user-scope; use absolute paths
-or set `MCP_WORKSPACE_FOLDER` in your shell init. `init --claude-desktop`
-generates the correct file for you.
+or set `MCP_WORKSPACE_FOLDER` in your shell init. `init` shows Claude Desktop
+in its picker by default — if the platform-specific config file already exists
+on disk, the row is default-on; otherwise it's default-off and you can opt in
+interactively with `+claude-desktop` at the batched prompt. The
+`--claude-desktop` flag forces the row default-on regardless of detection
+(useful for fresh installs that haven't created the config yet).
 
 ### Pin a version per repo
 
@@ -648,8 +684,10 @@ sourcegraph-mcp <subcommand> [options]
 | `index <solution>` | Build/refresh the database for a single solution, then exit. Useful in CI. |
 | `stats` | Print counts of files / symbols / references / edges in the database. |
 | `clear` | Delete all rows from the database (schema preserved). |
-| `init [--yes] [--client <id>] [--no-<client>] [--user-<client>] [--claude-desktop] [--print-only] [--force] [--prewarm] [--install-mode <mode>]` | Interactive (default) or flag-driven onboarding flow. Detects environment, picks MCP clients, writes per-client config files (project-scoped by default), and optionally pre-warms the index. First-class clients: `claude-code`, `copilot`, `cursor`, `continue`, `claude-desktop`. Use `--print-only` for a CI-friendly preview that writes nothing. |
+| `init [--yes] [--client <id>] [--no-<client>] [--user-<client>] [--claude-desktop] [--print-only] [--force] [--diff] [--prewarm] [--install-mode <mode>]` | Interactive (default) or flag-driven onboarding flow. Detects environment, picks MCP clients, writes per-client config files (project-scoped by default), and optionally pre-warms the index. First-class clients: `claude-code`, `copilot`, `cursor`, `continue`, `claude-desktop`. Use `--print-only` for a CI-friendly preview that writes nothing; use `--diff` to render a unified diff before a `SkipExistingDiffers` conflict so you can preview what `--force` would change. |
 | `doctor [--json]` | Read-only environment diagnostic. Reports SDK / git / solution / config / per-client status. Exit `0` = all-pass; `2` = at least one warning; `1` = hard failure. `--json` emits a machine-readable `{checks, exit_code}` document. |
+| `status [--json] [--watch] [--watch-interval <s>] [--no-color] [--activity-bytes <N>]` | One-screen operator console: aggregates Environment, Scopes, Clients, Embeddings, and Recent activity into a phase-headed snapshot. Reads SQLite DBs in read-only mode and works whether `serve` is running concurrently or not. Exit codes mirror `doctor`: `0` = all-pass; `2` = any warn (partial / indexing scope, absent embedding cache, missing git); `1` = any hard fail (no .NET 10 SDK, malformed `.sourcegraph.json`, degraded scope, unwritable DB dir). `--json` emits a stable snake_case `DashboardSnapshot` document with top-level keys `environment`, `scopes`, `clients`, `embeddings`, `recent_activity`, `built_at`, `usage_log_path`, `heals_log_path`, `exit_code`. `--watch` enters a polling redraw loop under a tty (interval default `2`s, settable via `--watch-interval`); piped invocations downgrade silently to a single snapshot. |
+| `dashboard [--root <path>] [--no-color] [--no-leaf] [--activity-bytes <N>]` | Full-screen Spectre.Console-backed live operator dashboard. Same five-section data as `status`; rebuilds on a 1-second poll + filesystem watcher on the JSONL logs. Keyboard-driven: `[q]` quit, `[?]` help, `[↑↓/jk]` navigate, `[Tab/Shift+Tab]` section, `[Enter]` details, `[s]` force-refresh, `[r]` reindex scope, `[R]` rebuild scope (confirm), `[w]` wire client, `[u]` unwire client (confirm), `[p]` embeddings pull, `[v]` embeddings verify, `[i]` init guided, `[d]` demo guided, `[l]` open log in `$PAGER`, `[e]` open `.sourcegraph.json` in `$EDITOR`. Requires ≥80×24 terminal; smaller terminals print `terminal too small (need ≥80×24)` to stderr and exit `2`. Exits `0` on `q`/`Ctrl+C`. **Bare `sourcegraph-mcp` (no positional args)** dispatches to `dashboard` under a tty and to `status` under redirected stdin / non-interactive contexts. |
 | `demo [--scope <id>] [--no-color]` | Run four canned operations (`ping`, `graph_stats`, `search_symbols`, `find_definition`) against the active scope and print leaf-stamped markdown — the same shape an MCP client would see. Provides the "ah, it works" confidence moment without an agent loop. Exits `2` if the scope has zero symbols indexed. |
 | `init-scopes` | Discover `.slnx`/`.sln` files at `--root` (default: CWD) and write a starter `.sourcegraph.json`. Continues to work standalone; `init` invokes the same scaffolding internally when multi-solution is detected. |
 | `scopes list [--root <path>]` | List the scopes declared in `.sourcegraph.json`. |
@@ -688,6 +726,44 @@ sourcegraph-mcp init-scopes
 sourcegraph-mcp scopes add backend --solution ./backend.slnx
 sourcegraph-mcp stats --db ./.sourcegraph/scopes/default.db
 ```
+
+### Dashboard
+
+`sourcegraph-mcp dashboard` (or bare `sourcegraph-mcp` under a tty) opens the
+live operator console — the five `status` sections rendered through
+Spectre.Console with keyboard navigation and the existing actions as
+key-accelerated commands. Three action depths:
+
+- **Read-only.** Arrow keys or `j`/`k` move the cursor within the focused
+  section; `Tab`/`Shift+Tab` cycle sections; `Enter` opens a detail pane;
+  `Esc` closes; `?` toggles the inline key reference; `s` forces a snapshot
+  rebuild; `q` (or `Ctrl+C`) exits with code `0`.
+- **In-place.** `r` reindexes the selected scope; `R` rebuilds it (confirm
+  prompt); `w` wires the selected missing client; `u` unwires it (confirm
+  prompt); `p` runs `embeddings pull`; `v` runs `embeddings verify`. The
+  destructive set (`R` rebuild, `u` unwire) gates behind a Spectre
+  `<verb> <target>? [y/N]` modal; the idempotent set runs immediately. Any
+  in-place action exceeding 30 seconds is cancelled by the watchdog and the
+  failure surfaces in the status bar.
+- **Guided.** `i` suspends the Live region and runs `sourcegraph-mcp init`
+  visibly; `d` runs `sourcegraph-mcp demo` for the selected scope; `l` opens
+  `usage.jsonl` in `$PAGER` (default `less -R`); `e` opens `.sourcegraph.json`
+  in `$EDITOR` (default `vi`). On subprocess exit, the dashboard redraws.
+
+Refresh model: the snapshot rebuilds on a 1-second timer plus a 100 ms
+debounced filesystem watcher on `usage.jsonl` / `heals.jsonl`. Bursts of tool
+activity coalesce into at most one rebuild per second so a chatty `serve`
+process doesn't thrash the dashboard.
+
+Minimum terminal: 80×24. Smaller terminals print
+`terminal too small (need ≥80×24)` to stderr and exit `2`. `--no-leaf` swaps
+the brand mark and section glyphs for the bracketed-ASCII fallback;
+`--no-color` (composing with the `NO_COLOR` env var Spectre honours natively)
+disables ANSI colour output.
+
+Under redirected stdin (pipes, CI runners), bare `sourcegraph-mcp` falls back
+to `status` — same data, one-shot print — so scripts that ran the command
+bare keep getting a useful snapshot.
 
 ## How the index stays live
 

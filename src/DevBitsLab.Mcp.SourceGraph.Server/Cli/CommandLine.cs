@@ -46,6 +46,9 @@ internal sealed class CommandLine
     public bool Force { get; private init; }
     /// <summary>True when <c>--print-only</c> was passed; consumed by <c>init</c> to emit per-client config snippets to stdout without writing files.</summary>
     public bool PrintOnly { get; private init; }
+    /// <summary>True when <c>--diff</c> was passed; consumed by <c>init</c> to render a unified diff
+    /// of existing-vs-proposed content when a writer would land in <c>SkipExistingDiffers</c>.</summary>
+    public bool Diff { get; private init; }
     /// <summary>Tristate: <c>true</c> = <c>--prewarm</c>, <c>false</c> = <c>--no-prewarm</c>, <c>null</c> = unspecified (use the default for the active mode: on under interactive, off under <c>--yes</c>).</summary>
     public bool? Prewarm { get; private init; }
     /// <summary>Selected install mode for <c>init</c>'s emitted <c>command</c> + <c>args</c>: <c>global</c> (default), <c>local-tool</c>, or <c>in-repo</c>.</summary>
@@ -64,6 +67,12 @@ internal sealed class CommandLine
     public bool Json { get; private init; }
     /// <summary>True when <c>--no-color</c> was passed; consumed by <c>demo</c> to suppress the green-leaf glyph on per-line output. Independent of <see cref="NoLeaf"/>, which is the server-wide opt-out.</summary>
     public bool NoColor { get; private init; }
+    /// <summary>True when <c>--watch</c> was passed; consumed by <c>status</c> to enter a polling redraw loop under a tty.</summary>
+    public bool Watch { get; private init; }
+    /// <summary>The integer seconds passed via <c>--watch-interval &lt;n&gt;</c>; null means "use the built-in default" (2 s).</summary>
+    public int? WatchInterval { get; private init; }
+    /// <summary>The byte cap passed via <c>--activity-bytes &lt;N&gt;</c>; null means "use the built-in default" (524288).</summary>
+    public int? ActivityBytes { get; private init; }
 
     public static CommandLine Parse(string[] args)
     {
@@ -90,6 +99,7 @@ internal sealed class CommandLine
         var yes = false;
         var force = false;
         var printOnly = false;
+        var diff = false;
         bool? prewarm = null;
         string? installMode = null;
         var clients = new List<string>();
@@ -99,6 +109,9 @@ internal sealed class CommandLine
         var solutions = new List<string>();
         var json = false;
         var noColor = false;
+        var watch = false;
+        int? watchInterval = null;
+        int? activityBytes = null;
 
         for (var i = 1; i < args.Length; i++)
         {
@@ -159,6 +172,9 @@ internal sealed class CommandLine
                 case "--print-only":
                     printOnly = true;
                     break;
+                case "--diff":
+                    diff = true;
+                    break;
                 case "--prewarm":
                     prewarm = true;
                     break;
@@ -187,6 +203,15 @@ internal sealed class CommandLine
                     break;
                 case "--no-color":
                     noColor = true;
+                    break;
+                case "--watch":
+                    watch = true;
+                    break;
+                case "--watch-interval":
+                    watchInterval = RequirePositiveInt(args, ref i, a);
+                    break;
+                case "--activity-bytes":
+                    activityBytes = RequirePositiveInt(args, ref i, a);
                     break;
                 default:
                     if (subcommand == "index" && solution is null && !a.StartsWith('-'))
@@ -230,6 +255,7 @@ internal sealed class CommandLine
             Yes = yes,
             Force = force,
             PrintOnly = printOnly,
+            Diff = diff,
             Prewarm = prewarm,
             InstallMode = installMode,
             Clients = clients,
@@ -239,6 +265,9 @@ internal sealed class CommandLine
             Solutions = solutions,
             Json = json,
             NoColor = noColor,
+            Watch = watch,
+            WatchInterval = watchInterval,
+            ActivityBytes = activityBytes,
         };
     }
 
@@ -297,6 +326,22 @@ internal sealed class CommandLine
         sourcegraph-mcp — live code source graph MCP server for .NET
 
         Usage:
+          sourcegraph-mcp
+              Bare invocation. Under a tty (interactive terminal), drops into the live operator
+              dashboard. Under redirected stdin / non-interactive contexts, prints the static
+              `status` snapshot. Use `--help` to see all subcommands; flags like `--root` pass
+              through to the dispatched subcommand.
+
+          sourcegraph-mcp dashboard [--root <path>] [--no-color] [--no-leaf] [--activity-bytes <N>]
+              Full-screen Spectre.Console-backed live operator console. Five sections — Environment,
+              Scopes, Clients, Embeddings, Recent activity — re-render on a 1-second poll + filesystem
+              watcher on the JSONL logs. Keys: [q] quit, [?] help, [↑↓/jk] navigate row,
+              [Tab/Shift+Tab] section, [Enter] details, [s] force-refresh, [r] reindex scope,
+              [R] rebuild scope (confirm), [w] wire client, [u] unwire client (confirm),
+              [p] embeddings pull, [v] embeddings verify, [i] init (guided), [d] demo (guided),
+              [l] open log in $PAGER, [e] open .sourcegraph.json in $EDITOR. Requires ≥80×24
+              terminal; smaller terminals exit with code 2.
+
           sourcegraph-mcp serve [--solution <path>] [--db <path>] [--root <repo>] [--model <id>] [--no-embeddings] [--no-model-download] [--no-history]
               Run the MCP stdio server. With --solution given, registers an implicit single-scope
               `default` mapped to that solution. Otherwise reads `.sourcegraph.json` from --root
@@ -313,18 +358,30 @@ internal sealed class CommandLine
 
           sourcegraph-mcp init [--yes] [--client <id>] [--no-<client>] [--user-<client>]
                                 [--claude-desktop] [--solution <path>] [--install-mode <mode>]
-                                [--print-only] [--force] [--prewarm | --no-prewarm]
+                                [--print-only] [--force] [--diff] [--prewarm | --no-prewarm]
                                 [--no-embeddings] [--no-history] [--root <path>]
               Interactive (default) or flag-driven onboarding flow. Detects environment, picks
               MCP clients, writes per-client config files (project-scoped by default), and
               optionally pre-warms the index. First-class clients: claude-code, copilot, cursor,
               continue, claude-desktop. Use --print-only for a CI-friendly preview that writes
-              nothing.
+              nothing. Use --diff to preview a unified diff when a writer would skip an existing
+              differing entry; combined with --force, the diff prints before the overwrite.
 
           sourcegraph-mcp doctor [--root <path>] [--json]
               Read-only environment diagnostic. Reports SDK/git/solution/config/per-client status.
               Exit 0 = all-pass; 2 = at least one warning; 1 = hard failure. --json emits a
               machine-readable {checks, exit_code} document instead of glyph output.
+
+          sourcegraph-mcp status [--root <path>] [--json] [--watch] [--watch-interval <s>]
+                                  [--no-color] [--activity-bytes <N>]
+              One-screen operator console: aggregates Environment, Scopes, Clients, Embeddings,
+              and Recent activity into a phase-headed snapshot. Reads SQLite DBs in read-only
+              mode and works whether `serve` is running concurrently or not. Exit 0 = all-pass;
+              2 = any warn (partial scope, missing git, absent embedding cache); 1 = any hard
+              fail (no .NET 10 SDK, malformed .sourcegraph.json, degraded scope, unwritable DB
+              dir). --json emits a stable snake_case DashboardSnapshot document. --watch enters
+              a polling redraw loop under a tty (interval default 2s); piped invocations
+              downgrade silently to a single snapshot.
 
           sourcegraph-mcp demo [--scope <id>] [--root <path>] [--no-color]
               Run four canned operations (ping, graph_stats, search_symbols, find_definition)

@@ -221,25 +221,26 @@ The CLI SHALL accept a `sourcegraph-mcp embeddings <verb>` top-level subcommand 
 - **THEN** the printed status reflects the `someorg/other-model` directory only; the active model's data is not included in the report
 
 ### Requirement: init subcommand
-The CLI SHALL accept `sourcegraph-mcp init` that runs an interactive (default) or flag-driven (`--yes`) onboarding flow producing per-client MCP configuration files, optionally pre-warming the index, and printing a closing report. Default writes SHALL be project-scoped (under `--root`, default CWD); user-scope writes SHALL require an explicit per-client opt-in flag.
+The CLI SHALL accept `sourcegraph-mcp init` that runs an interactive (default) or flag-driven (`--yes`) onboarding flow producing per-client MCP configuration files, optionally pre-warming the index, and printing a closing report. Default writes SHALL be project-scoped (under `--root`, default CWD); user-scope writes SHALL require an explicit per-client opt-in flag OR — for clients with no project-scope path — interactive picker confirmation.
 
 The subcommand SHALL accept the following flags:
 
-- `--yes` / `-y` — non-interactive; accept all defaults documented in this requirement.
+- `--yes` / `-y` — non-interactive; accept all picker defaults documented in this requirement.
 - `--client <id>` (repeatable) — restrict to the listed clients (`claude-code`, `copilot`, `cursor`, `continue`, `claude-desktop`).
 - `--no-<client>` — exclude one client even if it would otherwise be auto-selected.
 - `--user-<client>` — write that client's config to its user-scope path instead of the project-scope path.
-- `--claude-desktop` — required to wire Claude Desktop (no project-scope option exists for that client).
+- `--claude-desktop` — force the picker default for the `claude-desktop` row to ON, overriding detection. (Back-compat alias from when the flag gated row visibility entirely; the row is now always visible in the picker.)
 - `--solution <path>` (repeatable) — override solution-discovery; passes through to `init-scopes` core logic when multiple solutions are configured.
 - `--no-embeddings` / `--no-history` — propagate the corresponding `serve` flag into the written `args` array.
 - `--prewarm` / `--no-prewarm` — opt in to / out of running `RoslynIndexer.IndexSolutionOnceAsync` after writing configs.
 - `--install-mode {global,local-tool,in-repo}` — choose the resulting `command`/`args` shape: `global` invokes `sourcegraph-mcp` directly (default); `local-tool` emits `command: "dotnet"`, `args: ["sourcegraph-mcp", ...]` and assumes the repo already has a `.config/dotnet-tools.json` listing the tool (created via `dotnet new tool-manifest && dotnet tool install DevBitsLab.Mcp.SourceGraph.Tool`; `init` does not create or merge the manifest in v1); `in-repo` emits `command: "dotnet"`, `args: ["run", "--project", "<server csproj>", "--no-build", "--", "serve", ...]`.
 - `--print-only` — print the per-client config snippets to stdout with `# would write to: <path>` comment lines; write no files.
 - `--force` — overwrite an existing `sourcegraph` server entry without prompting (in interactive mode) or without skipping (in `--yes` mode); never modifies other servers' entries.
+- `--diff` — when a writer would emit `SkipExistingDiffers`, print a unified diff of the existing target file versus the proposed `ContentBytes` to stdout before recording the skip; read-only without `--force`. See the `init --diff conflict preview` requirement for full semantics.
 - `--root <path>` — repository root (default CWD).
 
 #### Scenario: Interactive init wires Claude Code in a fresh repo
-- **WHEN** a user runs `sourcegraph-mcp init` in a repo containing `MySln.slnx` and accepts the defaults at every prompt
+- **WHEN** a user runs `sourcegraph-mcp init` in a repo containing `MySln.slnx` and accepts the picker defaults at the single batched prompt
 - **THEN** `<root>/.mcp.json` is written with the `mcpServers.sourcegraph` entry; the closing report names the file written and suggests `sourcegraph-mcp demo` as the next step
 
 #### Scenario: Non-interactive init for CI
@@ -248,19 +249,27 @@ The subcommand SHALL accept the following flags:
 
 #### Scenario: Init merges into an existing config without clobbering other servers
 - **WHEN** the user has a pre-existing `<root>/.mcp.json` containing an `mcpServers.other-server` entry, and `sourcegraph-mcp init --yes --client claude-code` is invoked
-- **THEN** the resulting `.mcp.json` contains both `mcpServers.other-server` (unchanged) and a new `mcpServers.sourcegraph` entry; the closing report says `wired sourcegraph (existing other-server preserved)`
+- **THEN** the resulting `.mcp.json` contains both `mcpServers.other-server` (unchanged) and a new `mcpServers.sourcegraph` entry; the closing report's `Apply` phase shows a `🌿 wrote` row for `claude-code` and notes that an existing other-server entry was preserved
 
 #### Scenario: Init refuses to overwrite a differing existing entry without --force
 - **WHEN** the user has a pre-existing `<root>/.mcp.json` containing an `mcpServers.sourcegraph` entry whose `args` differ from what we would write, and `sourcegraph-mcp init --yes --client claude-code` (without `--force`) is invoked
-- **THEN** the file is left unchanged; the closing report includes a warning naming the file and suggesting `--force` to overwrite, and the process exits `2`
+- **THEN** the file is left unchanged; the `Apply` phase contains a `✗ conflict — skipped` row for `claude-code` with a hanging detail line naming the file and suggesting `--diff` to inspect or `--force` to overwrite; the process exits `2`
 
-#### Scenario: Claude Desktop requires --claude-desktop opt-in
-- **WHEN** `sourcegraph-mcp init --yes` is invoked with no `--claude-desktop` flag
-- **THEN** Claude Desktop's user-scope config file is not touched even if every other auto-detected client is wired
+#### Scenario: Claude Desktop is always visible in the picker
+- **WHEN** `sourcegraph-mcp init` is invoked interactively with no `--claude-desktop` flag and no detected Claude Desktop config file
+- **THEN** the `Clients to wire` phase renders a `claude-desktop` row marked off-default (state glyph `·`, or `[ ]` under `--no-leaf`); pressing Enter at the batched picker prompt does NOT wire Claude Desktop, and the closing report does NOT include a Claude Desktop entry
+
+#### Scenario: Detection bumps Claude Desktop default-on
+- **WHEN** `sourcegraph-mcp init --yes` is invoked on a system where `~/Library/Application Support/Claude/claude_desktop_config.json` already exists, with no explicit `--claude-desktop` flag
+- **THEN** Claude Desktop's picker row is default-on; the `Apply` phase contains a `🌿` row for `claude-desktop` (user scope); no project-scope file is created or modified for Claude Desktop
+
+#### Scenario: --claude-desktop forces default-on
+- **WHEN** `sourcegraph-mcp init --yes --claude-desktop` is invoked on a system where no Claude Desktop config file exists
+- **THEN** Claude Desktop is wired anyway (a new platform-specific user-scope config file is created and the `mcpServers.sourcegraph` entry is inserted); the `Apply` phase shows a `🌿 wrote` row for `claude-desktop` whose path renders with `~/` substitution where applicable
 
 #### Scenario: Pre-warm runs after writing configs
 - **WHEN** `sourcegraph-mcp init --yes --client claude-code --prewarm --solution ./MySln.slnx` is invoked
-- **THEN** after the `.mcp.json` write completes, `RoslynIndexer.IndexSolutionOnceAsync` is invoked against `./MySln.slnx`; the closing report includes the line `pre-warmed index: N files in T s`
+- **THEN** after the `.mcp.json` write completes, `RoslynIndexer.IndexSolutionOnceAsync` is invoked against `./MySln.slnx`; the `Pre-warm` phase summary line reads `🌿 indexed MySln.slnx in T.Ts` (or `[x] indexed MySln.slnx in T.Ts` under `--no-leaf`)
 
 ### Requirement: doctor subcommand
 The CLI SHALL accept `sourcegraph-mcp doctor` that runs a read-only environment diagnostic and prints a per-check `pass | warn | fail` summary. The subcommand SHALL accept `--root <path>` and `--json` flags. The exit code SHALL follow the convention: `0` if every check passed, `2` if at least one warn was raised, `1` if any check produced a hard fail.
@@ -310,4 +319,297 @@ The CLI SHALL preserve the existing `init-scopes` subcommand behaviour and the e
 #### Scenario: init delegates scope discovery to the same code path
 - **WHEN** a user runs `sourcegraph-mcp init` in a repo containing `frontend.slnx` and `backend.slnx`
 - **THEN** the resulting `.sourcegraph.json` is identical to the file `init-scopes` would have written, and the closing report names both `frontend` and `backend` as configured scopes
+
+### Requirement: init output state-glyph language
+The `init` subcommand SHALL render its human-readable output (banner, detection summary, picker rows, apply rows, pre-warm summary, closing report) using a single state-glyph vocabulary applied uniformly across every phase. The five states and their tokens SHALL be:
+
+- **on / passed / wrote / unchanged**: `🌿` (U+1F33F followed by U+0020); ASCII fallback `[x] ` under `--no-leaf` or `SOURCEGRAPH_NO_LEAF=1`
+- **off / not selected**: `·` (U+00B7 followed by U+0020); ASCII fallback `[ ] `
+- **soft warning**: `⚠` (U+26A0 followed by U+0020); ASCII fallback `[!] `
+- **hard skip / conflict**: `✗` (U+2717 followed by U+0020); ASCII fallback `[X] `
+- **unsupported / N/A**: `—` (U+2014 followed by U+0020); ASCII fallback `[-] `
+
+Column alignment SHALL be preserved across the emoji and ASCII forms by treating each token's width as three display cells.
+
+The `init` subcommand SHALL organise its output under named phase headings: `Environment`, `Clients to wire`, `Apply`, `Pre-warm` (omitted when no pre-warm runs in this invocation), and `Next`. Phase headings SHALL appear at the left margin without a leading state glyph; rows under a phase heading SHALL be indented exactly two spaces.
+
+The opt-out mechanism (`--no-leaf` CLI flag and `SOURCEGRAPH_NO_LEAF=1` env var) SHALL apply to the entire state-glyph vocabulary and to any banner `🌿` mark in `init` output — the same `LeafFormatter.Suppressed` flag that controls server tool responses.
+
+#### Scenario: Successful first-run renders all five phases
+- **WHEN** `sourcegraph-mcp init --yes` is invoked in a repo with one solution and Claude Code's project config absent, with `--prewarm` set
+- **THEN** stdout contains exactly five phase headings — `Environment`, `Clients to wire`, `Apply`, `Pre-warm`, `Next` — each on its own line at the left margin; rows under each heading are two-space-indented; the `Apply` phase contains a row beginning with `🌿 wrote` for the `claude-code` writer
+
+#### Scenario: --no-leaf substitutes ASCII fallbacks
+- **WHEN** `sourcegraph-mcp init --yes --no-leaf` is invoked
+- **THEN** no `🌿` (U+1F33F) appears on stdout; every state-glyph position contains a three-character ASCII token from the set `[x] `, `[ ] `, `[!] `, `[X] `, `[-] `; phase headings render identically to the emoji-enabled path; the banner line shows `SourceGraph init` without a leading leaf
+
+#### Scenario: --print-only omits the Pre-warm phase
+- **WHEN** `sourcegraph-mcp init --yes --print-only` is invoked
+- **THEN** the `Pre-warm` phase heading does not appear on stdout; the `Apply` phase still renders with each row showing the would-write verb under the configured glyph language
+
+#### Scenario: SOURCEGRAPH_NO_LEAF env var matches --no-leaf flag behaviour
+- **WHEN** `sourcegraph-mcp init --yes` is invoked with `SOURCEGRAPH_NO_LEAF=1` in the environment and without the `--no-leaf` flag
+- **THEN** the rendered output is byte-identical to the `--yes --no-leaf` invocation against the same repo state
+
+### Requirement: init batched client picker
+When `init` is invoked interactively (stdin is a tty AND `--yes` was not passed AND `--print-only` was not passed), the `Clients to wire` phase SHALL render every supported client as a row showing its default-selected state with the state-glyph language defined in the `init output state-glyph language` requirement (`🌿`/`[x]` selected, `·`/`[ ]` off), then prompt the user exactly once with a batched prompt allowing one of the following responses:
+
+1. Empty input, `y`, or `Y` — accept the displayed defaults verbatim.
+2. `n` or `N` — deselect every row; no client is wired.
+3. A whitespace-separated sequence of tokens of the form `+<slug>` or `-<slug>` — start from the displayed defaults, then flip each named client (`+` adds to the selection, `-` removes from it). Slugs that don't match the supported set SHALL produce a warning on stderr and SHALL be ignored.
+
+On any input that doesn't match one of those three forms, the prompt SHALL be re-displayed once with the example shown; a second invalid input SHALL be treated as `n` (deselect all) and the run SHALL proceed.
+
+The supported slug set SHALL match the `--client` flag's supported values: `claude-code`, `copilot`, `cursor`, `continue`, `claude-desktop`.
+
+The picker default for each client SHALL be computed from `OnboardingDetector` signals:
+
+- `claude-code`: default-on always.
+- `copilot`: default-on always.
+- `cursor`: default-on iff `<root>/.cursor/` directory or `~/.cursor/mcp.json` exists; otherwise default-off.
+- `continue`: default-on iff `<root>/.continue/` directory or `~/.continue/mcp/sourcegraph.yaml` exists; otherwise default-off.
+- `claude-desktop`: default-on iff the platform-specific Claude Desktop config file exists, OR if the `--claude-desktop` flag was passed; otherwise default-off.
+
+The `--client <id>` flag SHALL override the picker entirely (the rows are rendered but only the listed clients are selected, regardless of defaults). The `--no-<client>` flag SHALL force the named client off in the displayed defaults.
+
+#### Scenario: Empty input accepts displayed defaults
+- **WHEN** the picker shows `claude-code` and `copilot` as default-on (`🌿`) and `cursor`, `continue`, `claude-desktop` as default-off (`·`); user presses Enter at the prompt
+- **THEN** `claude-code` and `copilot` writers run; `cursor`, `continue`, `claude-desktop` writers do not
+
+#### Scenario: `+slug -slug` edits the default selection
+- **WHEN** the picker shows `claude-code` and `copilot` as default-on; user types `+cursor -copilot` and presses Enter
+- **THEN** `claude-code` and `cursor` writers run; `copilot` writer does not; `continue` and `claude-desktop` writers do not (off-defaults preserved)
+
+#### Scenario: Unknown slug warns and is ignored
+- **WHEN** the user types `+sublime` at the picker prompt
+- **THEN** a warning is printed to stderr naming the unknown slug; the picker proceeds with the displayed defaults (the unknown token is dropped)
+
+#### Scenario: `n` deselects all
+- **WHEN** the user types `n` at the picker prompt
+- **THEN** no writer runs; the `Apply` phase shows the line `No clients selected. Nothing to do.`; the process exits `0`
+
+#### Scenario: Detection-driven cursor default
+- **WHEN** the user runs `sourcegraph-mcp init` interactively in a repo where `<root>/.cursor/` exists; defaults are computed
+- **THEN** the picker's `cursor` row is rendered with the `🌿` (or `[x]`) state glyph; pressing Enter wires `cursor` along with `claude-code` and `copilot`
+
+#### Scenario: Detection-driven continue default-off when no install fingerprint
+- **WHEN** the user runs `sourcegraph-mcp init` interactively in a repo with no `.continue/` directory and no `~/.continue/` directory
+- **THEN** the picker's `continue` row is rendered with the `·` (or `[ ]`) state glyph; pressing Enter does NOT wire `continue`
+
+### Requirement: init --diff conflict preview
+The `init` subcommand SHALL accept a `--diff` flag. When the flag is set, AND a writer's plan would land in `SkipExistingDiffers`, AND the run is not under `--print-only`, the subcommand SHALL render a unified diff with three lines of surrounding context comparing the existing target file's bytes against the writer's proposed `ContentBytes`, printed to stdout under the conflicting `Apply` row as a hanging-detail block. The diff `---` header SHALL name the target file path; the `+++` header SHALL name `<target>.proposed`.
+
+`--diff` SHALL be read-only by default. When combined with `--force`, the diff SHALL be printed first AND the write SHALL then proceed (the existing `--force` behaviour, augmented with the diff print). Without `--force`, the file SHALL be left unchanged and the process SHALL exit `2`.
+
+`--diff` SHALL be a no-op for plans other than `SkipExistingDiffers` (`Insert`, `NoOpAlreadyMatches`, `ReplaceOurs`, `SkipHasComments`, `SkipUnsupported`).
+
+#### Scenario: --diff shows the unified diff and exits 2 without --force
+- **WHEN** `<root>/.mcp.json` contains an `mcpServers.sourcegraph` entry whose `args` array differs from what `init` would write, and `sourcegraph-mcp init --yes --client claude-code --diff` is invoked
+- **THEN** the `Apply` phase shows `✗ conflict — skipped  claude-code  .mcp.json` (or `[X] conflict — skipped  ...` under `--no-leaf`); a unified diff is printed below the row indented one level further, with `---` and `+++` headers naming `.mcp.json` and `.mcp.json.proposed` respectively, and `-`/`+` markers on the differing lines; the file is not modified; the process exits `2`
+
+#### Scenario: --diff combined with --force prints diff then writes
+- **WHEN** the same conflicting `<root>/.mcp.json` is present and `sourcegraph-mcp init --yes --client claude-code --diff --force` is invoked
+- **THEN** the unified diff is printed first; then the `Apply` phase contains `🌿 replaced  claude-code  .mcp.json` (or `[x] replaced  ...` under `--no-leaf`); the file is rewritten with the proposed content; the process exits `0`
+
+#### Scenario: --diff on an insert plan is a no-op
+- **WHEN** `<root>/.mcp.json` does not exist and `sourcegraph-mcp init --yes --client claude-code --diff` is invoked
+- **THEN** the `Apply` phase shows `🌿 wrote  claude-code  .mcp.json`; no diff output is printed; the process exits `0`
+
+#### Scenario: --diff on a SkipHasComments plan is a no-op
+- **WHEN** `<root>/.mcp.json` contains line comments (`// ...`) outside string literals and `sourcegraph-mcp init --yes --client claude-code --diff` is invoked
+- **THEN** today's comment-aware degraded-mode behaviour runs unchanged: the would-write snippet is printed to stdout with the `# config has comments at ...` warning, the file is not modified, and no unified diff is produced; the process exits `0`
+
+### Requirement: status subcommand
+The CLI SHALL accept `sourcegraph-mcp status` that renders a single point-in-time snapshot of the operator console's five state surfaces — Environment, Scopes, Clients, Embeddings, Recent activity — to stdout, using the phase-headed layout and state-glyph language defined elsewhere in this spec.
+
+The subcommand SHALL accept the following flags:
+
+- `--root <path>` — repository root (default CWD).
+- `--json` — emit a stable JSON document instead of human-readable prose. See the `status snapshot data sources` requirement for the document shape.
+- `--watch` — when stdin is a tty, re-render the snapshot in place on a poll interval. When stdin is not a tty, the flag is silently downgraded to a single snapshot.
+- `--watch-interval <seconds>` — integer seconds between `--watch` re-renders (default `2`, minimum `1`). Ignored when `--watch` is not set.
+- `--no-color` — disable ANSI colour codes in the human-readable output (independent of `--no-leaf`, which controls the glyph language).
+- `--activity-bytes <N>` — tail at most N bytes from each JSONL log (default `524288`).
+
+The exit code SHALL follow the convention: `0` if every snapshot dimension is healthy; `2` if any dimension reports a warning (scope status `partial` or `indexing`, drift detected, embedding cache absent, git missing); `1` if any dimension hard-fails (`.NET 10` SDK absent, `.sourcegraph.json` malformed, scope status `degraded` with corruption, scope DB directory unwritable).
+
+`status` SHALL read SQLite databases (`_meta.db` and per-scope DBs) in read-only mode and SHALL NOT require a concurrent `sourcegraph-mcp serve` process. The subcommand SHALL tolerate a concurrently-running `serve` writing to the same DBs (SQLite WAL mode supports concurrent readers).
+
+#### Scenario: Healthy environment renders all five phases
+- **WHEN** `sourcegraph-mcp status` is invoked in a repo with a valid `.sourcegraph.json`, .NET 10 + git on PATH, two ok scopes, the default embedding model populated, and a non-empty `usage.jsonl`
+- **THEN** stdout contains exactly five phase headings — `Environment`, `Scopes`, `Clients`, `Embeddings`, `Recent activity` — each rendered with phase-internal rows using the state-glyph language (`🌿` for healthy items); the process exits `0`
+
+#### Scenario: A degraded scope drops the exit code to 1
+- **WHEN** `sourcegraph-mcp status` is invoked in a repo where one configured scope has `status = "degraded"` in `_meta.db` and an integrity-check failure recorded
+- **THEN** the `Scopes` phase renders that scope's row with the `✗` (or `[X]` under `--no-leaf`) glyph and a hanging-detail line naming the recommended action (`repair_scope mode=rebuild`); the process exits `1`
+
+#### Scenario: A partial scope drops the exit code to 2
+- **WHEN** `sourcegraph-mcp status` is invoked in a repo where one scope has `status = "partial"` and the `failed_projects` array is non-empty
+- **THEN** the `Scopes` phase renders that scope's row with the `⚠` (or `[!]`) glyph; the hanging-detail line lists the failed project names; the process exits `2`
+
+#### Scenario: --json emits the stable contract document
+- **WHEN** `sourcegraph-mcp status --json` is invoked
+- **THEN** stdout contains a single JSON document parseable as the `DashboardSnapshot` shape documented in `status snapshot data sources`; no human-readable prose precedes or follows the JSON; the document's `exit_code` field matches the process exit code
+
+#### Scenario: --watch refreshes in place under a tty
+- **WHEN** `sourcegraph-mcp status --watch --watch-interval 1` is invoked under a tty and runs for 3 seconds before SIGINT
+- **THEN** stdout contains the snapshot rendered 3 or 4 times (one initial frame + 2 or 3 refreshes); each refresh emits the ANSI cursor-home + clear-to-end sequence so the previous frame is overwritten in place; on SIGINT the process exits `0` cleanly with no stray "interrupted" message
+
+#### Scenario: --watch downgrades to single snapshot under non-tty
+- **WHEN** `sourcegraph-mcp status --watch --watch-interval 1 | cat` is invoked
+- **THEN** exactly one snapshot is rendered on stdout (no ANSI cursor codes, no re-renders); the process exits with the snapshot-evaluated exit code; the `--watch-interval` value is ignored
+
+### Requirement: status output state-glyph language
+The `status` subcommand SHALL use the same five-state-glyph vocabulary defined in the `init output state-glyph language` requirement: `🌿` for on/passed/healthy (ASCII fallback `[x] ` under `--no-leaf` or `SOURCEGRAPH_NO_LEAF=1`), `·` for off/inactive (ASCII `[ ] `), `⚠` for warning (ASCII `[!] `), `✗` for hard-fail (ASCII `[X] `), `—` for unsupported/N/A (ASCII `[-] `). Column alignment SHALL be preserved across the emoji and ASCII forms at three display cells per token.
+
+The `status` subcommand SHALL organise its human-readable output under named phase headings: `Environment`, `Scopes`, `Clients`, `Embeddings`, `Recent activity`. Phase headings SHALL appear at the left margin without a leading state glyph; rows under a phase heading SHALL be indented exactly two spaces.
+
+The `--no-color` flag SHALL suppress ANSI colour codes but SHALL leave the glyph language intact (emoji rendering doesn't require ANSI colour codes).
+
+#### Scenario: --no-leaf substitutes ASCII fallbacks
+- **WHEN** `sourcegraph-mcp status --no-leaf` is invoked in a healthy repo
+- **THEN** no `🌿` (U+1F33F) byte sequence appears on stdout; every state-glyph position contains a three-character ASCII token from the set `[x] `, `[ ] `, `[!] `, `[X] `, `[-] `; phase headings render identically to the emoji-enabled path
+
+#### Scenario: SOURCEGRAPH_NO_LEAF env var matches --no-leaf flag behaviour
+- **WHEN** `sourcegraph-mcp status` is invoked with `SOURCEGRAPH_NO_LEAF=1` in the environment and without the `--no-leaf` flag
+- **THEN** the rendered output is byte-identical to the `--no-leaf` invocation against the same repo state
+
+#### Scenario: --no-color suppresses ANSI codes without affecting glyphs
+- **WHEN** `sourcegraph-mcp status --no-color` is invoked under a tty
+- **THEN** stdout contains no ANSI escape sequences (no `\x1b[` byte sequences); the state-glyph language is unchanged (`🌿` still appears for healthy items unless `--no-leaf` is also set)
+
+### Requirement: status snapshot data sources
+The snapshot rendered by `status` (and consumed by future operator-console renderers) SHALL aggregate five state surfaces in a single immutable record. Each surface SHALL be populated from the data sources documented below, and each SHALL be addressable in the `--json` output via a stable snake_case top-level field.
+
+**1. `environment`** — sourced from `OnboardingDetector.DetectAsync`. JSON fields: `dotnet_sdk_version` (string or null), `git_on_path` (bool), `repo_root_path` (absolute string), `solution_files` (array of absolute strings), `sourcegraph_config_status` (one of `missing`, `valid`, `malformed`), `sourcegraph_config_error` (string or null).
+
+**2. `scopes`** — sourced from `_meta.db` plus per-scope DB read-only queries. JSON shape: array of objects with fields `name` (string), `status` (one of `ok`, `partial`, `degraded`, `indexing`), `symbol_count` (integer), `reference_count` (integer), `last_indexed_at` (ISO-8601 string or null), `failed_projects` (array of strings, empty when `status != partial`), `failed_files` (array of strings, empty when `status != partial`), `isolated` (bool, true when the scope's config has `isolated: true`).
+
+**3. `clients`** — sourced from `OnboardingDetector.ClientConfigsDetected`. JSON shape: array of objects with fields `slug` (one of `claude-code`, `copilot`, `cursor`, `continue`, `claude-desktop`), `scope` (one of `project`, `user`), `path` (absolute string), `exists` (bool), `contains_sourcegraph_entry` (bool).
+
+**4. `embeddings`** — sourced from `EmbeddingsManager`. JSON fields: `model_id` (string, the active model identifier), `cache_dir` (absolute string), `cache_present` (bool), `total_bytes` (integer, sum of all cached files; zero when `cache_present == false`), `verified` (bool, true when the cache has been successfully `embeddings verify`-ed against pinned SHAs since the last `pull`).
+
+**5. `recent_activity`** — sourced from a byte-bounded tail of `.sourcegraph/usage.jsonl` and `.sourcegraph/heals.jsonl`, merged and sorted by timestamp ascending, capped at the most recent 50 entries. JSON shape: array of objects with fields `ts` (ISO-8601 string), `kind` (string — e.g. `tool_call`, `heal`, `boot_reconcile`), `scope` (string or null), `ok` (bool), `ms` (integer), `detail` (string or null — a one-line human-readable summary).
+
+The top-level JSON document SHALL also include: `built_at` (ISO-8601 string, when the snapshot was assembled), `usage_log_path` (absolute string), `heals_log_path` (absolute string), and `exit_code` (integer matching the process exit code: 0, 1, or 2).
+
+Additions to the JSON shape in future revisions SHALL be append-only — adding new top-level fields or new fields to nested objects is permitted; renaming or removing fields requires a major-version bump in the spec.
+
+#### Scenario: --json document has all six top-level surface fields
+- **WHEN** `sourcegraph-mcp status --json` is invoked in any valid repo
+- **THEN** the emitted JSON document has top-level keys `environment`, `scopes`, `clients`, `embeddings`, `recent_activity`, `built_at`, `usage_log_path`, `heals_log_path`, and `exit_code` — no other top-level keys exist at v1
+
+#### Scenario: scopes array reflects _meta.db rows verbatim
+- **WHEN** `sourcegraph-mcp status --json` is invoked in a repo with three configured scopes: `frontend` (ok), `backend` (partial, with `failed_projects: ["legacy.csproj", "old.csproj"]`), and `vendor` (ok, isolated)
+- **THEN** the `scopes` array contains exactly three objects in declared-order; the `backend` row's `failed_projects` matches `["legacy.csproj", "old.csproj"]`; the `vendor` row's `isolated` is `true`; the `frontend` and `backend` rows' `isolated` is `false`
+
+#### Scenario: recent_activity merges and sorts both log files
+- **WHEN** `sourcegraph-mcp status --json` is invoked in a repo whose `usage.jsonl` ends with three tool-call entries at timestamps T1 < T3 < T5 and whose `heals.jsonl` ends with two heal entries at T2 and T4 (interleaved with the usage entries)
+- **THEN** the `recent_activity` array contains all five entries in timestamp-ascending order (T1, T2, T3, T4, T5); each entry's `kind` field reflects its source log (`tool_call` for `usage.jsonl` rows, `heal` / `boot_reconcile` / etc. for `heals.jsonl` rows)
+
+#### Scenario: snapshot tolerates a partial trailing JSONL line
+- **WHEN** `sourcegraph-mcp status --json` is invoked while a concurrent `serve` process is mid-write to `usage.jsonl` (the last byte is mid-object, no trailing newline)
+- **THEN** the partial line is dropped silently from `recent_activity`; the snapshot reports the prior complete entries; no parse-error appears in stderr; the process exits successfully
+
+### Requirement: dashboard subcommand
+The CLI SHALL accept `sourcegraph-mcp dashboard` that renders a full-screen Spectre.Console-backed live operator console consuming the `DashboardSnapshot` defined in the `status snapshot data sources` requirement. The dashboard SHALL display five sections — `Environment`, `Scopes`, `Clients`, `Embeddings`, `Recent activity` — backed by the same snapshot the `status` subcommand renders, and SHALL refresh that snapshot on a polling + watcher hybrid (see below).
+
+The subcommand SHALL accept the following flags:
+
+- `--root <path>` — repository root (default CWD); rendered in the dashboard header bar using the relative / `~/`-substituted form (matching `polish-init-onboarding`'s path-rendering rule).
+- `--no-color` — disable ANSI colour codes; composes with the `NO_COLOR` env var Spectre honours natively.
+- `--no-leaf` / `SOURCEGRAPH_NO_LEAF=1` — substitute the ASCII state-glyph fallback (matches `polish-init-onboarding` and `add-operator-status` conventions).
+
+The dashboard SHALL refresh its snapshot using a hybrid model:
+
+1. **Polling**: a timer rebuilds the snapshot at most once per `1000 ms`.
+2. **Watcher**: `FileSystemWatcher` instances on `<root>/.sourcegraph/usage.jsonl` and `<root>/.sourcegraph/heals.jsonl` trigger a debounced rebuild `100 ms` after the most recent write event.
+
+The two triggers SHALL coalesce: any rebuild request that fires within `1000 ms` of the previous rebuild SHALL be dropped (the most recent snapshot satisfies it). Snapshot rebuilds SHALL run on the thread-pool; rendering SHALL be confined to the UI thread.
+
+The dashboard SHALL declare minimum terminal dimensions of `80 columns × 24 rows`. When the current terminal is smaller at startup, the dashboard SHALL print `terminal too small (need ≥80×24)` to stderr and exit with code `2`. The dashboard SHALL respond to terminal resize events by re-rendering the layout against the new dimensions.
+
+The dashboard SHALL exit cleanly with code `0` on `q`, `Q`, or `Ctrl+C`; on uncaught exception, exit `1` after restoring the terminal cursor.
+
+#### Scenario: Successful launch renders the five sections
+- **WHEN** `sourcegraph-mcp dashboard` is invoked under a `100 × 40` terminal in a healthy repo
+- **THEN** the first frame contains a Spectre layout with five labelled sections — `Environment`, `Scopes`, `Clients`, `Embeddings`, `Recent activity` — each rendered with phase-internal rows using the state-glyph language; the header bar contains the dashboard banner with `🌿 SourceGraph` (or `[x] SourceGraph` under `--no-leaf`), the version, and the relative-path-rendered `--root`; the footer bar contains the key-binding hints `[q] quit  [?] help  [↑↓] nav  [Enter] details`
+
+#### Scenario: Recent activity surfaces within 200 ms of a JSONL write
+- **WHEN** the dashboard is running and a concurrent `serve` process appends one line to `usage.jsonl`
+- **THEN** the `Recent activity` section re-renders to include the new entry within 200 ms of the write (100 ms watcher debounce + render latency); the snapshot's poll-tick rebuild SHALL NOT also fire for that event (the coalescing rule prevents the duplicate rebuild)
+
+#### Scenario: Polling rebuild fires when no JSONL activity
+- **WHEN** the dashboard runs for 5 seconds with no JSONL writes
+- **THEN** the snapshot rebuilds at most 5 times (once per second); each rebuild's wall-clock time is recorded; no rebuild's duration exceeds 100 ms under the healthy-repo fixture
+
+#### Scenario: Tiny terminal refuses to render
+- **WHEN** `sourcegraph-mcp dashboard` is invoked under a `60 × 20` terminal
+- **THEN** stderr contains the line `terminal too small (need ≥80×24)`; the process exits with code `2` without entering Spectre's `Live` mode
+
+#### Scenario: q exits cleanly
+- **WHEN** the dashboard is running and the user presses `q`
+- **THEN** the Spectre `Live` block exits; the cursor is restored to visible state; no ANSI escape sequence remains in the terminal's output buffer; the process exits with code `0`
+
+### Requirement: Bare command dispatch
+The CLI SHALL accept `sourcegraph-mcp` invoked with no positional arguments and no `--help` / `-h` flag, and SHALL dispatch to either the `dashboard` subcommand or the `status` subcommand based on the stdin disposition: when stdin is a tty (`Console.IsInputRedirected == false` AND `Environment.UserInteractive == true`), the dispatch target SHALL be `dashboard`; otherwise the dispatch target SHALL be `status`.
+
+Flags passed alongside the bare invocation (e.g. `sourcegraph-mcp --root /work/Repo`) SHALL be propagated to the dispatched subcommand.
+
+The behaviour of `sourcegraph-mcp --help` / `sourcegraph-mcp -h` SHALL be unchanged from today: print the help text and exit `0`.
+
+#### Scenario: Bare invocation under a tty enters the dashboard
+- **WHEN** a user runs `sourcegraph-mcp` (no positional args, no `--help`) in an interactive terminal
+- **THEN** the dashboard launches as if `sourcegraph-mcp dashboard` had been invoked; on `q` the process exits `0`
+
+#### Scenario: Bare invocation under a pipe runs status
+- **WHEN** `sourcegraph-mcp | cat` is invoked
+- **THEN** the static `status` snapshot is printed to stdout (no ANSI control codes for live rendering); the process exits with the snapshot's exit code (0, 1, or 2); the dashboard is NOT entered
+
+#### Scenario: --help still prints help
+- **WHEN** `sourcegraph-mcp --help` is invoked (in either tty or redirected stdin)
+- **THEN** stdout contains the help text starting with `sourcegraph-mcp — live code source graph MCP server for .NET`; the dashboard is NOT entered; the process exits `0`
+
+#### Scenario: Bare invocation with --root propagates the flag
+- **WHEN** `sourcegraph-mcp --root /some/other/repo` is invoked under a tty
+- **THEN** the dashboard launches against `/some/other/repo` (the header bar names that root); the `--root` flag is passed through to the snapshot builder
+
+### Requirement: Dashboard action confirmation
+The `dashboard` subcommand SHALL gate every state-mutating action that is irreversible or that affects user-visible state outside `<root>/.sourcegraph/` behind a Spectre confirmation prompt. The prompt SHALL render as a modal overlay with the text `<verb> <target>? [y/N]`, default `No`, dismissable with `Esc` or `n` (both treated as `No`).
+
+Specifically, the following in-place actions SHALL gate behind the confirm modal:
+
+- `[R]` rebuild selected scope (archives the current scope DB before re-indexing).
+- `[u]` unwire selected client (removes the `mcpServers.sourcegraph` entry from the target config file).
+
+The following in-place actions SHALL NOT gate (they are idempotent / additive):
+
+- `[r]` reindex selected scope (`reconcile_drift`).
+- `[w]` wire missing client (calls the InitCli writer; results in `Insert` or `NoOpAlreadyMatches`).
+- `[p]` embeddings pull (idempotent against a populated cache).
+- `[v]` embeddings verify (read-only).
+
+Read-only actions (`↑↓`, `Tab`, `Enter`, `Esc`, `q`, `?`, `s`) SHALL NOT gate.
+
+Guided actions (`[i]`, `[d]`, `[l]`, `[e]`) SHALL NOT gate at the dashboard layer — the guided subcommand carries its own interaction model.
+
+#### Scenario: `[u]` unwire prompts for confirmation
+- **WHEN** the user navigates to a wired client row, presses `u`, and the confirm prompt appears
+- **THEN** the prompt renders with the text `unwire claude-code? [y/N]` (or equivalent for the selected client); pressing `Esc` dismisses the prompt with no file modification; the `.mcp.json` file's mtime is unchanged; the dashboard returns to the Clients section with no error
+
+#### Scenario: `[u]` unwire proceeds on explicit yes
+- **WHEN** the user presses `u` on a wired `claude-code` row and answers `y` to the confirm prompt
+- **THEN** the `mcpServers.sourcegraph` entry is removed from `<root>/.mcp.json` (other entries preserved); the snapshot rebuilds; the Clients section's `claude-code` row state-glyph flips from `🌿` to `·` (or `[x]` to `[ ]` under `--no-leaf`)
+
+#### Scenario: `[r]` reindex does NOT prompt
+- **WHEN** the user navigates to a scope row and presses `r`
+- **THEN** `reconcile_drift` runs immediately for the selected scope; no confirm prompt appears; the scope's state glyph optionally flips to a transient `indexing` indicator while the operation runs; on completion the row re-renders with the updated state
+
+#### Scenario: `[R]` rebuild prompts for confirmation
+- **WHEN** the user presses `R` on a scope row
+- **THEN** the confirm prompt renders with the text `rebuild backend? [y/N]` (or the slug of the selected scope); `n` or `Esc` dismisses with no action; `y` triggers `repair_scope mode=rebuild` for the selected scope
+
+#### Scenario: `[v]` embeddings verify does NOT prompt
+- **WHEN** the user presses `v`
+- **THEN** `embeddings verify` runs against the active model immediately; no confirm prompt appears; the Embeddings section's `verified` indicator updates on completion (or surfaces a `⚠`/`✗` state glyph if a SHA mismatch is detected)
 

@@ -39,7 +39,7 @@
          RoBERTa tier; see openspec/changes/migrate-to-ml-tokenizers/ for the swap rationale.
          The vector store native binding ships native vec0.{dylib,dll,so} via a runtimes/
          payload that flows into bin/.../runtimes/{rid}/native via the SDK. -->
-    <PackageVersion Include="Microsoft.ML.OnnxRuntime" Version="1.25.1" />
+    <PackageVersion Include="Microsoft.ML.OnnxRuntime" Version="1.27.0" />
     <PackageVersion Include="Microsoft.Extensions.AI.Abstractions" Version="10.5.2" />
     <PackageVersion Include="Microsoft.ML.Tokenizers" Version="2.0.0" />
     <PackageVersion Include="sqlite-vec" Version="0.1.7-alpha.2.1" />

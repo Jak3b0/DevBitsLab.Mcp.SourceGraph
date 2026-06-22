@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: Release   # NUGET_API_KEY lives as an environment secret
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 

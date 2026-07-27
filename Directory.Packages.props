@@ -60,7 +60,7 @@
     <PackageVersion Include="coverlet.collector" Version="10.0.0" />
 
     <!-- Build / packaging -->
-    <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="10.0.203" />
+    <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="10.0.301" />
 
     <!-- Benchmarks -->
     <PackageVersion Include="BenchmarkDotNet" Version="0.15.8" />
